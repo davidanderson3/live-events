@@ -46,7 +46,7 @@ function stripScheduleFields(list) {
 
 const SAMPLE_SIGNATURE = JSON.stringify(stripScheduleFields(SAMPLE_DECISIONS));
 const SAMPLE_LISTS_SIGNATURE = JSON.stringify(SAMPLE_LISTS);
-const DECISIONS_ENABLED = false;
+const DECISIONS_ENABLED = true;
 
 // IDs used in sample/demo data that should never be persisted
 const DEMO_IDS = new Set([
@@ -690,4 +690,3 @@ export function pickDateRange(start = '', end = '') {
     startInput.showPicker?.();
   });
 }
-
