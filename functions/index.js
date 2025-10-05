@@ -2,6 +2,7 @@ const functions = require('firebase-functions');
 
 const DEFAULT_REGION = 'us-central1';
 const TMDB_BASE_URL = 'https://api.themoviedb.org';
+const SPOONACULAR_BASE_URL = 'https://api.spoonacular.com/recipes/complexSearch';
 
 const ALLOWED_ENDPOINTS = {
   discover: { path: '/3/discover/movie' },
@@ -25,6 +26,21 @@ function getTmdbApiKey() {
   const fromConfig = functions.config()?.tmdb?.key;
   if (fromConfig) return fromConfig;
   return null;
+}
+
+function getSpoonacularApiKey() {
+  const fromEnv = process.env.SPOONACULAR_KEY;
+  if (fromEnv) return fromEnv;
+  const fromConfig = functions.config()?.spoonacular?.key;
+  if (fromConfig) return fromConfig;
+  return null;
+}
+
+function resolveSingle(value) {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
 }
 
 function withCors(res) {
@@ -109,5 +125,62 @@ exports.tmdbProxy = functions
     } catch (err) {
       console.error('TMDB proxy failed', err);
       res.status(500).json({ error: 'tmdb_proxy_failed' });
+    }
+  });
+
+exports.spoonacularProxy = functions
+  .region(DEFAULT_REGION)
+  .https.onRequest(async (req, res) => {
+    withCors(res);
+
+    if (req.method === 'OPTIONS') {
+      res.status(204).send('');
+      return;
+    }
+
+    if (req.method !== 'GET') {
+      res.status(405).json({ error: 'method_not_allowed' });
+      return;
+    }
+
+    const rawQuery = resolveSingle(req.query?.query);
+    const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+    if (!query) {
+      res.status(400).json({ error: 'missing_query' });
+      return;
+    }
+
+    const rawOverrideKey = resolveSingle(req.query?.apiKey || req.query?.api_key);
+    const overrideKey = typeof rawOverrideKey === 'string' ? rawOverrideKey.trim() : '';
+    const apiKey = overrideKey || getSpoonacularApiKey();
+
+    if (!apiKey) {
+      console.error('Spoonacular API key missing for proxy request');
+      res.status(500).json({ error: 'spoonacular_key_not_configured' });
+      return;
+    }
+
+    const params = new URLSearchParams({
+      query,
+      number: '50',
+      offset: '0',
+      addRecipeInformation: 'true',
+      apiKey
+    });
+
+    try {
+      const spoonacularResponse = await fetch(`${SPOONACULAR_BASE_URL}?${params.toString()}`, {
+        headers: {
+          Accept: 'application/json'
+        }
+      });
+
+      const payload = await spoonacularResponse.text();
+      res.status(spoonacularResponse.status);
+      res.type(spoonacularResponse.headers.get('content-type') || 'application/json');
+      res.send(payload);
+    } catch (err) {
+      console.error('Spoonacular proxy failed', err);
+      res.status(500).json({ error: 'spoonacular_proxy_failed' });
     }
   });
