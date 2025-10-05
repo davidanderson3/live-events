@@ -43,8 +43,8 @@ describe('initRestaurantsPanel', () => {
     global.navigator = window.navigator;
 
     const sampleData = [
-      { name: 'Second Place', rating: 4.1, reviewCount: 120 },
-      { name: 'Top Rated', rating: 4.8, reviewCount: 45 }
+      { name: 'Second Place', rating: 4.1, reviewCount: 120, distance: 1500 },
+      { name: 'Top Rated', rating: 4.8, reviewCount: 45, distance: 1200 }
     ];
 
     global.fetch = vi
@@ -128,5 +128,44 @@ describe('initRestaurantsPanel', () => {
 
     const results = document.getElementById('restaurantsResults');
     expect(results.textContent).toContain('failed');
+  });
+
+  it('filters out distant restaurants when coordinates are provided', async () => {
+    const dom = setupDom();
+    global.window = dom.window;
+    global.document = dom.window.document;
+
+    const geoMock = {
+      getCurrentPosition: vi.fn(success => {
+        success({ coords: { latitude: 37.7749, longitude: -122.4194 } });
+      })
+    };
+    Object.defineProperty(window.navigator, 'geolocation', {
+      configurable: true,
+      value: geoMock
+    });
+    global.navigator = window.navigator;
+
+    const sampleData = [
+      { name: 'Local Favorite', rating: 4.5, reviewCount: 210, distance: 2000 },
+      { name: 'Distant Gem', rating: 5.0, reviewCount: 12, distance: 500000 }
+    ];
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ address: { city: 'San Francisco' } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(sampleData)
+      });
+
+    await initRestaurantsPanel();
+
+    const results = document.getElementById('restaurantsResults');
+    const headings = Array.from(results.querySelectorAll('h3')).map(el => el.textContent);
+    expect(headings).toEqual(['Local Favorite']);
   });
 });
