@@ -2135,6 +2135,10 @@ h2 {
   color: #fff;
 }
 
+.movie-action {
+  padding: 6px 14px;
+}
+
 @media (max-width: 768px) {
   .calendar-mobile-tabs {
     display: flex;
