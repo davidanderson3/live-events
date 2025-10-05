@@ -1,7 +1,7 @@
 const API_BASE_URL =
   (typeof window !== 'undefined' && window.apiBaseUrl) ||
   (typeof process !== 'undefined' && process.env.API_BASE_URL) ||
-  'https://dashboard-6aih.onrender.com';
+  'https://us-central1-decision-maker-4e1d3.cloudfunctions.net';
 
 export async function initRecipesPanel() {
   const listEl = document.getElementById('recipesList');
@@ -24,8 +24,9 @@ export async function initRecipesPanel() {
     if (searchBtn) searchBtn.disabled = true;
     listEl.innerHTML = '<em>Loading...</em>';
     try {
+      const base = API_BASE_URL.replace(/\/$/, '');
       const res = await fetch(
-        `${API_BASE_URL}/api/spoonacular?query=${encodeURIComponent(query)}`
+        `${base}/api/spoonacular?query=${encodeURIComponent(query)}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();

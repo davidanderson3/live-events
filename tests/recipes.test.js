@@ -35,7 +35,7 @@ describe('initRecipesPanel', () => {
     const textEl = document.querySelector('#recipesList li strong');
     expect(textEl.textContent).toBe('Chicken Soup');
     expect(fetch).toHaveBeenCalledWith(
-      'https://dashboard-6aih.onrender.com/api/spoonacular?query=chicken'
+      'https://us-central1-decision-maker-4e1d3.cloudfunctions.net/api/spoonacular?query=chicken'
     );
   });
 
