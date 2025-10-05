@@ -25,8 +25,19 @@ export async function initRecipesPanel() {
     listEl.innerHTML = '<em>Loading...</em>';
     try {
       const base = API_BASE_URL.replace(/\/$/, '');
+      let proxyPath = '/api/spoonacular';
+      try {
+        const parsed = new URL(base);
+        if (parsed.hostname.endsWith('cloudfunctions.net')) {
+          proxyPath = '/spoonacularProxy';
+        }
+      } catch (err) {
+        if (/cloudfunctions\.net/.test(base)) {
+          proxyPath = '/spoonacularProxy';
+        }
+      }
       const res = await fetch(
-        `${base}/api/spoonacular?query=${encodeURIComponent(query)}`
+        `${base}${proxyPath}?query=${encodeURIComponent(query)}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
