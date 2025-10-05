@@ -31,6 +31,53 @@ async function pkceChallenge(verifier) {
   }
 }
 
+let cachedUserLocation = null;
+let userLocationRequested = false;
+
+function toRadians(deg) {
+  return (deg * Math.PI) / 180;
+}
+
+function calculateDistanceMiles(lat1, lon1, lat2, lon2) {
+  const R = 3958.8; // Earth's radius in miles
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const lat1Rad = toRadians(lat1);
+  const lat2Rad = toRadians(lat2);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1Rad) * Math.cos(lat2Rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function getUserLocation() {
+  if (userLocationRequested) {
+    return cachedUserLocation;
+  }
+  userLocationRequested = true;
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    return null;
+  }
+  try {
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 10000
+      });
+    });
+    cachedUserLocation = {
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude
+    };
+  } catch (err) {
+    console.warn('Unable to retrieve current location for shows list', err);
+    cachedUserLocation = null;
+  }
+  return cachedUserLocation;
+}
+
 export async function initShowsPanel() {
   const listEl = document.getElementById('ticketmasterList');
   if (!listEl) return;
@@ -194,7 +241,9 @@ export async function initShowsPanel() {
         return;
       }
 
-      const ul = document.createElement('ul');
+      const userLocation = await getUserLocation();
+      const eventsMap = new Map();
+      let eventCounter = 0;
       for (const artist of artists) {
         const tmUrl = new URL(`${API_BASE_URL}/api/ticketmaster`);
         tmUrl.searchParams.set('keyword', artist.name);
@@ -207,26 +256,75 @@ export async function initShowsPanel() {
         const events = data._embedded?.events;
         if (!Array.isArray(events)) continue;
         for (const ev of events) {
+          const venue = ev._embedded?.venues?.[0];
+          const lat = Number.parseFloat(venue?.location?.latitude);
+          const lon = Number.parseFloat(venue?.location?.longitude);
+          let distance = null;
+          if (
+            userLocation &&
+            Number.isFinite(lat) &&
+            Number.isFinite(lon)
+          ) {
+            distance = calculateDistanceMiles(
+              userLocation.latitude,
+              userLocation.longitude,
+              lat,
+              lon
+            );
+          }
+          const eventKey =
+            ev.id ||
+            `${artist.id || artist.name || 'artist'}-${ev.url || ev.name || eventCounter}`;
+          if (!eventsMap.has(eventKey)) {
+            eventsMap.set(eventKey, {
+              event: ev,
+              venue,
+              distance,
+              order: eventCounter++
+            });
+          }
+        }
+      }
+      listEl.innerHTML = '';
+      if (eventsMap.size > 0) {
+        const ul = document.createElement('ul');
+        const events = Array.from(eventsMap.values());
+        if (cachedUserLocation) {
+          events.sort((a, b) => {
+            const aDist = a.distance;
+            const bDist = b.distance;
+            if (aDist == null && bDist == null) return a.order - b.order;
+            if (aDist == null) return 1;
+            if (bDist == null) return -1;
+            if (aDist === bDist) return a.order - b.order;
+            return aDist - bDist;
+          });
+        }
+        for (const { event, venue, distance } of events) {
           const li = document.createElement('li');
           const nameDiv = document.createElement('div');
-          nameDiv.textContent = ev.name || 'Unnamed event';
+          nameDiv.textContent = event.name || 'Unnamed event';
           li.appendChild(nameDiv);
-          const venue = ev._embedded?.venues?.[0];
           const locParts = [venue?.name, venue?.city?.name, venue?.state?.stateCode].filter(Boolean);
           if (locParts.length > 0) {
             const locDiv = document.createElement('div');
             locDiv.textContent = locParts.join(' - ');
             li.appendChild(locDiv);
           }
-          const date = ev.dates?.start?.localDate;
+          const date = event.dates?.start?.localDate;
           if (date) {
             const dateDiv = document.createElement('div');
             dateDiv.textContent = date;
             li.appendChild(dateDiv);
           }
-          if (ev.url) {
+          if (Number.isFinite(distance)) {
+            const distanceDiv = document.createElement('div');
+            distanceDiv.textContent = `${distance.toFixed(1)} miles away`;
+            li.appendChild(distanceDiv);
+          }
+          if (event.url) {
             const link = document.createElement('a');
-            link.href = ev.url;
+            link.href = event.url;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = 'View Event';
@@ -234,9 +332,6 @@ export async function initShowsPanel() {
           }
           ul.appendChild(li);
         }
-      }
-      listEl.innerHTML = '';
-      if (ul.children.length > 0) {
         listEl.appendChild(ul);
       } else {
         listEl.textContent = 'No upcoming shows.';
