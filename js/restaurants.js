@@ -34,6 +34,14 @@ function renderMessage(container, message) {
   container.innerHTML = `<em>${message}</em>`;
 }
 
+function formatDistance(meters) {
+  if (typeof meters !== 'number' || Number.isNaN(meters)) return '';
+  const miles = meters / 1609.344;
+  if (!Number.isFinite(miles)) return '';
+  const precision = miles >= 10 ? 0 : 1;
+  return `${miles.toFixed(precision)} mi`;
+}
+
 function renderResults(container, items) {
   if (!items.length) {
     renderMessage(container, 'No restaurants found.');
@@ -95,6 +103,15 @@ function renderResults(container, items) {
       meta.appendChild(m);
     }
 
+    if (typeof rest.distance === 'number') {
+      const distanceText = formatDistance(rest.distance);
+      if (distanceText) {
+        const m = document.createElement('li');
+        m.textContent = `Distance: ${distanceText}`;
+        meta.appendChild(m);
+      }
+    }
+
     if (rest.url || rest.website) {
       const m = document.createElement('li');
       const link = document.createElement('a');
@@ -115,10 +132,14 @@ function renderResults(container, items) {
   container.appendChild(ul);
 }
 
-async function fetchRestaurants({ city, cuisine, apiKey }) {
+async function fetchRestaurants({ city, cuisine, apiKey, latitude, longitude }) {
   const params = new URLSearchParams();
-  params.set('city', city);
+  if (city) params.set('city', city);
   if (cuisine) params.set('cuisine', cuisine);
+  if (latitude && longitude) {
+    params.set('latitude', latitude);
+    params.set('longitude', longitude);
+  }
 
   const base = API_BASE_URL ? API_BASE_URL.replace(/\/$/, '') : '';
   const headers = apiKey ? { 'X-Api-Key': apiKey } : undefined;
@@ -143,6 +164,16 @@ export async function initRestaurantsPanel() {
   const cuisineInput = document.getElementById('restaurantsCuisine');
   const apiKeyInput = document.getElementById('restaurantsApiKey');
   const searchBtn = document.getElementById('restaurantsSearchBtn');
+  const useLocationBtn = document.getElementById('restaurantsUseLocationBtn');
+  const locationStatus = document.getElementById('restaurantsLocationStatus');
+
+  let currentCoords = null;
+  let usingCurrentLocation = false;
+
+  function updateLocationStatus(message) {
+    if (!locationStatus) return;
+    locationStatus.textContent = message;
+  }
 
   const storedKey = getStoredKey();
   if (apiKeyInput && storedKey) {
@@ -154,6 +185,7 @@ export async function initRestaurantsPanel() {
     const city = cityInput.value.trim();
     const cuisine = cuisineInput?.value.trim() || '';
     const enteredKey = apiKeyInput?.value.trim() || '';
+    const coordsToUse = usingCurrentLocation && currentCoords ? currentCoords : null;
 
     if (enteredKey) {
       persistApiKey(enteredKey);
@@ -162,8 +194,8 @@ export async function initRestaurantsPanel() {
     }
 
     const apiKey = enteredKey;
-    if (!city) {
-      renderMessage(resultsContainer, 'Enter a city to search.');
+    if (!city && !coordsToUse) {
+      renderMessage(resultsContainer, 'Enter a city or use your current location.');
       cityInput.focus();
       return;
     }
@@ -171,7 +203,9 @@ export async function initRestaurantsPanel() {
     renderLoading(resultsContainer);
 
     try {
-      const data = await fetchRestaurants({ city, cuisine, apiKey });
+      const latitude = coordsToUse ? String(coordsToUse.latitude) : undefined;
+      const longitude = coordsToUse ? String(coordsToUse.longitude) : undefined;
+      const data = await fetchRestaurants({ city, cuisine, apiKey, latitude, longitude });
       renderResults(resultsContainer, data);
     } catch (err) {
       console.error('Restaurant search failed', err);
@@ -185,6 +219,44 @@ export async function initRestaurantsPanel() {
   });
   cityInput?.addEventListener('keydown', e => {
     if (e.key === 'Enter') handleSearch();
+  });
+  cityInput?.addEventListener('input', () => {
+    if (cityInput.value.trim()) {
+      usingCurrentLocation = false;
+      currentCoords = null;
+      updateLocationStatus('');
+    }
+  });
+
+  useLocationBtn?.addEventListener('click', () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      updateLocationStatus('Geolocation is not supported in this browser.');
+      usingCurrentLocation = false;
+      currentCoords = null;
+      return;
+    }
+
+    updateLocationStatus('Fetching current location…');
+    navigator.geolocation.getCurrentPosition(
+      position => {
+        currentCoords = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        };
+        usingCurrentLocation = true;
+        updateLocationStatus('Using current location.');
+        if (cityInput) {
+          cityInput.value = '';
+        }
+        handleSearch();
+      },
+      error => {
+        console.error('Geolocation error', error);
+        updateLocationStatus('Unable to access location.');
+        usingCurrentLocation = false;
+        currentCoords = null;
+      }
+    );
   });
 }
 

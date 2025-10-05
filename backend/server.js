@@ -159,20 +159,29 @@ app.get('/api/spotify-client-id', (req, res) => {
 });
 
 app.get('/api/restaurants', async (req, res) => {
-  const { city, cuisine = '' } = req.query || {};
+  const { city, cuisine = '', latitude, longitude } = req.query || {};
   const yelpKey = req.get('x-api-key') || req.query.apiKey || process.env.YELP_API_KEY;
   if (!yelpKey) {
     return res.status(500).json({ error: 'missing yelp api key' });
   }
-  if (!city) {
-    return res.status(400).json({ error: 'missing city' });
+  const hasCoords = latitude && longitude;
+  if (!city && !hasCoords) {
+    return res.status(400).json({ error: 'missing location' });
   }
 
   const params = new URLSearchParams({
-    location: String(city),
     categories: 'restaurants',
     limit: '20'
   });
+  if (city) {
+    params.set('location', String(city));
+  }
+  if (hasCoords) {
+    params.delete('location');
+    params.set('latitude', String(latitude));
+    params.set('longitude', String(longitude));
+    params.set('sort_by', 'distance');
+  }
   if (cuisine) {
     params.set('term', String(cuisine));
   }
@@ -208,7 +217,8 @@ app.get('/api/restaurants', async (req, res) => {
       reviewCount: biz.review_count ?? null,
       price: biz.price || '',
       categories: Array.isArray(biz.categories) ? biz.categories.map(c => c.title).filter(Boolean) : [],
-      url: biz.url || ''
+      url: biz.url || '',
+      distance: typeof biz.distance === 'number' ? biz.distance : null
     }));
 
     res.json(simplified);

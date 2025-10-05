@@ -138,8 +138,12 @@
           <input type="text" id="restaurantsApiKey" placeholder="Leave blank to use server key" />
           <span style="font-size:0.75rem; margin-top:0.25rem;">You can generate one at <a href="https://www.yelp.com/developers/v3/manage_app" target="_blank" rel="noopener noreferrer">Yelp Fusion</a>.</span>
         </div>
+        <div style="display:flex; flex-direction:column; gap:0.25rem;">
+          <button type="button" id="restaurantsUseLocationBtn" aria-label="Use current location">Use current location</button>
+          <span id="restaurantsLocationStatus" style="font-size:0.75rem; min-height:1.25em;" aria-live="polite"></span>
+        </div>
         <button type="button" id="restaurantsSearchBtn" aria-label="Search restaurants">Search</button>
-        <div style="font-size:0.75rem; max-width:260px;">Powered by Yelp Fusion. The server will use its configured <code>YELP_API_KEY</code> by default; enter your own here to override.</div>
+        <div style="font-size:0.75rem; max-width:260px;">Powered by Yelp Fusion. The server will use its configured <code>YELP_API_KEY</code> by default; enter your own here to override. Use your current location to see the closest restaurants first.</div>
       </div>
       <div id="restaurantsResults" class="decision-container"></div>
     </div>
