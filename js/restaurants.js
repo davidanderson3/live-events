@@ -7,6 +7,8 @@ let initialized = false;
 let mapInstance = null;
 let mapMarkersLayer = null;
 
+const MAX_DISTANCE_METERS = 160934; // ~100 miles
+
 function parseCoordinate(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : NaN;
@@ -316,6 +318,18 @@ function sortByRating(items) {
   });
 }
 
+function filterByDistance(items, maxDistance) {
+  if (!Array.isArray(items) || !items.length) return [];
+  if (!Number.isFinite(maxDistance) || maxDistance <= 0) return items;
+
+  const nearby = items.filter(item => {
+    const distance = typeof item.distance === 'number' ? item.distance : NaN;
+    return Number.isFinite(distance) && distance <= maxDistance;
+  });
+
+  return nearby.length ? nearby : items;
+}
+
 function renderResults(container, items) {
   if (!items.length) {
     renderMessage(container, 'No restaurants found.');
@@ -477,7 +491,8 @@ async function loadNearbyRestaurants(container) {
     const { latitude, longitude } = position.coords;
     const city = await reverseGeocodeCity(latitude, longitude);
     const data = await fetchRestaurants({ latitude, longitude, city });
-    const sorted = sortByRating(data);
+    const nearby = filterByDistance(data, MAX_DISTANCE_METERS);
+    const sorted = sortByRating(nearby);
     renderResults(container, sorted);
   } catch (err) {
     console.error('Restaurant search failed', err);
