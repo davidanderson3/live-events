@@ -1,6 +1,7 @@
 const API_BASE_URL =
   (typeof window !== 'undefined' && window.apiBaseUrl) ||
   (typeof process !== 'undefined' && process.env.API_BASE_URL) ||
+  (typeof window !== 'undefined' && window.location?.origin) ||
   'https://us-central1-decision-maker-4e1d3.cloudfunctions.net';
 
 export async function initRecipesPanel() {
