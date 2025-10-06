@@ -4,6 +4,8 @@ const admin = require('firebase-admin');
 const DEFAULT_REGION = 'us-central1';
 const TMDB_BASE_URL = 'https://api.themoviedb.org';
 const SPOONACULAR_BASE_URL = 'https://api.spoonacular.com/recipes/complexSearch';
+const TMDB_CACHE_COLLECTION = 'tmdbCache';
+const TMDB_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 const RECIPE_CACHE_COLLECTION = 'recipeCache';
 const RECIPE_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 
@@ -86,6 +88,80 @@ async function writeRecipeCache(query, status, contentType, body) {
       });
   } catch (err) {
     console.error('Failed to write recipe cache', err);
+  }
+}
+
+function normalizeTmdbParams(params) {
+  const normalized = [];
+  if (!params) return normalized;
+  for (const [key, value] of params.entries()) {
+    if (key === 'api_key') continue;
+    normalized.push([key, value]);
+  }
+  normalized.sort(([keyA, valueA], [keyB, valueB]) => {
+    if (keyA === keyB) {
+      return valueA.localeCompare(valueB);
+    }
+    return keyA.localeCompare(keyB);
+  });
+  return normalized.map(([key, value]) => ({ key, value }));
+}
+
+function tmdbCacheId(path, params) {
+  const normalizedPath = String(path || '').trim();
+  const normalizedParams = normalizeTmdbParams(params);
+  const queryString = normalizedParams.map(entry => `${entry.key}=${entry.value}`).join('&');
+  const rawId = `${normalizedPath}?${queryString}`;
+  return Buffer.from(rawId, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+async function readTmdbCache(path, params) {
+  const db = getFirestore();
+  if (!db) return null;
+  try {
+    const doc = await db.collection(TMDB_CACHE_COLLECTION).doc(tmdbCacheId(path, params)).get();
+    if (!doc.exists) return null;
+    const data = doc.data() || {};
+    const fetchedAt = data.fetchedAt;
+    if (!fetchedAt || typeof fetchedAt.toMillis !== 'function') return null;
+    if (Date.now() - fetchedAt.toMillis() > TMDB_CACHE_TTL_MS) return null;
+    if (typeof data.body !== 'string' || !data.body) return null;
+    return {
+      status: typeof data.status === 'number' ? data.status : 200,
+      contentType:
+        typeof data.contentType === 'string' && data.contentType
+          ? data.contentType
+          : 'application/json',
+      body: data.body
+    };
+  } catch (err) {
+    console.error('Failed to read TMDB cache', err);
+    return null;
+  }
+}
+
+async function writeTmdbCache(path, params, status, contentType, body, metadata = {}) {
+  const db = getFirestore();
+  if (!db) return;
+  try {
+    await db
+      .collection(TMDB_CACHE_COLLECTION)
+      .doc(tmdbCacheId(path, params))
+      .set({
+        path,
+        params: normalizeTmdbParams(params),
+        status,
+        contentType,
+        body,
+        metadata,
+        fetchedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+  } catch (err) {
+    console.error('Failed to write TMDB cache', err);
   }
 }
 
@@ -196,6 +272,14 @@ exports.tmdbProxy = functions
 
     const targetUrl = `${TMDB_BASE_URL}${targetPath}?${params.toString()}`;
 
+    const cached = await readTmdbCache(targetPath, params);
+    if (cached) {
+      res.status(cached.status);
+      res.type(cached.contentType);
+      res.send(cached.body);
+      return;
+    }
+
     try {
       const tmdbResponse = await fetch(targetUrl, {
         headers: {
@@ -204,8 +288,14 @@ exports.tmdbProxy = functions
       });
 
       const payload = await tmdbResponse.text();
+      const contentType = tmdbResponse.headers.get('content-type') || 'application/json';
+      if (tmdbResponse.ok) {
+        await writeTmdbCache(targetPath, params, tmdbResponse.status, contentType, payload, {
+          endpoint: endpointKey
+        });
+      }
       res.status(tmdbResponse.status);
-      res.type(tmdbResponse.headers.get('content-type') || 'application/json');
+      res.type(contentType);
       res.send(payload);
     } catch (err) {
       console.error('TMDB proxy failed', err);
