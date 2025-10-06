@@ -1,7 +1,15 @@
-require('dotenv').config();
-const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const dotenv = require('dotenv');
+
+dotenv.config();
+
+const backendEnvPath = path.resolve(__dirname, '.env');
+if (fs.existsSync(backendEnvPath)) {
+  dotenv.config({ path: backendEnvPath, override: false });
+}
+
+const express = require('express');
 const { execFile } = require('child_process');
 const util = require('util');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
