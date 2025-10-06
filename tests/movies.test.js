@@ -66,11 +66,24 @@ function attachWindow(dom) {
 }
 
 function configureFetchResponses(responses) {
-  global.fetch = vi.fn();
-  responses.forEach(res => {
-    global.fetch.mockResolvedValueOnce({
+  const queue = Array.isArray(responses) ? [...responses] : [];
+  const fallback = queue.length ? queue[queue.length - 1] : {};
+  global.fetch = vi.fn().mockImplementation(() => {
+    const next = queue.length ? queue.shift() : fallback;
+    if (next && typeof next === 'object' && 'ok' in next && typeof next.ok === 'boolean') {
+      const { ok, json } = next;
+      if (typeof json === 'function') {
+        return Promise.resolve({ ok, json });
+      }
+      const payload = { ...next };
+      return Promise.resolve({
+        ok,
+        json: () => Promise.resolve(payload.jsonPayload ?? payload.body ?? payload.data ?? {})
+      });
+    }
+    return Promise.resolve({
       ok: true,
-      json: () => Promise.resolve(res)
+      json: () => Promise.resolve(next ?? {})
     });
   });
 }
@@ -190,8 +203,38 @@ describe('initMoviesPanel', () => {
       crew: [{ job: 'Director', name: 'Visionary Director' }]
     };
     const genres = { genres: [] };
+    const morePage = {
+      results: [
+        {
+          id: 10,
+          title: 'Another Remote Pick',
+          release_date: '2024-05-05',
+          vote_average: 7.5,
+          vote_count: 95,
+          overview: 'Extra selection.',
+          genre_ids: []
+        }
+      ]
+    };
+    const moreCredits = {
+      cast: [{ name: 'Backup Star' }],
+      crew: [{ job: 'Director', name: 'Backup Director' }]
+    };
 
-    configureFetchResponses([page, empty, credits, genres]);
+    configureFetchResponses([
+      page,
+      empty,
+      credits,
+      genres,
+      morePage,
+      empty,
+      moreCredits,
+      genres,
+      morePage,
+      empty,
+      moreCredits,
+      genres
+    ]);
 
     await initMoviesPanel();
 
@@ -274,8 +317,34 @@ describe('initMoviesPanel', () => {
       crew: [{ job: 'Director', name: 'Indie Director' }]
     };
     const genres = { genres: [{ id: 18, name: 'Drama' }] };
+    const morePage = {
+      results: [
+        {
+          id: 3,
+          title: 'Next Up',
+          release_date: '2023-11-10',
+          vote_average: 7.9,
+          vote_count: 110,
+          overview: 'Another great option.',
+          genre_ids: [18]
+        }
+      ]
+    };
+    const moreCredits = {
+      cast: [{ name: 'Another Star' }],
+      crew: [{ job: 'Director', name: 'New Director' }]
+    };
 
-    configureFetchResponses([page, empty, credits, genres]);
+    configureFetchResponses([
+      page,
+      empty,
+      credits,
+      genres,
+      morePage,
+      empty,
+      moreCredits,
+      genres
+    ]);
 
     await initMoviesPanel();
 
@@ -284,8 +353,9 @@ describe('initMoviesPanel', () => {
     );
     interestedBtn?.click();
     await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise(resolve => setTimeout(resolve, 0));
 
-    expect(document.querySelector('#movieList').textContent).toContain('No new movies right now.');
+    expect(document.querySelector('#movieList').textContent).toContain('Next Up');
     const slider = document.querySelector('#savedMoviesList input[type="range"]');
     expect(slider).not.toBeNull();
     expect(slider.value).toBe('3');
@@ -369,9 +439,9 @@ describe('initMoviesPanel', () => {
 
     await initMoviesPanel();
 
-    const filterButtons = Array.from(document.querySelectorAll('#savedMoviesFilters button')).map(btn =>
-      btn.textContent
-    );
+    const filterButtons = Array.from(
+      document.querySelectorAll('#savedMoviesFilters .genre-filter-buttons button')
+    ).map(btn => btn.textContent);
     expect(filterButtons).toEqual(['All', 'Comedy', 'Drama']);
 
     const listTitles = () =>
@@ -379,7 +449,9 @@ describe('initMoviesPanel', () => {
 
     expect(listTitles()).toHaveLength(2);
 
-    const comedyButton = Array.from(document.querySelectorAll('#savedMoviesFilters button')).find(
+    const comedyButton = Array.from(
+      document.querySelectorAll('#savedMoviesFilters .genre-filter-buttons button')
+    ).find(
       btn => btn.dataset.genre === 'Comedy'
     );
     comedyButton?.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
@@ -388,7 +460,20 @@ describe('initMoviesPanel', () => {
     expect(comedyTitles).toHaveLength(1);
     expect(comedyTitles[0]).toContain('Comedy Night');
 
-    const allButton = Array.from(document.querySelectorAll('#savedMoviesFilters button')).find(
+    const activeGenres = () =>
+      Array.from(document.querySelectorAll('.genre-filter-chip-text')).map(el => el.textContent);
+
+    expect(activeGenres()).toEqual(['Comedy']);
+
+    const removeChipBtn = document.querySelector('.genre-filter-chip-remove');
+    removeChipBtn?.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+
+    expect(activeGenres()).toHaveLength(0);
+    expect(listTitles()).toHaveLength(2);
+
+    const allButton = Array.from(
+      document.querySelectorAll('#savedMoviesFilters .genre-filter-buttons button')
+    ).find(
       btn => btn.dataset.genre === ''
     );
     allButton?.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
@@ -508,8 +593,34 @@ describe('initMoviesPanel', () => {
       crew: [{ job: 'Director', name: 'Famed Director' }]
     };
     const genres = { genres: [{ id: 12, name: 'Adventure' }] };
+    const morePage = {
+      results: [
+        {
+          id: 8,
+          title: 'Fresh Release',
+          release_date: '2024-02-20',
+          vote_average: 8.4,
+          vote_count: 210,
+          overview: 'A brand new hit.',
+          genre_ids: [12]
+        }
+      ]
+    };
+    const moreCredits = {
+      cast: [{ name: 'Newcomer Star' }],
+      crew: [{ job: 'Director', name: 'Rising Director' }]
+    };
 
-    configureFetchResponses([page, empty, credits, genres]);
+    configureFetchResponses([
+      page,
+      empty,
+      credits,
+      genres,
+      morePage,
+      empty,
+      moreCredits,
+      genres
+    ]);
 
     await initMoviesPanel();
 
@@ -517,6 +628,7 @@ describe('initMoviesPanel', () => {
       b => b.textContent === 'Watched Already'
     );
     watchedBtn?.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(document.querySelector('#watchedMoviesList').textContent).toContain('Classic Film');
@@ -533,6 +645,7 @@ describe('initMoviesPanel', () => {
 
     const removeBtn = document.querySelector('#watchedMoviesList button');
     removeBtn?.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(document.querySelector('#movieList').textContent).toContain('Classic Film');
@@ -652,6 +765,7 @@ describe('initMoviesPanel', () => {
       b => b.textContent === 'Interested'
     );
     interestedBtn?.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(firestoreDocMock.set).toHaveBeenCalled();
