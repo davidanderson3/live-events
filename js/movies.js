@@ -25,13 +25,15 @@ const SUPPRESSED_STATUSES = new Set(['watched', 'notInterested', 'interested']);
 const domRefs = {
   list: null,
   interestedList: null,
+  interestedFilters: null,
   watchedList: null,
   apiKeyInput: null,
   apiKeyContainer: null,
   tabs: null,
   streamSection: null,
   interestedSection: null,
-  watchedSection: null
+  watchedSection: null,
+  watchedSort: null
 };
 
 let currentMovies = [];
@@ -44,6 +46,8 @@ let activeUserId = null;
 let refillInProgress = false;
 let lastRefillAttempt = 0;
 let feedExhausted = false;
+let watchedSortMode = 'recent';
+let activeInterestedGenre = null;
 const handlers = {
   handleKeydown: null,
   handleChange: null
@@ -171,6 +175,14 @@ function persistApiKey(key) {
   }
 }
 
+function resolveApiKey() {
+  if (activeApiKey) {
+    return activeApiKey;
+  }
+  const value = domRefs.apiKeyInput?.value;
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function getTmdbProxyEndpoint() {
   if (proxyDisabled) return '';
   if (typeof window !== 'undefined' && window.tmdbProxyEndpoint) {
@@ -246,7 +258,10 @@ async function callTmdbProxy(endpoint, params = {}) {
             }
             return false;
           }
-          return code === 'invalid_endpoint_params';
+          if (code === 'invalid_endpoint_params') {
+            return false;
+          }
+          return false;
         } catch (_) {
           return false;
         }
@@ -309,10 +324,81 @@ function appendGenresMeta(list, movie) {
   }
 }
 
+function updateInterestedGenreFilter(next) {
+  if (activeInterestedGenre === next) return;
+  activeInterestedGenre = next;
+  renderInterestedList();
+}
+
+function renderInterestedFilters(genres) {
+  const container = domRefs.interestedFilters;
+  if (!container) return;
+
+  if (!genres.length) {
+    container.innerHTML = '';
+    container.style.display = 'none';
+    activeInterestedGenre = null;
+    return;
+  }
+
+  container.style.display = '';
+  container.innerHTML = '';
+
+  const sorted = [...new Set(genres)].sort((a, b) => a.localeCompare(b));
+
+  const createButton = (label, value) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'genre-filter-btn';
+    if (value === activeInterestedGenre || (!value && activeInterestedGenre == null)) {
+      btn.classList.add('active');
+    }
+    btn.textContent = label;
+    btn.dataset.genre = value ?? '';
+    btn.addEventListener('click', () => {
+      const next = value && activeInterestedGenre === value ? null : value;
+      updateInterestedGenreFilter(next ?? null);
+    });
+    return btn;
+  };
+
+  container.appendChild(createButton('All', null));
+  sorted.forEach(name => {
+    container.appendChild(createButton(name, name));
+  });
+}
+
 function appendPeopleMeta(list, label, names) {
   const values = getNameList(names);
   if (!values.length) return;
   appendMeta(list, label, values.join(', '));
+}
+
+function getVoteAverageValue(movie) {
+  if (!movie) return null;
+  const value = Number(movie.vote_average);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getVoteCountValue(movie) {
+  if (!movie) return null;
+  const value = Number(movie.vote_count);
+  return Number.isFinite(value) ? value : null;
+}
+
+function createRatingElement(movie) {
+  const rating = getVoteAverageValue(movie);
+  const votes = getVoteCountValue(movie);
+  if (rating == null && votes == null) return null;
+  const ratingEl = document.createElement('p');
+  ratingEl.className = 'movie-rating';
+  if (rating == null) {
+    ratingEl.textContent = 'Rating not available';
+  } else {
+    const votesText = votes == null ? '' : ` (${votes} votes)`;
+    ratingEl.textContent = `Rating: ${rating.toFixed(1)} / 10${votesText}`;
+  }
+  return ratingEl;
 }
 
 function applyCreditsToMovie(movie, credits) {
@@ -353,17 +439,36 @@ async function fetchCreditsDirect(movieId, apiKey) {
   }
 }
 
+async function fetchCreditsFromProxy(movieId) {
+  try {
+    return await callTmdbProxy('credits', { movie_id: movieId });
+  } catch (err) {
+    if (!err || err.code !== 'invalid_endpoint_params') {
+      throw err;
+    }
+
+    try {
+      return await callTmdbProxy('credits', { movieId });
+    } catch (legacyErr) {
+      if (legacyErr && legacyErr.code === 'invalid_endpoint_params') {
+        unsupportedProxyEndpoints.add('credits');
+      }
+      throw legacyErr;
+    }
+  }
+}
+
 async function fetchCreditsForMovie(movieId, { usingProxy, apiKey }) {
   if (!movieId) return null;
   if (usingProxy && isProxyEndpointSupported('credits')) {
     try {
-      const credits = await callTmdbProxy('credits', { movie_id: movieId });
+      const credits = await fetchCreditsFromProxy(movieId);
       if (credits) {
         return credits;
       }
     } catch (err) {
       console.warn('TMDB proxy credits request failed, attempting direct fallback', err);
-      if (!err || err.code !== 'unsupported_endpoint') {
+      if (!err || (err.code !== 'unsupported_endpoint' && err.code !== 'invalid_endpoint_params')) {
         disableTmdbProxy();
       }
       const direct = await fetchCreditsDirect(movieId, apiKey);
@@ -394,6 +499,18 @@ async function enrichMoviesWithCredits(movies, options) {
 
 async function setStatus(movie, status, options = {}) {
   if (!movie || movie.id == null) return;
+  const usingProxy = Boolean(getTmdbProxyEndpoint());
+  const apiKey = resolveApiKey();
+  if (!getNameList(movie.directors).length || !getNameList(movie.topCast).length) {
+    if (usingProxy || apiKey) {
+      try {
+        const credits = await fetchCreditsForMovie(movie.id, { usingProxy, apiKey });
+        applyCreditsToMovie(movie, credits);
+      } catch (err) {
+        console.warn('Failed to enrich movie credits before saving status', movie.id, err);
+      }
+    }
+  }
   await loadPreferences();
   const id = String(movie.id);
   const next = { ...currentPrefs };
@@ -569,12 +686,35 @@ function renderInterestedList() {
   const listEl = domRefs.interestedList;
   if (!listEl) return;
 
-  const entries = Object.values(currentPrefs)
+  const allEntries = Object.values(currentPrefs)
     .filter(pref => pref.status === 'interested' && pref.movie)
     .sort((a, b) => (b.interest ?? 0) - (a.interest ?? 0) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 
-  if (!entries.length) {
+  const genres = [];
+  allEntries.forEach(pref => {
+    const names = getGenreNames(pref.movie);
+    if (names.length) {
+      genres.push(...names);
+    }
+  });
+
+  if (activeInterestedGenre && !genres.includes(activeInterestedGenre)) {
+    activeInterestedGenre = null;
+  }
+
+  renderInterestedFilters(genres);
+
+  if (!allEntries.length) {
     listEl.innerHTML = '<em>No interested movies yet.</em>';
+    return;
+  }
+
+  const entries = activeInterestedGenre
+    ? allEntries.filter(pref => getGenreNames(pref.movie).includes(activeInterestedGenre))
+    : allEntries;
+
+  if (!entries.length) {
+    listEl.innerHTML = '<em>No interested movies for the selected genre.</em>';
     return;
   }
 
@@ -658,17 +798,63 @@ function renderWatchedList() {
   const listEl = domRefs.watchedList;
   if (!listEl) return;
 
-  const entries = Object.values(currentPrefs)
-    .filter(pref => pref.status === 'watched' && pref.movie)
-    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  const entries = Object.values(currentPrefs).filter(
+    pref => pref.status === 'watched' && pref.movie
+  );
 
-  if (!entries.length) {
+  const sorted = entries.slice();
+
+  const byUpdatedAt = (a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+  const byRatingDesc = (a, b) => {
+    const aRating = getVoteAverageValue(a.movie);
+    const bRating = getVoteAverageValue(b.movie);
+    if (aRating == null && bRating == null) return byUpdatedAt(a, b);
+    if (aRating == null) return 1;
+    if (bRating == null) return -1;
+    if (bRating !== aRating) return bRating - aRating;
+    const aVotes = getVoteCountValue(a.movie);
+    const bVotes = getVoteCountValue(b.movie);
+    if (aVotes == null && bVotes == null) return byUpdatedAt(a, b);
+    if (aVotes == null) return 1;
+    if (bVotes == null) return -1;
+    if (bVotes !== aVotes) return bVotes - aVotes;
+    return byUpdatedAt(a, b);
+  };
+  const byRatingAsc = (a, b) => {
+    const aRating = getVoteAverageValue(a.movie);
+    const bRating = getVoteAverageValue(b.movie);
+    if (aRating == null && bRating == null) return byUpdatedAt(a, b);
+    if (aRating == null) return 1;
+    if (bRating == null) return -1;
+    if (aRating !== bRating) return aRating - bRating;
+    const aVotes = getVoteCountValue(a.movie);
+    const bVotes = getVoteCountValue(b.movie);
+    if (aVotes == null && bVotes == null) return byUpdatedAt(a, b);
+    if (aVotes == null) return 1;
+    if (bVotes == null) return -1;
+    if (aVotes !== bVotes) return aVotes - bVotes;
+    return byUpdatedAt(a, b);
+  };
+
+  if (watchedSortMode === 'ratingDesc') {
+    sorted.sort(byRatingDesc);
+  } else if (watchedSortMode === 'ratingAsc') {
+    sorted.sort(byRatingAsc);
+  } else {
+    sorted.sort(byUpdatedAt);
+  }
+
+  if (domRefs.watchedSort) {
+    domRefs.watchedSort.value = watchedSortMode;
+  }
+
+  if (!sorted.length) {
     listEl.innerHTML = '<em>No watched movies yet.</em>';
     return;
   }
 
   const ul = document.createElement('ul');
-  entries.forEach(pref => {
+  sorted.forEach(pref => {
     const movie = pref.movie;
     const li = document.createElement('li');
     li.className = 'movie-card';
@@ -688,6 +874,11 @@ function renderWatchedList() {
     titleEl.textContent = `${movie.title || 'Untitled'} (${year})`;
     info.appendChild(titleEl);
 
+    const ratingEl = createRatingElement(movie);
+    if (ratingEl) {
+      info.appendChild(ratingEl);
+    }
+
     if (movie.overview) {
       const overview = document.createElement('p');
       overview.textContent = movie.overview;
@@ -696,6 +887,9 @@ function renderWatchedList() {
 
     const metaList = document.createElement('ul');
     metaList.className = 'movie-meta';
+    appendMeta(metaList, 'Average Score', movie.vote_average ?? 'N/A');
+    appendMeta(metaList, 'Votes', movie.vote_count ?? 'N/A');
+    appendMeta(metaList, 'Release Date', movie.release_date || 'Unknown');
     appendGenresMeta(metaList, movie);
     appendPeopleMeta(metaList, 'Director', movie.directors);
     appendPeopleMeta(metaList, 'Cast', movie.topCast);
@@ -976,6 +1170,7 @@ export async function initMoviesPanel() {
   if (!domRefs.list) return;
 
   domRefs.interestedList = document.getElementById('savedMoviesList');
+  domRefs.interestedFilters = document.getElementById('savedMoviesFilters');
   domRefs.watchedList = document.getElementById('watchedMoviesList');
   domRefs.apiKeyInput = document.getElementById('moviesApiKey');
   domRefs.apiKeyContainer = document.getElementById('moviesApiKeyContainer');
@@ -983,6 +1178,7 @@ export async function initMoviesPanel() {
   domRefs.streamSection = document.getElementById('movieStreamSection');
   domRefs.interestedSection = document.getElementById('savedMoviesSection');
   domRefs.watchedSection = document.getElementById('watchedMoviesSection');
+  domRefs.watchedSort = document.getElementById('watchedMoviesSort');
 
   currentPrefs = await loadPreferences();
 
@@ -1050,6 +1246,23 @@ export async function initMoviesPanel() {
       btn._movieTabHandler = handler;
       btn.addEventListener('click', handler);
     });
+  }
+
+  if (domRefs.watchedSort) {
+    if (domRefs.watchedSort._moviesSortHandler) {
+      domRefs.watchedSort.removeEventListener(
+        'change',
+        domRefs.watchedSort._moviesSortHandler
+      );
+    }
+    const handler = () => {
+      const value = domRefs.watchedSort?.value || 'recent';
+      watchedSortMode = value;
+      renderWatchedList();
+    };
+    domRefs.watchedSort._moviesSortHandler = handler;
+    domRefs.watchedSort.addEventListener('change', handler);
+    domRefs.watchedSort.value = watchedSortMode;
   }
 
   await loadMovies();
