@@ -249,20 +249,6 @@ body.mild-glow {
     width: 100%;
   }
 
-  .nav-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.4);
-    display: none;
-    z-index: 999;
-  }
-
-  .navbar.expanded+.nav-overlay {
-    display: block;
-  }
 }
 
 
@@ -921,10 +907,6 @@ button:hover {
   }
 }
 
-.wizard-panel {
-  padding: 10px 10px 10px 10px;
-}
-
 /* Mobile Fixes for Goal Layout */
 @media (max-width: 768px) {
   .main-layout {
@@ -1445,31 +1427,6 @@ h2 {
   align-items: center;
 }
 
-.panel-header .header-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-#projectsHeaderRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-/* Remove default button margin so header buttons align with text */
-#projectsHeaderRow button,
-#calendarHeaderRow button {
-  margin-top: 0;
-}
-
-#calendarHeaderRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 /* Separate days in calendar */
 #calendarContent h3 {
   border-top: 1px solid #ccc;
@@ -1637,33 +1594,6 @@ h2 {
   max-width: 100%;
 }
 
-/* Green dot indicators for task completions */
-.completion-table {
-  border-collapse: collapse;
-  margin-top: 8px;
-}
-.completion-table th,
-.completion-table td {
-  padding: 4px;
-  text-align: center;
-}
-.completion-table th:first-child,
-.completion-table td:first-child {
-  text-align: right;
-  padding-right: 8px;
-}
-
-.completion-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #ccc;
-}
-
-.completion-dot.completed {
-  background: #4caf50;
-}
-
 /* Ensure list tables remain readable on mobile */
 #listsPanel table {
   width: 100%;
@@ -1736,23 +1666,6 @@ h2 {
   background-color: #fff8b3;
 }
 
-/* Place search bar */
-#placeSearchRow {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-#placeSearchRow input {
-  max-width: 260px;
-}
-
-#placeSearchRow button {
-  /* Override global button margin so the buttons align with the input */
-  margin-top: 0;
-}
-
 /* Prevent horizontal overflow of travel table on small screens */
 #travelPanel .full-column {
   overflow-x: auto;
@@ -1761,14 +1674,6 @@ h2 {
 #todaySchedule .hour-weather {
   margin-left: 4px;
   font-weight: normal;
-}
-
-#travelMapWrapper {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 8px 0;
 }
 
 #travelMap {
@@ -1814,23 +1719,9 @@ h2 {
   white-space: normal;
 }
 
-#showVisitedLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 0;
-}
-
 #travelTable td.visited-icon {
   color: green;
   text-align: center;
-}
-
-@media (max-width: 600px) {
-  #showVisitedLabel {
-    margin-left: 0;
-    white-space: normal;
-  }
 }
 
 #paginationControls {
@@ -2032,28 +1923,6 @@ h2 {
   background: #7aa68c;
   color: #fff;
   border-color: #7aa68c;
-}
-
-/* Place search results list */
-.search-results {
-  list-style: none;
-  padding-left: 0;
-  margin: 8px 0;
-  max-height: 40vh;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
-  background: #fff;
-  border: 1px solid #ccc;
-}
-
-.search-results li {
-  padding: 4px 8px;
-  cursor: pointer;
-}
-
-.search-results li:hover {
-  background: #eee;
 }
 
 #placeResults li.existing-place {
@@ -2296,21 +2165,6 @@ h2 {
   padding-left: 20px;
 }
 
-/* Finances panel profiles */
-#profilesList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.planning-profile {
-  flex: 1 1 300px;
-  box-sizing: border-box;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  padding: 8px;
-}
-
 /* Finances panel form layout */
 .planning-grid {
   display: flex;
@@ -2389,32 +2243,6 @@ h2 {
   background-color: #f8f5f0;
 }
 
-.finance-history table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-}
-
-.finance-history th,
-.finance-history td {
-  border: 1px solid #d0decf;
-  padding: 4px;
-  text-align: left;
-  word-wrap: break-word;
-  overflow-wrap: anywhere;
-}
-
-.finance-history tbody tr:nth-child(even) {
-  background-color: #f8f5f0;
-}
-
-.profile-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
-
 /* Mobile calendar view toggle */
 .calendar-mobile-tabs {
   display: none;
@@ -2422,21 +2250,7 @@ h2 {
   gap: 4px;
 }
 
-.calendar-mobile-tab {
-  flex: 1 1 0;
-  padding: 6px;
-  border: 1px solid #ccc;
-  background: #f8f8f8;
-  cursor: pointer;
-}
-
-.calendar-mobile-tab.active {
-  background: #7aa68c;
-  color: #fff;
-}
-
-.movie-tabs,
-.shows-tabs {
+.movie-tabs {
   display: flex;
   gap: 4px;
   margin-bottom: 8px;
@@ -2534,13 +2348,6 @@ h2 {
 .budget-summary-table td {
   padding-right: 8px;
   white-space: nowrap;
-}
-
-.budget-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-left: auto;
 }
 
 /* Align budget panel content to the left instead of centering */
@@ -2654,27 +2461,6 @@ h2 {
 /* ------------------------------
    Restaurants Panel
 ------------------------------ */
-.restaurants-hero {
-  background: linear-gradient(135deg, rgba(255, 240, 221, 0.9), rgba(255, 255, 255, 0.9));
-  border-radius: 18px;
-  padding: 1.2rem 1.5rem;
-  margin-bottom: 1.5rem;
-  box-shadow: 0 10px 25px rgba(149, 130, 107, 0.12);
-  border: 1px solid rgba(210, 190, 160, 0.35);
-  color: #4a4034;
-}
-
-.restaurants-hero p {
-  margin: 0;
-  line-height: 1.5;
-}
-
-.restaurants-tip {
-  margin-top: 0.75rem;
-  font-size: 0.9rem;
-  opacity: 0.85;
-}
-
 .restaurants-layout {
   display: grid;
   gap: 1.5rem;
