@@ -2661,6 +2661,8 @@ h2 {
 }
 
 .restaurants-map {
+  width: 100%;
+  aspect-ratio: 1 / 1;
   min-height: 260px;
   border-radius: 18px;
   overflow: hidden;
