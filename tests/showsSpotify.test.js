@@ -311,7 +311,7 @@ describe('initShowsPanel', () => {
       });
 
     tokenInput.value = 'manual-token';
-    discoverBtn.dispatchEvent(new window.Event('click'));
+    discoverBtn._showsClickHandler();
 
     await flush();
     await flush();
@@ -322,6 +322,32 @@ describe('initShowsPanel', () => {
     expect(document.querySelectorAll('.show-card').length).toBe(1);
     expect(discoverBtn.disabled).toBe(false);
     expect(discoverBtn.classList.contains('is-loading')).toBe(false);
+  });
+
+  it('retries geolocation when explicitly allowed after an earlier failure', async () => {
+    const utils = window.__showsTestUtils;
+    expect(utils).toBeDefined();
+
+    const geolocationSpy = vi
+      .fn()
+      .mockImplementationOnce((success, error) => {
+        error?.({ code: 1, message: 'User gesture required' });
+      })
+      .mockImplementation(success => {
+        success({
+          coords: { latitude: 30.2672, longitude: -97.7431 }
+        });
+      });
+
+    navigator.geolocation.getCurrentPosition = geolocationSpy;
+
+    const firstAttempt = await utils.getUserLocation();
+    expect(firstAttempt).toBeNull();
+    expect(geolocationSpy).toHaveBeenCalledTimes(1);
+
+    const secondAttempt = await utils.getUserLocation({ allowRetry: true });
+    expect(secondAttempt).toEqual({ latitude: 30.2672, longitude: -97.7431 });
+    expect(geolocationSpy).toHaveBeenCalledTimes(2);
   });
 
   it('stores credentials and cached values during OAuth flow', async () => {

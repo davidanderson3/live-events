@@ -32,7 +32,7 @@ async function pkceChallenge(verifier) {
 }
 
 let cachedUserLocation = null;
-let userLocationRequested = false;
+let userLocationPromise = null;
 
 const SHOW_PREFS_STORAGE_KEY = 'showsPreferences';
 let currentShows = [];
@@ -222,30 +222,52 @@ function formatEventDate(start) {
   }
 }
 
-async function getUserLocation() {
-  if (userLocationRequested) {
+async function getUserLocation({ allowRetry = false } = {}) {
+  if (cachedUserLocation) {
     return cachedUserLocation;
   }
-  userLocationRequested = true;
+
+  if (allowRetry) {
+    userLocationPromise = null;
+  }
+
+  if (userLocationPromise) {
+    return userLocationPromise;
+  }
+
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    userLocationPromise = Promise.resolve(null);
     return null;
   }
-  try {
-    const position = await new Promise((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
+
+  userLocationPromise = new Promise(resolve => {
+    navigator.geolocation.getCurrentPosition(
+      position => {
+        cachedUserLocation = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        };
+        resolve(cachedUserLocation);
+      },
+      err => {
+        console.warn('Unable to retrieve current location for shows list', err);
+        cachedUserLocation = null;
+        resolve(null);
+      },
+      {
         enableHighAccuracy: true,
         timeout: 10000
-      });
-    });
-    cachedUserLocation = {
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude
-    };
-  } catch (err) {
-    console.warn('Unable to retrieve current location for shows list', err);
-    cachedUserLocation = null;
+      }
+    );
+  });
+
+  const result = await userLocationPromise;
+  if (result || allowRetry) {
+    userLocationPromise = null;
+  } else {
+    userLocationPromise = Promise.resolve(null);
   }
-  return cachedUserLocation;
+  return result;
 }
 
 function loadStoredShowPreferences() {
@@ -568,6 +590,10 @@ function createShowCard(item) {
   return li;
 }
 
+if (typeof window !== 'undefined') {
+  window.__showsTestUtils = { getUserLocation };
+}
+
 export async function initShowsPanel() {
   const listEl = document.getElementById('ticketmasterList');
   if (!listEl) return;
@@ -813,7 +839,7 @@ export async function initShowsPanel() {
         return;
       }
 
-      const userLocation = await getUserLocation();
+      const userLocation = await getUserLocation({ allowRetry: triggeredByUser });
       if (!userLocation) {
         currentShows = [];
         currentSuggestions = [];
