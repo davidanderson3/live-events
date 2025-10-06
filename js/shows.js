@@ -631,17 +631,16 @@ export async function initShowsPanel() {
     console.error('Failed to fetch Spotify client ID', err);
   }
   if (!spotifyClientId) {
-    if (listEl) {
+    if (listEl && !listEl.textContent) {
       listEl.textContent = 'Spotify client ID not configured.';
     }
-    if (interestedListEl) {
+    if (interestedListEl && !interestedListEl.childElementCount) {
       interestedListEl.innerHTML = '';
       const warning = document.createElement('p');
       warning.className = 'shows-empty';
       warning.textContent = 'Spotify client ID not configured.';
       interestedListEl.appendChild(warning);
     }
-    return;
   }
 
   if (serverHasTicketmasterKey && apiKeyInput) {

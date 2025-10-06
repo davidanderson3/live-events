@@ -26,7 +26,9 @@ describe('initShowsPanel', () => {
       <span id="spotifyStatus"></span>
       <input id="spotifyToken" />
       <input id="ticketmasterApiKey" />
+      <button id="ticketmasterDiscoverBtn">Discover</button>
       <div id="ticketmasterList"></div>
+      <div id="ticketmasterInterestedList"></div>
     `, { url: 'http://localhost/' });
     global.window = dom.window;
     global.document = dom.window.document;
@@ -261,6 +263,65 @@ describe('initShowsPanel', () => {
     expect(document.querySelector('.shows-dismissed')).toBeNull();
     const prefsAfterUndo = JSON.parse(localStorage.getItem('showsPreferences') || '{}');
     expect(prefsAfterUndo).toEqual({});
+  });
+
+  it('wires the Discover button even when Spotify client ID is missing', async () => {
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ clientId: '', hasTicketmasterKey: true })
+    });
+
+    await initShowsPanel();
+    await flush();
+
+    const discoverBtn = document.getElementById('ticketmasterDiscoverBtn');
+    const tokenInput = document.getElementById('spotifyToken');
+    expect(discoverBtn).not.toBeNull();
+
+    fetch.mockClear();
+    fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [{ name: 'Top Artist', id: 'artist1' }] })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          _embedded: {
+            events: [
+              {
+                id: 'event1',
+                name: 'Club Night',
+                dates: { start: { localDate: '2024-04-01' } },
+                _embedded: {
+                  venues: [
+                    {
+                      name: 'The Club',
+                      city: { name: 'Austin' },
+                      state: { stateCode: 'TX' },
+                      location: { latitude: '30.2669', longitude: '-97.7428' }
+                    }
+                  ]
+                },
+                url: 'http://example.com/club'
+              }
+            ]
+          }
+        })
+      });
+
+    tokenInput.value = 'manual-token';
+    discoverBtn.dispatchEvent(new window.Event('click'));
+
+    await flush();
+    await flush();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0][0]).toContain('api.spotify.com');
+    expect(fetch.mock.calls[1][0]).toContain('/api/ticketmaster');
+    expect(document.querySelectorAll('.show-card').length).toBe(1);
+    expect(discoverBtn.disabled).toBe(false);
+    expect(discoverBtn.classList.contains('is-loading')).toBe(false);
   });
 
   it('stores credentials and cached values during OAuth flow', async () => {
