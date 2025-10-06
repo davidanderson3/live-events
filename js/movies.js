@@ -5,6 +5,7 @@ const API_KEY_STORAGE = 'moviesApiKey';
 const DEFAULT_INTEREST = 3;
 const INITIAL_DISCOVER_PAGES = 3;
 const MAX_DISCOVER_PAGES = 10;
+const MAX_DISCOVER_PAGES_LIMIT = 30;
 const MAX_CREDIT_REQUESTS = 20;
 const PREF_COLLECTION = 'moviePreferences';
 const MIN_VOTE_AVERAGE = 7;
@@ -18,6 +19,8 @@ const DEFAULT_TMDB_PROXY_ENDPOINT =
 
 let proxyDisabled = false;
 const unsupportedProxyEndpoints = new Set();
+
+const SUPPRESSED_STATUSES = new Set(['watched', 'notInterested', 'interested']);
 
 const domRefs = {
   list: null,
@@ -38,10 +41,15 @@ let activeApiKey = '';
 let prefsLoadedFor = null;
 let loadingPrefsPromise = null;
 let activeUserId = null;
+let refillInProgress = false;
+let lastRefillAttempt = 0;
+let feedExhausted = false;
 const handlers = {
   handleKeydown: null,
   handleChange: null
 };
+
+const REFILL_COOLDOWN_MS = 5000;
 
 function getNameList(input) {
   if (!input) return [];
@@ -405,26 +413,68 @@ async function setStatus(movie, status, options = {}) {
   }
   next[id] = entry;
   await savePreferences(next);
+  pruneSuppressedMovies();
   refreshUI();
+  if (!getFeedMovies(currentMovies).length) {
+    requestAdditionalMovies();
+  }
 }
 
 async function clearStatus(movieId) {
   await loadPreferences();
   const id = String(movieId);
   const next = { ...currentPrefs };
+  const removed = next[id];
   delete next[id];
   await savePreferences(next);
+  if (removed && removed.movie) {
+    const exists = Array.isArray(currentMovies)
+      ? currentMovies.some(movie => String(movie?.id) === id)
+      : false;
+    if (!exists) {
+      const restored = { ...removed.movie };
+      currentMovies = [restored, ...(Array.isArray(currentMovies) ? currentMovies : [])];
+      currentMovies = applyPriorityOrdering(currentMovies);
+      feedExhausted = false;
+    }
+  }
+  pruneSuppressedMovies();
   refreshUI();
+  if (!getFeedMovies(currentMovies).length) {
+    requestAdditionalMovies();
+  }
 }
 
 function getFeedMovies(movies) {
   if (!Array.isArray(movies) || !movies.length) return [];
 
-  const suppressed = new Set(['watched', 'notInterested', 'interested']);
-  return movies.filter(movie => {
-    const pref = currentPrefs[String(movie.id)];
-    return !pref || !suppressed.has(pref.status);
-  });
+  return movies.filter(movie => !isMovieSuppressed(movie?.id));
+}
+
+function isMovieSuppressed(movieId) {
+  if (movieId == null) return false;
+  const pref = currentPrefs[String(movieId)];
+  return Boolean(pref && SUPPRESSED_STATUSES.has(pref.status));
+}
+
+function pruneSuppressedMovies() {
+  if (!Array.isArray(currentMovies) || !currentMovies.length) return;
+  currentMovies = currentMovies.filter(movie => !isMovieSuppressed(movie?.id));
+  feedExhausted = false;
+}
+
+async function requestAdditionalMovies() {
+  const now = Date.now();
+  if (refillInProgress) return;
+  if (now - lastRefillAttempt < REFILL_COOLDOWN_MS) return;
+  refillInProgress = true;
+  lastRefillAttempt = now;
+  feedExhausted = false;
+  try {
+    await loadMovies();
+  } finally {
+    refillInProgress = false;
+  }
 }
 
 function renderFeed() {
@@ -432,14 +482,28 @@ function renderFeed() {
   if (!listEl) return;
 
   if (!currentMovies.length) {
-    listEl.innerHTML = '<em>No movies found.</em>';
+    if (refillInProgress) {
+      listEl.innerHTML = '<em>Loading more movies...</em>';
+      return;
+    }
+    if (feedExhausted) {
+      listEl.innerHTML = '<em>No movies found.</em>';
+      return;
+    }
+    listEl.innerHTML = '<em>Loading more movies...</em>';
+    requestAdditionalMovies();
     return;
   }
 
   const feedMovies = getFeedMovies(currentMovies);
 
   if (!feedMovies.length) {
-    listEl.innerHTML = '<em>No new movies right now.</em>';
+    if (refillInProgress) {
+      listEl.innerHTML = '<em>Loading more movies...</em>';
+      return;
+    }
+    listEl.innerHTML = '<em>Loading more movies...</em>';
+    requestAdditionalMovies();
     return;
   }
 
@@ -776,13 +840,19 @@ async function fetchDiscoverPageFromProxy(page) {
 }
 
 async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS }) {
+  const suppressedIds = new Set(
+    Object.entries(currentPrefs)
+      .filter(([, pref]) => pref && SUPPRESSED_STATUSES.has(pref.status))
+      .map(([id]) => id)
+  );
   const seen = new Set();
   const collected = [];
   let prioritized = [];
   let page = 1;
   let totalPages = Infinity;
+  let allowedPages = MAX_DISCOVER_PAGES;
 
-  while (page <= MAX_DISCOVER_PAGES && page <= totalPages) {
+  while (page <= allowedPages && page <= totalPages) {
     const { results, totalPages: reportedTotal } = usingProxy
       ? await fetchDiscoverPageFromProxy(page)
       : await fetchDiscoverPageDirect(apiKey, page);
@@ -793,9 +863,13 @@ async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS 
 
     const pageResults = Array.isArray(results) ? results : [];
     pageResults.forEach(movie => {
-      if (!seen.has(movie.id)) {
-        seen.add(movie.id);
-        collected.push(movie);
+      if (!movie) return;
+      const idKey = String(movie.id);
+      if (!seen.has(idKey)) {
+        seen.add(idKey);
+        if (!suppressedIds.has(idKey)) {
+          collected.push(movie);
+        }
       }
     });
 
@@ -814,6 +888,10 @@ async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS 
     }
 
     page += 1;
+
+    if (page > allowedPages && allowedPages < MAX_DISCOVER_PAGES_LIMIT) {
+      allowedPages = Math.min(MAX_DISCOVER_PAGES_LIMIT, allowedPages + INITIAL_DISCOVER_PAGES);
+    }
   }
 
   return prioritized.length ? prioritized : applyPriorityOrdering(collected);
@@ -874,6 +952,7 @@ async function loadMovies() {
     const genres = usingProxy ? await fetchGenreMapFromProxy() : await fetchGenreMapDirect(apiKey);
     currentMovies = movies;
     genreMap = genres;
+    feedExhausted = !currentMovies.length;
     refreshUI();
   } catch (err) {
     if (usingProxy) {
