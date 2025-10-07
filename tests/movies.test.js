@@ -25,7 +25,16 @@ function buildDom() {
       <button class="movie-tab" data-target="savedMoviesSection"></button>
       <button class="movie-tab" data-target="watchedMoviesSection"></button>
     </div>
-    <div id="movieStreamSection"></div>
+    <div id="movieStreamSection">
+      <div id="movieFeedControls" class="movie-controls">
+        <input id="movieFilterMinRating" type="number" />
+        <input id="movieFilterMinVotes" type="number" />
+        <input id="movieFilterStartYear" type="number" />
+        <input id="movieFilterEndYear" type="number" />
+        <select id="movieFilterGenre"></select>
+      </div>
+      <div id="movieList"></div>
+    </div>
     <div id="savedMoviesSection" style="display:none">
       <div id="savedMoviesFilters" class="genre-filter"></div>
       <div id="savedMoviesList"></div>
@@ -41,7 +50,6 @@ function buildDom() {
       </div>
       <div id="watchedMoviesList"></div>
     </div>
-    <div id="movieList"></div>
     <div id="moviesApiKeyContainer"><input id="moviesApiKey" type="password" /></div>
   `);
 }
@@ -243,6 +251,63 @@ describe('initMoviesPanel', () => {
     expect(movieTitles[0]).toContain('Top Tier');
     expect(document.querySelector('#movieList').textContent).not.toContain('Too Few Votes');
     expect(document.querySelector('#movieList').textContent).not.toContain('Too Low Rating');
+  });
+
+  it('refills the feed for restrictive filters before showing no-match message', async () => {
+    const dom = buildDom();
+    attachWindow(dom);
+    window.tmdbApiKey = 'TEST_KEY';
+
+    const initialPage = {
+      results: [
+        {
+          id: 100,
+          title: 'Solid Choice',
+          release_date: '2022-01-01',
+          vote_average: 7.4,
+          vote_count: 210,
+          overview: 'Popular but below new threshold.',
+          genre_ids: []
+        }
+      ],
+      total_pages: 1
+    };
+    const emptyPage = { results: [], total_pages: 1 };
+    const credits = {
+      cast: [{ name: 'Reliable Star' }],
+      crew: [{ job: 'Director', name: 'Steady Director' }]
+    };
+    const genres = { genres: [] };
+
+    configureFetchResponses([
+      initialPage,
+      emptyPage,
+      credits,
+      genres,
+      emptyPage,
+      genres
+    ]);
+
+    await initMoviesPanel();
+
+    const listEl = document.getElementById('movieList');
+    expect(listEl.textContent).toContain('Solid Choice');
+
+    const minRatingInput = document.getElementById('movieFilterMinRating');
+    minRatingInput.value = '9';
+    minRatingInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    minRatingInput.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+
+    expect(listEl.innerHTML).toContain('Loading more movies...');
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    for (let i = 0; i < 10 && listEl.innerHTML.includes('Loading more movies'); i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    expect(global.fetch.mock.calls.length).toBeGreaterThan(4);
+    expect(listEl.innerHTML).toContain('No movies match the current filters.');
   });
 
   it('marks the selected movie tab clearly', async () => {
