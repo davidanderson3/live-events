@@ -10,9 +10,11 @@ function setupDom() {
         <div class="restaurants-tabs" role="tablist">
           <button type="button" class="restaurants-tab is-active" data-view="nearby" aria-selected="true"></button>
           <button type="button" class="restaurants-tab" data-view="saved" aria-selected="false"></button>
+          <button type="button" class="restaurants-tab" data-view="favorites" aria-selected="false"></button>
         </div>
         <div id="restaurantsNearby"></div>
         <div id="restaurantsSaved" hidden></div>
+        <div id="restaurantsFavorites" hidden></div>
         <div id="restaurantsHiddenSection"></div>
       </div>
     </div>
@@ -346,6 +348,63 @@ describe('initRestaurantsPanel', () => {
     savedSectionButton?.click();
 
     expect(savedContainer?.textContent).toContain('No saved restaurants yet.');
+    expect(nearbyContainer?.textContent).toContain('Top Rated');
+  });
+
+  it('allows favoriting restaurants and keeps favorites in sync with saved list', async () => {
+    const dom = setupDom();
+    global.window = dom.window;
+    global.document = dom.window.document;
+    window.localStorage.clear();
+
+    const geoMock = {
+      getCurrentPosition: vi.fn(success => {
+        success({ coords: { latitude: 30.2672, longitude: -97.7431 } });
+      })
+    };
+    Object.defineProperty(window.navigator, 'geolocation', {
+      configurable: true,
+      value: geoMock
+    });
+    global.navigator = window.navigator;
+
+    const sampleData = [
+      { id: 'one', name: 'Top Rated', rating: 4.8, reviewCount: 45, distance: 1200 }
+    ];
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ address: { city: 'Austin' } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(sampleData)
+      });
+
+    await initRestaurantsPanel();
+
+    const favoriteButton = document.querySelector(
+      '#restaurantsNearby .restaurant-action--favorite'
+    );
+    expect(favoriteButton).toBeTruthy();
+    expect(favoriteButton?.textContent).toBe('Favorite');
+    favoriteButton?.click();
+
+    const favoritesContainer = document.getElementById('restaurantsFavorites');
+    expect(favoritesContainer?.textContent).toContain('Top Rated');
+
+    const savedContainer = document.getElementById('restaurantsSaved');
+    expect(savedContainer?.textContent).toContain('Top Rated');
+
+    const savedToggle = savedContainer?.querySelector('.restaurant-action--secondary');
+    expect(savedToggle?.textContent).toBe('Saved');
+    savedToggle?.click();
+
+    expect(favoritesContainer?.textContent).toContain('No favorite restaurants yet.');
+    expect(savedContainer?.textContent).toContain('No saved restaurants yet.');
+    const nearbyContainer = document.getElementById('restaurantsNearby');
     expect(nearbyContainer?.textContent).toContain('Top Rated');
   });
 
