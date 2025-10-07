@@ -24,13 +24,18 @@ describe('sample descriptions', () => {
 });
 
 describe('movies api', () => {
-  it.skip('returns a list of movies', async () => {
-    const res = await request(appOrServer).get('/api/movies');
+  it('returns curated catalog metadata', async () => {
+    const res = await request(appOrServer).get('/api/movies?limit=1');
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBeGreaterThan(0);
-    expect(res.body[0]).toHaveProperty('title');
-    expect(res.body[0]).toHaveProperty('score');
+    expect(res.body).toHaveProperty('results');
+    expect(Array.isArray(res.body.results)).toBe(true);
+    expect(res.body).toHaveProperty('curated');
+    expect(Array.isArray(res.body.curated)).toBe(true);
+    expect(res.body).toHaveProperty('fresh');
+    expect(Array.isArray(res.body.fresh)).toBe(true);
+    expect(res.body).toHaveProperty('metadata');
+    expect(res.body.metadata).toHaveProperty('curatedCount');
+    expect(res.body.metadata).toHaveProperty('totalCatalogSize');
   });
 });
 

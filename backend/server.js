@@ -10,12 +10,11 @@ if (fs.existsSync(backendEnvPath)) {
 }
 
 const express = require('express');
-const { execFile } = require('child_process');
-const util = require('util');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
 const cors = require('cors');
 const { readCachedResponse, writeCachedResponse } = require('../shared/cache');
 const { normalizeRecipeQuery, recipeCacheKeyParts } = require('../shared/recipes');
+const movieCatalog = require('./movie-catalog');
 let nodemailer;
 try {
   nodemailer = require('nodemailer');
@@ -23,8 +22,13 @@ try {
   nodemailer = null;
 }
 
-const execFileAsync = util.promisify(execFile);
 const app = express();
+
+movieCatalog
+  .init()
+  .catch(err => {
+    console.error('Initial movie catalog load failed', err);
+  });
 const PORT = Number(process.env.PORT) || 3003;
 const HOST = process.env.HOST || (process.env.VITEST ? '127.0.0.1' : '0.0.0.0');
 const TICKETMASTER_CONSUMER_KEY =
@@ -36,6 +40,7 @@ const YELP_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 const TICKETMASTER_CACHE_COLLECTION = 'ticketmasterCache';
 const SPOONACULAR_CACHE_COLLECTION = 'recipeCache';
 const SPOONACULAR_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+const DEFAULT_MOVIE_LIMIT = 20;
 
 // Enable CORS for all routes so the frontend can reach the API
 app.use(cors());
@@ -62,6 +67,22 @@ function sendCachedResponse(res, cached) {
   res.type(cached.contentType || 'application/json');
   res.send(cached.body);
   return true;
+}
+
+function parseBooleanQuery(value) {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return false;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return Boolean(normalized);
+}
+
+function parseNumberQuery(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
 }
 
 function yelpCacheKeyParts({ city, latitude, longitude, cuisine }) {
@@ -600,16 +621,88 @@ app.get('/leaderboard', (req, res) => {
 
 app.get('/api/movies', async (req, res) => {
   try {
-    const url = 'https://raw.githubusercontent.com/FEND16/movie-json-data/master/json/top-rated-movies-01.json';
-    const { stdout } = await execFileAsync('curl', ['-sL', url], { maxBuffer: 5 * 1024 * 1024 });
-    const data = JSON.parse(stdout);
-    const results = data
-      .map(m => ({
-        title: m.title,
-        score: m.ratings.reduce((a, b) => a + b, 0) / m.ratings.length
-      }))
-      .slice(0, 10);
-    res.json(results);
+    const query = typeof req.query.q === 'string' ? req.query.q : '';
+    const limit = parseNumberQuery(req.query.limit) ?? DEFAULT_MOVIE_LIMIT;
+    const freshLimit = parseNumberQuery(req.query.freshLimit);
+    const minScore = parseNumberQuery(req.query.minScore);
+    const includeFresh = parseBooleanQuery(
+      req.query.includeFresh ?? req.query.fresh ?? req.query.includeNew
+    );
+    const freshOnly =
+      parseBooleanQuery(req.query.freshOnly ?? req.query.onlyFresh ?? req.query.newOnly) ||
+      (typeof req.query.scope === 'string' && req.query.scope.toLowerCase() === 'new');
+    const forceRefresh = parseBooleanQuery(req.query.refresh);
+
+    const curatedLimit = Math.max(1, Number(limit) || 20);
+    const fallbackFreshLimit = Math.max(1, Math.min(curatedLimit, 10));
+    const effectiveFreshLimit = Math.max(1, Number(freshLimit) || fallbackFreshLimit);
+
+    const catalogState = await movieCatalog.ensureCatalog({ forceRefresh });
+    const hasCredentials = movieCatalog.hasTmdbCredentials();
+    const curatedResults = freshOnly
+      ? []
+      : movieCatalog.searchCatalog(query, {
+          limit: curatedLimit,
+          minScore: minScore == null ? undefined : minScore
+        });
+
+    let freshResults = [];
+    let freshError = null;
+    const shouldFetchFresh =
+      freshOnly ||
+      includeFresh ||
+      (!curatedResults.length && Boolean(query));
+
+    if (shouldFetchFresh) {
+      if (hasCredentials) {
+        try {
+          freshResults = await movieCatalog.fetchNewReleases({
+            query,
+            limit: freshOnly ? curatedLimit : effectiveFreshLimit,
+            excludeIds: curatedResults.map(movie => movie.id)
+          });
+        } catch (err) {
+          console.error('Failed to fetch new release movies', err);
+          freshError = 'failed';
+        }
+      } else {
+        freshError = 'credentials missing';
+      }
+    }
+
+    const response = {
+      results: freshOnly ? freshResults : curatedResults,
+      curated: curatedResults,
+      fresh: freshResults,
+      metadata: {
+        query: query || null,
+        curatedCount: curatedResults.length,
+        freshCount: freshResults.length,
+        totalCatalogSize:
+          catalogState?.metadata?.total ?? catalogState?.movies?.length ?? 0,
+        catalogUpdatedAt:
+          catalogState?.metadata?.updatedAt ||
+          (catalogState?.updatedAt
+            ? new Date(catalogState.updatedAt).toISOString()
+            : null),
+        minScore: minScore == null ? movieCatalog.MIN_SCORE : minScore,
+        includeFresh: Boolean(shouldFetchFresh && hasCredentials),
+        freshOnly: Boolean(freshOnly),
+        source: catalogState?.metadata?.source || null,
+        freshRequested: Boolean(shouldFetchFresh)
+      }
+    };
+
+    if (freshOnly) {
+      response.curated = curatedResults;
+      response.metadata.curatedCount = curatedResults.length;
+    }
+
+    if (freshError) {
+      response.metadata.freshError = freshError;
+    }
+
+    res.json(response);
   } catch (err) {
     console.error('Failed to fetch movies', err);
     res.status(500).json({ error: 'Failed to fetch movies' });
