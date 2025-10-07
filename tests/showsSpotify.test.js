@@ -16,7 +16,7 @@ global.localStorage = storage;
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
-const makeSongkickEvent = ({
+const makeEventbriteEvent = ({
   id = 'event',
   name = 'Concert',
   latitude = 30.2672,
@@ -28,25 +28,24 @@ const makeSongkickEvent = ({
   artists = []
 } = {}) => ({
   id,
-  displayName: name,
-  start: { date, time },
-  location: { lat: latitude, lng: longitude, city: `${city}, ${state}` },
+  name: { text: name },
+  summary: artists.length ? `${artists.join(', ')} performing live` : `${name} summary`,
+  description: { text: artists.join(', ') },
+  start: { local: `${date}T${time}` },
+  url: `https://eventbrite.test/events/${id}`,
+  logo: { url: 'https://eventbrite.test/logo.jpg' },
   venue: {
-    displayName: 'Venue',
-    metroArea: { displayName: city, state: { displayName: state } }
-  },
-  uri: `https://songkick.test/events/${id}`,
-  performance: artists.map(artistName => ({ artist: { displayName: artistName } }))
-});
-
-const makeSongkickResponse = events => ({
-  resultsPage: {
-    status: 'ok',
-    results: {
-      event: events
+    name: 'Venue',
+    address: {
+      latitude,
+      longitude,
+      city,
+      region: state
     }
   }
 });
+
+const makeEventbriteResponse = events => ({ events });
 
 describe('initShowsPanel', () => {
   let initShowsPanel;
@@ -56,13 +55,13 @@ describe('initShowsPanel', () => {
     const dom = new JSDOM(`
       <button id="spotifyTokenBtn"></button>
       <span id="spotifyStatus"></span>
-      <input id="songkickApiKey" />
+      <input id="eventbriteApiToken" />
       <input id="showsRadius" value="300" />
       <input id="showsArtistLimit" value="10" />
       <input type="checkbox" id="showsIncludeSuggestions" checked />
-      <button id="songkickDiscoverBtn">Discover</button>
-      <div id="songkickList"></div>
-      <div id="songkickInterestedList"></div>
+      <button id="eventbriteDiscoverBtn">Discover</button>
+      <div id="eventbriteList"></div>
+      <div id="eventbriteInterestedList"></div>
     `, { url: 'http://localhost/' });
     global.window = dom.window;
     global.document = dom.window.document;
@@ -83,7 +82,7 @@ describe('initShowsPanel', () => {
   it('renders a preview when Spotify token is missing', async () => {
     fetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ clientId: 'cid', hasSongkickKey: true })
+      json: async () => ({ clientId: 'cid', hasEventbriteToken: true })
     });
 
     await initShowsPanel();
@@ -94,14 +93,14 @@ describe('initShowsPanel', () => {
     expect(document.querySelector('.shows-preview-note')?.textContent).toContain('preview');
   });
 
-  it('fetches Spotify artists and Songkick events', async () => {
+  it('fetches Spotify artists and Eventbrite events', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'The Band' }] }) })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => makeSongkickResponse([
-          makeSongkickEvent({ id: 'sk1', name: 'Concert', artists: ['The Band'] })
+        json: async () => makeEventbriteResponse([
+          makeEventbriteEvent({ id: 'sk1', name: 'Concert', artists: ['The Band'] })
         ])
       });
 
@@ -118,8 +117,8 @@ describe('initShowsPanel', () => {
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch.mock.calls[1][0]).toContain('limit=10');
     expect(document.querySelectorAll('.show-card').length).toBe(1);
-    expect(fetch.mock.calls[2][0]).toContain('/api/songkick');
-    expect(fetch.mock.calls[2][0]).not.toContain('apiKey=');
+    expect(fetch.mock.calls[2][0]).toContain('/api/eventbrite');
+    expect(fetch.mock.calls[2][0]).not.toContain('token=');
     expect(document.querySelector('.show-card__title')?.textContent).toContain('Concert');
     expect(document.querySelector('.show-card__cta')?.textContent).toBe('Get Tickets');
     expect(document.querySelectorAll('.show-card__button').length).toBe(2);
@@ -127,9 +126,9 @@ describe('initShowsPanel', () => {
 
   it('respects updated configuration values on Discover reload', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'Artist' }] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ resultsPage: { status: 'ok', results: { event: [] } } }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => makeEventbriteResponse([]) });
 
     localStorage.setItem('spotifyToken', 'token');
     await initShowsPanel();
@@ -153,9 +152,9 @@ describe('initShowsPanel', () => {
         ok: true,
         json: async () => ({ items: [{ name: 'Second Artist', id: 'artist2' }] })
       })
-      .mockResolvedValueOnce({ ok: true, json: async () => makeSongkickResponse([]) });
+      .mockResolvedValueOnce({ ok: true, json: async () => makeEventbriteResponse([]) });
 
-    document.getElementById('songkickDiscoverBtn')._showsClickHandler();
+    document.getElementById('eventbriteDiscoverBtn')._showsClickHandler();
 
     await flush();
     await flush();
@@ -175,7 +174,7 @@ describe('initShowsPanel', () => {
 
   it('falls back to genre-based Spotify seeds when artist recommendations are empty', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -185,8 +184,8 @@ describe('initShowsPanel', () => {
           ]
         })
       })
-      .mockResolvedValueOnce({ ok: true, json: async () => makeSongkickResponse([]) })
-      .mockResolvedValueOnce({ ok: true, json: async () => makeSongkickResponse([]) })
+      .mockResolvedValueOnce({ ok: true, json: async () => makeEventbriteResponse([]) })
+      .mockResolvedValueOnce({ ok: true, json: async () => makeEventbriteResponse([]) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ tracks: [] }) })
       .mockResolvedValueOnce({
         ok: true,
@@ -240,7 +239,7 @@ describe('initShowsPanel', () => {
       if (href.includes('/api/spotify-client-id')) {
         return Promise.resolve({
           ok: true,
-          json: async () => ({ clientId: 'cid', hasTicketmasterKey: true })
+          json: async () => ({ clientId: 'cid', hasEventbriteToken: true })
         });
       }
       if (href.includes('api.spotify.com/v1/me/top/artists')) {
@@ -261,8 +260,8 @@ describe('initShowsPanel', () => {
           json: async () => response
         });
       }
-      if (href.includes('/api/ticketmaster')) {
-        return Promise.resolve({ ok: true, json: async () => ({ _embedded: { events: [] } }) });
+      if (href.includes('/api/eventbrite')) {
+        return Promise.resolve({ ok: true, json: async () => makeEventbriteResponse([]) });
       }
       return Promise.resolve({ ok: true, json: async () => ({}) });
     });
@@ -283,7 +282,7 @@ describe('initShowsPanel', () => {
 
     fetch.mockClear();
 
-    document.getElementById('ticketmasterDiscoverBtn')._showsClickHandler();
+    document.getElementById('eventbriteDiscoverBtn')._showsClickHandler();
 
     await flush();
     await flush();
@@ -296,13 +295,13 @@ describe('initShowsPanel', () => {
 
   it('only shows events within 300 miles of the user', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'The Band' }] }) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          makeSongkickResponse([
-            makeSongkickEvent({
+          makeEventbriteResponse([
+            makeEventbriteEvent({
               id: 'near',
               name: 'Austin Gig',
               date: '2024-02-01',
@@ -312,7 +311,7 @@ describe('initShowsPanel', () => {
               state: 'TX',
               artists: ['The Band']
             }),
-            makeSongkickEvent({
+            makeEventbriteEvent({
               id: 'far',
               name: 'NYC Arena',
               date: '2024-03-01',
@@ -337,13 +336,13 @@ describe('initShowsPanel', () => {
 
   it('lets the user mark a show as interested', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'The Band' }] }) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          makeSongkickResponse([
-            makeSongkickEvent({
+          makeEventbriteResponse([
+            makeEventbriteEvent({
               id: 'event1',
               name: 'Club Night',
               date: '2024-04-01',
@@ -379,13 +378,13 @@ describe('initShowsPanel', () => {
 
   it('moves not interested shows into a collapsible section', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'Artist' }] }) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          makeSongkickResponse([
-            makeSongkickEvent({
+          makeEventbriteResponse([
+            makeEventbriteEvent({
               id: 'event1',
               name: 'Club Night',
               date: '2024-04-01',
@@ -395,7 +394,7 @@ describe('initShowsPanel', () => {
               state: 'TX',
               artists: ['Artist']
             }),
-            makeSongkickEvent({
+            makeEventbriteEvent({
               id: 'event2',
               name: 'Outdoor Fest',
               date: '2024-05-10',
@@ -433,13 +432,13 @@ describe('initShowsPanel', () => {
   it('wires the Discover button even when Spotify client ID is missing', async () => {
     fetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ clientId: '', hasSongkickKey: true })
+      json: async () => ({ clientId: '', hasEventbriteToken: true })
     });
 
     await initShowsPanel();
     await flush();
 
-    const discoverBtn = document.getElementById('songkickDiscoverBtn');
+    const discoverBtn = document.getElementById('eventbriteDiscoverBtn');
     expect(discoverBtn).not.toBeNull();
 
     fetch.mockClear();
@@ -451,8 +450,8 @@ describe('initShowsPanel', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          makeSongkickResponse([
-            makeSongkickEvent({
+          makeEventbriteResponse([
+            makeEventbriteEvent({
               id: 'event1',
               name: 'Club Night',
               date: '2024-04-01',
@@ -473,7 +472,7 @@ describe('initShowsPanel', () => {
 
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[0][0]).toContain('api.spotify.com');
-    expect(fetch.mock.calls[1][0]).toContain('/api/songkick');
+    expect(fetch.mock.calls[1][0]).toContain('/api/eventbrite');
     expect(document.querySelectorAll('.show-card').length).toBe(1);
     expect(discoverBtn.disabled).toBe(false);
     expect(discoverBtn.classList.contains('is-loading')).toBe(false);
@@ -507,7 +506,7 @@ describe('initShowsPanel', () => {
 
   it('stores credentials and cached values during OAuth flow', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockRejectedValue(new Error('fail'));
     localStorage.setItem('spotifyToken', 'tok');
     await initShowsPanel();
@@ -517,26 +516,26 @@ describe('initShowsPanel', () => {
 
     expect(localStorage.getItem('spotifyCodeVerifier')).toBeTruthy();
     expect(localStorage.getItem('spotifyToken')).toBe('tok');
-    expect(localStorage.getItem('songkickApiKey')).toBeFalsy();
+    expect(localStorage.getItem('eventbriteApiToken')).toBeFalsy();
   });
 
   it('exchanges authorization code for token', async () => {
     const dom = new JSDOM(`
       <button id="spotifyTokenBtn"></button>
       <span id="spotifyStatus"></span>
-      <input id="songkickApiKey" />
+      <input id="eventbriteApiToken" />
       <input id="showsRadius" value="300" />
       <input id="showsArtistLimit" value="10" />
       <input type="checkbox" id="showsIncludeSuggestions" checked />
-      <button id="songkickDiscoverBtn">Discover</button>
-      <div id="songkickList"></div>
-      <div id="songkickInterestedList"></div>
+      <button id="eventbriteDiscoverBtn">Discover</button>
+      <div id="eventbriteList"></div>
+      <div id="eventbriteInterestedList"></div>
     `, { url: 'http://localhost/?code=abc' });
     global.window = dom.window;
     global.document = dom.window.document;
     global.fetch = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'newTok' }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [] }) });
     global.navigator = {
@@ -559,34 +558,34 @@ describe('initShowsPanel', () => {
     expect(document.getElementById('spotifyStatus')?.textContent).toBe('Spotify connected');
   });
 
-  it('falls back to manual Songkick key input when server does not provide one', async () => {
+  it('falls back to manual Eventbrite key input when server does not provide one', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: false }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: false }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'Artist' }] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => makeSongkickResponse([]) });
+      .mockResolvedValueOnce({ ok: true, json: async () => makeEventbriteResponse([]) });
 
     localStorage.setItem('spotifyToken', 'token');
-    const input = document.getElementById('songkickApiKey');
+    const input = document.getElementById('eventbriteApiToken');
     input.value = 'manualKey';
 
     await initShowsPanel();
     await flush();
     await flush();
 
-    expect(fetch.mock.calls[2][0]).toContain('/api/songkick');
-    expect(fetch.mock.calls[2][0]).toContain('apiKey=manualKey');
+    expect(fetch.mock.calls[2][0]).toContain('/api/eventbrite');
+    expect(fetch.mock.calls[2][0]).toContain('token=manualKey');
   });
 
   it('shows Spotify suggestions when no live shows are available', async () => {
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasSongkickKey: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           items: [{ name: 'Top Artist', id: 'artist1' }]
         })
       })
-      .mockResolvedValueOnce({ ok: true, json: async () => makeSongkickResponse([]) })
+      .mockResolvedValueOnce({ ok: true, json: async () => makeEventbriteResponse([]) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({

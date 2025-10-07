@@ -385,46 +385,53 @@ async function fetchSpotifySuggestions(token, artists) {
   return [];
 }
 
-const SONGKICK_CACHE_STORAGE_KEY = 'songkickCacheV1';
-const SONGKICK_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours
-const MAX_SONGKICK_CACHE_ENTRIES = 50;
+const EVENTBRITE_CACHE_STORAGE_KEY = 'eventbriteCacheV1';
+const EVENTBRITE_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours
+const MAX_EVENTBRITE_CACHE_ENTRIES = 50;
 
-function loadSongkickCache() {
+function loadEventbriteCache() {
   if (typeof localStorage === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(SONGKICK_CACHE_STORAGE_KEY);
+    const raw = localStorage.getItem(EVENTBRITE_CACHE_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (err) {
-    console.warn('Unable to load Songkick cache', err);
+    console.warn('Unable to load Eventbrite cache', err);
     return {};
   }
 }
 
-function saveSongkickCache(cache) {
+function saveEventbriteCache(cache) {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(SONGKICK_CACHE_STORAGE_KEY, JSON.stringify(cache));
+    localStorage.setItem(EVENTBRITE_CACHE_STORAGE_KEY, JSON.stringify(cache));
   } catch (err) {
-    console.warn('Unable to persist Songkick cache', err);
+    console.warn('Unable to persist Eventbrite cache', err);
   }
 }
 
-const songkickCache = loadSongkickCache();
-const songkickMemoryCache = new Map();
-const SONGKICK_LOOKAHEAD_DAYS = 14;
+const eventbriteCache = loadEventbriteCache();
+const eventbriteMemoryCache = new Map();
+const EVENTBRITE_LOOKAHEAD_DAYS = 14;
 
-function formatDateForSongkick(date = new Date()) {
+function formatDateForEventbrite(date = new Date()) {
   try {
     return date.toISOString().slice(0, 10);
   } catch (err) {
-    console.warn('Unable to format Songkick start date', err);
+    console.warn('Unable to format Eventbrite start date', err);
     return new Date().toISOString().slice(0, 10);
   }
 }
 
-function songkickCacheKey({ latitude, longitude, radiusMiles, startDate, days, scope = 'server' }) {
+function eventbriteCacheKey({
+  latitude,
+  longitude,
+  radiusMiles,
+  startDate,
+  days,
+  scope = 'server'
+}) {
   const lat = Number.isFinite(latitude) ? latitude.toFixed(3) : 'na';
   const lon = Number.isFinite(longitude) ? longitude.toFixed(3) : 'na';
   const radius = Number.isFinite(radiusMiles) ? radiusMiles.toFixed(1) : 'na';
@@ -433,75 +440,83 @@ function songkickCacheKey({ latitude, longitude, radiusMiles, startDate, days, s
   return `${scope}:${lat}:${lon}:${radius}:${normalizedDate}:${normalizedDays}`;
 }
 
-function getCachedSongkickResponse(params) {
-  const key = songkickCacheKey(params);
+function getCachedEventbriteResponse(params) {
+  const key = eventbriteCacheKey(params);
   const now = Date.now();
-  const memoryEntry = songkickMemoryCache.get(key);
-  if (memoryEntry && now - memoryEntry.timestamp < SONGKICK_CACHE_TTL) {
+  const memoryEntry = eventbriteMemoryCache.get(key);
+  if (memoryEntry && now - memoryEntry.timestamp < EVENTBRITE_CACHE_TTL) {
     return memoryEntry.data;
   }
-  const storedEntry = songkickCache[key];
-  if (storedEntry && now - storedEntry.timestamp < SONGKICK_CACHE_TTL) {
-    songkickMemoryCache.set(key, storedEntry);
+  const storedEntry = eventbriteCache[key];
+  if (storedEntry && now - storedEntry.timestamp < EVENTBRITE_CACHE_TTL) {
+    eventbriteMemoryCache.set(key, storedEntry);
     return storedEntry.data;
   }
   return null;
 }
 
-function setCachedSongkickResponse(params, data) {
-  const key = songkickCacheKey(params);
+function setCachedEventbriteResponse(params, data) {
+  const key = eventbriteCacheKey(params);
   const entry = { timestamp: Date.now(), data };
-  songkickMemoryCache.set(key, entry);
+  eventbriteMemoryCache.set(key, entry);
   if (typeof localStorage === 'undefined') return;
-  songkickCache[key] = entry;
+  eventbriteCache[key] = entry;
 
-  const keys = Object.keys(songkickCache);
+  const keys = Object.keys(eventbriteCache);
   const now = Date.now();
   for (const existingKey of keys) {
-    if (now - songkickCache[existingKey].timestamp >= SONGKICK_CACHE_TTL) {
-      delete songkickCache[existingKey];
+    if (now - eventbriteCache[existingKey].timestamp >= EVENTBRITE_CACHE_TTL) {
+      delete eventbriteCache[existingKey];
     }
   }
 
-  const remainingKeys = Object.keys(songkickCache);
-  if (remainingKeys.length > MAX_SONGKICK_CACHE_ENTRIES) {
+  const remainingKeys = Object.keys(eventbriteCache);
+  if (remainingKeys.length > MAX_EVENTBRITE_CACHE_ENTRIES) {
     remainingKeys
-      .sort((a, b) => songkickCache[a].timestamp - songkickCache[b].timestamp)
-      .slice(0, remainingKeys.length - MAX_SONGKICK_CACHE_ENTRIES)
+      .sort((a, b) => eventbriteCache[a].timestamp - eventbriteCache[b].timestamp)
+      .slice(0, remainingKeys.length - MAX_EVENTBRITE_CACHE_ENTRIES)
       .forEach(oldKey => {
-        delete songkickCache[oldKey];
+        delete eventbriteCache[oldKey];
       });
   }
 
-  saveSongkickCache(songkickCache);
+  saveEventbriteCache(eventbriteCache);
 }
 
-function getSongkickMatchedArtists(event, artistNames) {
+function getEventbriteMatchedArtists(event, artistNames, nameLookup) {
   if (!event || !artistNames?.size) return [];
-  const performances = Array.isArray(event.performance) ? event.performance : [];
+  const haystacks = [];
+  if (event.name?.text) haystacks.push(event.name.text);
+  if (event.summary) haystacks.push(event.summary);
+  if (event.description?.text) {
+    haystacks.push(event.description.text.slice(0, 500));
+  }
+
   const matches = new Set();
-  for (const perf of performances) {
-    const name =
-      (perf.artist?.displayName || perf.displayName || perf.name || '').toLowerCase().trim();
-    if (name && artistNames.has(name)) {
-      matches.add(perf.artist?.displayName || perf.displayName || perf.name || '');
+  for (const haystack of haystacks) {
+    const normalized = haystack.toLowerCase();
+    for (const artistName of artistNames) {
+      if (normalized.includes(artistName)) {
+        matches.add(nameLookup?.get(artistName) || artistName);
+      }
     }
   }
   return Array.from(matches).filter(Boolean);
 }
 
-function normalizeSongkickEvent(rawEvent, {
+function normalizeEventbriteEvent(rawEvent, {
   userLatitude,
   userLongitude,
   radiusMiles,
   order
 }) {
   if (!rawEvent) return null;
+  const venue = rawEvent.venue || {};
   const lat = Number.parseFloat(
-    rawEvent.location?.lat ?? rawEvent.venue?.lat ?? rawEvent.venue?.latitude
+    venue.address?.latitude ?? venue.latitude ?? venue.address?.lat
   );
   const lon = Number.parseFloat(
-    rawEvent.location?.lng ?? rawEvent.location?.lon ?? rawEvent.venue?.lng ?? rawEvent.venue?.longitude
+    venue.address?.longitude ?? venue.longitude ?? venue.address?.lng
   );
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     return null;
@@ -515,31 +530,39 @@ function normalizeSongkickEvent(rawEvent, {
     return null;
   }
 
-  const localDate = rawEvent.start?.date || '';
-  const localTime = rawEvent.start?.time || '';
-  const venueCity = rawEvent.venue?.metroArea?.displayName || rawEvent.location?.city || '';
-  const venueState = rawEvent.venue?.metroArea?.state?.displayName || '';
+  const startLocal = rawEvent.start?.local || rawEvent.start?.utc || '';
+  let localDate = '';
+  let localTime = '';
+  if (startLocal) {
+    const [datePart, timePart] = startLocal.split('T');
+    localDate = datePart || '';
+    if (timePart) {
+      localTime = timePart.slice(0, 5);
+    }
+  }
 
   const normalized = {
     id: String(
-      rawEvent.id ||
-        rawEvent.uri ||
-        `${rawEvent.displayName || rawEvent.type || 'event'}-${order}`
+      rawEvent.id || rawEvent.url || `${rawEvent.name?.text || 'event'}-${order}`
     ),
     event: {
-      name: rawEvent.displayName || rawEvent.type || 'Live music event',
+      name: rawEvent.name?.text || rawEvent.name?.html || 'Live music event',
       dates: { start: { localDate, localTime } },
-      url: rawEvent.uri || '',
+      url: rawEvent.url || '',
       images: []
     },
     venue: {
-      name: rawEvent.venue?.displayName || '',
-      city: { name: venueCity || '' },
-      state: { stateCode: venueState || '' }
+      name: venue.name || '',
+      city: { name: venue.address?.city || '' },
+      state: { stateCode: venue.address?.region || '' }
     },
     distance: Number.isFinite(distance) ? distance : null,
     order
   };
+
+  if (rawEvent.logo?.url) {
+    normalized.event.images.push({ ratio: '16_9', url: rawEvent.logo.url });
+  }
 
   return normalized;
 }
@@ -675,8 +698,8 @@ function getShowStatus(id) {
 }
 
 function renderShowsList() {
-  const listEl = document.getElementById('songkickList');
-  const interestedEl = document.getElementById('songkickInterestedList');
+  const listEl = document.getElementById('eventbriteList');
+  const interestedEl = document.getElementById('eventbriteInterestedList');
   if (!listEl && !interestedEl) return;
 
   if (listEl) {
@@ -1034,14 +1057,14 @@ if (typeof window !== 'undefined') {
 }
 
 export async function initShowsPanel() {
-  const listEl = document.getElementById('songkickList');
+  const listEl = document.getElementById('eventbriteList');
   if (!listEl) return;
-  const interestedListEl = document.getElementById('songkickInterestedList');
+  const interestedListEl = document.getElementById('eventbriteInterestedList');
   const tokenBtn = document.getElementById('spotifyTokenBtn');
   const statusEl = document.getElementById('spotifyStatus');
-  const apiKeyInput = document.getElementById('songkickApiKey');
+  const apiKeyInput = document.getElementById('eventbriteApiToken');
   const tabsContainer = document.getElementById('showsTabs');
-  const discoverBtn = document.getElementById('songkickDiscoverBtn');
+  const discoverBtn = document.getElementById('eventbriteDiscoverBtn');
   const radiusInput = document.getElementById('showsRadius');
   const artistLimitInput = document.getElementById('showsArtistLimit');
   const includeSuggestionsInput = document.getElementById('showsIncludeSuggestions');
@@ -1126,13 +1149,13 @@ export async function initShowsPanel() {
   }
 
   let spotifyClientId = '';
-  let serverHasSongkickKey = false;
+  let serverHasEventbriteToken = false;
   try {
     const res = await fetch(`${API_BASE_URL}/api/spotify-client-id`);
     if (res.ok) {
       const data = await res.json();
       spotifyClientId = data.clientId || '';
-      serverHasSongkickKey = Boolean(data.hasSongkickKey);
+      serverHasEventbriteToken = Boolean(data.hasEventbriteToken);
     }
   } catch (err) {
     console.error('Failed to fetch Spotify client ID', err);
@@ -1150,7 +1173,7 @@ export async function initShowsPanel() {
     }
   }
 
-  if (serverHasSongkickKey && apiKeyInput) {
+  if (serverHasEventbriteToken && apiKeyInput) {
     apiKeyInput.style.display = 'none';
   }
 
@@ -1251,10 +1274,10 @@ export async function initShowsPanel() {
 
     const token =
       (typeof localStorage !== 'undefined' && localStorage.getItem('spotifyToken')) || '';
-    const manualApiKey =
+    const manualApiToken =
       apiKeyInput?.value.trim() ||
-      (typeof localStorage !== 'undefined' && localStorage.getItem('songkickApiKey')) || '';
-    const requiresManualApiKey = !serverHasSongkickKey;
+      (typeof localStorage !== 'undefined' && localStorage.getItem('eventbriteApiToken')) || '';
+    const requiresManualToken = !serverHasEventbriteToken;
 
     if (!token) {
       currentShows = [];
@@ -1272,18 +1295,18 @@ export async function initShowsPanel() {
       return;
     }
 
-    if (requiresManualApiKey && !manualApiKey) {
+    if (requiresManualToken && !manualApiToken) {
       currentShows = [];
       currentSuggestions = [];
-      listEl.textContent = 'Please enter your Songkick API key.';
+      listEl.textContent = 'Please enter your Eventbrite API token.';
       stopLoading();
       return;
     }
 
-    if (requiresManualApiKey && apiKeyInput?.value && typeof localStorage !== 'undefined') {
-      localStorage.setItem('songkickApiKey', manualApiKey);
-    } else if (!requiresManualApiKey && typeof localStorage !== 'undefined') {
-      localStorage.removeItem('songkickApiKey');
+    if (requiresManualToken && apiKeyInput?.value && typeof localStorage !== 'undefined') {
+      localStorage.setItem('eventbriteApiToken', manualApiToken);
+    } else if (!requiresManualToken && typeof localStorage !== 'undefined') {
+      localStorage.removeItem('eventbriteApiToken');
     }
 
     listEl.innerHTML = '<em>Loading...</em>';
@@ -1337,59 +1360,61 @@ export async function initShowsPanel() {
         API_BASE_URL && API_BASE_URL !== 'null'
           ? API_BASE_URL.replace(/\/$/, '')
           : '';
-      const cacheScope = requiresManualApiKey ? 'manual' : 'server';
-      const startDate = formatDateForSongkick();
+      const cacheScope = requiresManualToken ? 'manual' : 'server';
+      const startDate = formatDateForEventbrite();
       const cacheParams = {
         latitude: userLocation.latitude,
         longitude: userLocation.longitude,
         radiusMiles,
         startDate,
-        days: SONGKICK_LOOKAHEAD_DAYS,
+        days: EVENTBRITE_LOOKAHEAD_DAYS,
         scope: cacheScope
       };
 
-      let songkickData = getCachedSongkickResponse(cacheParams);
-      if (!songkickData) {
+      let eventbriteData = getCachedEventbriteResponse(cacheParams);
+      if (!eventbriteData) {
         const params = new URLSearchParams({
           lat: String(userLocation.latitude),
           lon: String(userLocation.longitude),
           startDate,
-          days: String(SONGKICK_LOOKAHEAD_DAYS)
+          days: String(EVENTBRITE_LOOKAHEAD_DAYS)
         });
         if (Number.isFinite(radiusMiles)) {
           params.set('radius', String(radiusMiles));
         }
-        if (requiresManualApiKey) {
-          params.set('apiKey', manualApiKey);
+        if (requiresManualToken) {
+          params.set('token', manualApiToken);
         }
-        const skUrl = `${apiBase}/api/songkick?${params.toString()}`;
-        const res = await fetch(skUrl);
+        const ebUrl = `${apiBase}/api/eventbrite?${params.toString()}`;
+        const res = await fetch(ebUrl);
         if (!res.ok) {
           const errText = await res.text().catch(() => '');
           throw new Error(
-            `Songkick HTTP ${res.status}${errText ? `: ${errText.slice(0, 200)}` : ''}`
+            `Eventbrite HTTP ${res.status}${errText ? `: ${errText.slice(0, 200)}` : ''}`
           );
         }
-        songkickData = await res.json();
-        setCachedSongkickResponse(cacheParams, songkickData);
+        eventbriteData = await res.json();
+        setCachedEventbriteResponse(cacheParams, eventbriteData);
       }
 
-      const rawEvents = Array.isArray(songkickData?.resultsPage?.results?.event)
-        ? songkickData.resultsPage.results.event
-        : [];
+      const rawEvents = Array.isArray(eventbriteData?.events) ? eventbriteData.events : [];
 
-      const artistNames = new Set(
-        artists
-          .map(artist => (artist?.name || '').toLowerCase().trim())
-          .filter(name => Boolean(name))
-      );
+      const artistNameLookup = new Map();
+      for (const artist of artists) {
+        const artistName = (artist?.name || '').trim();
+        if (artistName) {
+          artistNameLookup.set(artistName.toLowerCase(), artistName);
+        }
+      }
+
+      const artistNames = new Set(artistNameLookup.keys());
 
       const matchingEvents = [];
       const otherEvents = [];
       let eventCounter = 0;
 
       for (const rawEvent of rawEvents) {
-        const normalized = normalizeSongkickEvent(rawEvent, {
+        const normalized = normalizeEventbriteEvent(rawEvent, {
           userLatitude: userLocation.latitude,
           userLongitude: userLocation.longitude,
           radiusMiles,
@@ -1399,7 +1424,11 @@ export async function initShowsPanel() {
           continue;
         }
         normalized.order = eventCounter++;
-        const matchedArtists = getSongkickMatchedArtists(rawEvent, artistNames);
+        const matchedArtists = getEventbriteMatchedArtists(
+          rawEvent,
+          artistNames,
+          artistNameLookup
+        );
         if (matchedArtists.length) {
           normalized.matchedArtists = matchedArtists;
           matchingEvents.push(normalized);

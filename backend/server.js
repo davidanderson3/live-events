@@ -30,11 +30,14 @@ movieCatalog
   });
 const PORT = Number(process.env.PORT) || 3003;
 const HOST = process.env.HOST || (process.env.VITEST ? '127.0.0.1' : '0.0.0.0');
-const SONGKICK_API_KEY = process.env.SONGKICK_API_KEY || '';
-const HAS_SONGKICK_KEY = Boolean(SONGKICK_API_KEY);
+const EVENTBRITE_API_TOKEN =
+  process.env.EVENTBRITE_API_TOKEN || process.env.EVENTBRITE_OAUTH_TOKEN || '';
+const HAS_EVENTBRITE_TOKEN = Boolean(EVENTBRITE_API_TOKEN);
 const YELP_CACHE_COLLECTION = 'yelpCache';
 const YELP_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
-const SONGKICK_CACHE_COLLECTION = 'songkickCache';
+const EVENTBRITE_CACHE_COLLECTION = 'eventbriteCache';
+const SPOONACULAR_CACHE_COLLECTION = 'recipeCache';
+const SPOONACULAR_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 const DEFAULT_MOVIE_LIMIT = 20;
 
 // Enable CORS for all routes so the frontend can reach the API
@@ -214,9 +217,9 @@ app.post('/api/saved-movies', (req, res) => {
 app.get('/api/spotify-client-id', (req, res) => {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   if (!clientId) {
-    return res.status(500).json({ error: 'missing' });
+    return res.status(500).json({ error: 'missing', hasEventbriteToken: HAS_EVENTBRITE_TOKEN });
   }
-  res.json({ clientId, hasSongkickKey: HAS_SONGKICK_KEY });
+  res.json({ clientId, hasEventbriteToken: HAS_EVENTBRITE_TOKEN });
 });
 
 app.get('/api/restaurants', async (req, res) => {
@@ -318,11 +321,11 @@ app.get('/api/restaurants', async (req, res) => {
   }
 });
 
-// --- Songkick proxy ---
-const SONGKICK_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
-const SONGKICK_CACHE_MAX_ENTRIES = 200;
+// --- Eventbrite proxy ---
+const EVENTBRITE_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
+const EVENTBRITE_CACHE_MAX_ENTRIES = 200;
 
-const songkickCache = new Map();
+const eventbriteCache = new Map();
 
 function normalizeCoordinate(value, digits = 3) {
   const num = Number.parseFloat(value);
@@ -346,21 +349,21 @@ function addDays(dateString, days) {
   return toDateString(date);
 }
 
-function songkickMemoryCacheKey({ scope, latitude, longitude, radiusKm, startDate, endDate }) {
+function eventbriteMemoryCacheKey({ scope, latitude, longitude, radiusMiles, startDate, endDate }) {
   const latPart = normalizeCoordinate(latitude, 3);
   const lonPart = normalizeCoordinate(longitude, 3);
-  const radiusPart = Number.isFinite(radiusKm) ? Number(radiusKm.toFixed(1)) : 'none';
+  const radiusPart = Number.isFinite(radiusMiles) ? Number(radiusMiles.toFixed(1)) : 'none';
   return [scope, latPart, lonPart, radiusPart, startDate, endDate].join('::');
 }
 
-function songkickCacheKeyParts({ apiKey, latitude, longitude, radiusKm, startDate, endDate }) {
-  const keyPart = String(apiKey || '').trim().toLowerCase();
+function eventbriteCacheKeyParts({ token, latitude, longitude, radiusMiles, startDate, endDate }) {
+  const tokenPart = String(token || '');
   const latPart = normalizeCoordinate(latitude, 3);
   const lonPart = normalizeCoordinate(longitude, 3);
-  const radiusPart = Number.isFinite(radiusKm) ? Number(radiusKm.toFixed(1)) : 'none';
+  const radiusPart = Number.isFinite(radiusMiles) ? Number(radiusMiles.toFixed(1)) : 'none';
   return [
-    'songkick',
-    keyPart,
+    'eventbrite',
+    tokenPart,
     `lat:${latPart}`,
     `lon:${lonPart}`,
     `radius:${radiusPart}`,
@@ -369,24 +372,24 @@ function songkickCacheKeyParts({ apiKey, latitude, longitude, radiusKm, startDat
   ];
 }
 
-function getSongkickCacheEntry(key) {
-  const entry = songkickCache.get(key);
+function getEventbriteCacheEntry(key) {
+  const entry = eventbriteCache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.timestamp > SONGKICK_CACHE_TTL_MS) {
-    songkickCache.delete(key);
+  if (Date.now() - entry.timestamp > EVENTBRITE_CACHE_TTL_MS) {
+    eventbriteCache.delete(key);
     return null;
   }
-  songkickCache.delete(key);
-  songkickCache.set(key, entry);
+  eventbriteCache.delete(key);
+  eventbriteCache.set(key, entry);
   return entry.value;
 }
 
-function setSongkickCacheEntry(key, value) {
-  songkickCache.set(key, { timestamp: Date.now(), value });
-  if (songkickCache.size > SONGKICK_CACHE_MAX_ENTRIES) {
-    const oldestKey = songkickCache.keys().next().value;
+function setEventbriteCacheEntry(key, value) {
+  eventbriteCache.set(key, { timestamp: Date.now(), value });
+  if (eventbriteCache.size > EVENTBRITE_CACHE_MAX_ENTRIES) {
+    const oldestKey = eventbriteCache.keys().next().value;
     if (oldestKey) {
-      songkickCache.delete(oldestKey);
+      eventbriteCache.delete(oldestKey);
     }
   }
 }
@@ -404,56 +407,56 @@ function normalizeDateString(value) {
   return toDateString(date);
 }
 
-app.get('/api/songkick', async (req, res) => {
-  const { apiKey: queryKey, lat, lon, radius, startDate: startParam, days } = req.query || {};
+app.get('/api/eventbrite', async (req, res) => {
+  const { token: queryToken, lat, lon, radius, startDate: startParam, days } = req.query || {};
   const latitude = normalizeCoordinate(lat, 4);
   const longitude = normalizeCoordinate(lon, 4);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     return res.status(400).json({ error: 'missing coordinates' });
   }
 
-  const radiusMiles = Number.parseFloat(radius);
-  const radiusKm = Number.isFinite(radiusMiles) && radiusMiles > 0 ? radiusMiles * 1.60934 : null;
+  const radiusMilesRaw = Number.parseFloat(radius);
+  const radiusMiles = Number.isFinite(radiusMilesRaw) && radiusMilesRaw > 0 ? radiusMilesRaw : null;
 
   const today = toDateString(new Date());
   const normalizedStart = normalizeDateString(startParam) || today;
   const lookaheadDays = clampDays(days);
   const endDate = addDays(normalizedStart, lookaheadDays - 1) || normalizedStart;
 
-  const effectiveKey = queryKey || SONGKICK_API_KEY;
-  if (!effectiveKey) {
-    return res.status(500).json({ error: 'missing songkick api key' });
+  const effectiveToken = queryToken || EVENTBRITE_API_TOKEN;
+  if (!effectiveToken) {
+    return res.status(500).json({ error: 'missing eventbrite api token' });
   }
 
-  const scope = queryKey ? 'manual' : 'server';
-  const memoryKey = songkickMemoryCacheKey({
+  const scope = queryToken ? 'manual' : 'server';
+  const memoryKey = eventbriteMemoryCacheKey({
     scope,
     latitude,
     longitude,
-    radiusKm,
+    radiusMiles,
     startDate: normalizedStart,
     endDate
   });
 
-  const cached = getSongkickCacheEntry(memoryKey);
+  const cached = getEventbriteCacheEntry(memoryKey);
   if (cached) {
     return res.status(cached.status).type('application/json').send(cached.text);
   }
 
   const sharedCached = await readCachedResponse(
-    SONGKICK_CACHE_COLLECTION,
-    songkickCacheKeyParts({
-      apiKey: scope === 'manual' ? queryKey : effectiveKey,
+    EVENTBRITE_CACHE_COLLECTION,
+    eventbriteCacheKeyParts({
+      token: scope === 'manual' ? queryToken : effectiveToken,
       latitude,
       longitude,
-      radiusKm,
+      radiusMiles,
       startDate: normalizedStart,
       endDate
     }),
-    SONGKICK_CACHE_TTL_MS
+    EVENTBRITE_CACHE_TTL_MS
   );
   if (sharedCached) {
-    setSongkickCacheEntry(memoryKey, {
+    setEventbriteCacheEntry(memoryKey, {
       status: sharedCached.status,
       text: sharedCached.body
     });
@@ -462,47 +465,59 @@ app.get('/api/songkick', async (req, res) => {
   }
 
   const params = new URLSearchParams({
-    apikey: effectiveKey,
-    location: `geo:${latitude},${longitude}`,
-    per_page: '50',
-    min_date: normalizedStart,
-    max_date: endDate
+    'location.latitude': String(latitude),
+    'location.longitude': String(longitude),
+    expand: 'venue',
+    sort_by: 'date',
+    'start_date.range_start': `${normalizedStart}T00:00:00Z`,
+    'start_date.range_end': `${endDate}T23:59:59Z`
   });
-  if (Number.isFinite(radiusKm)) {
-    params.set('radius', radiusKm.toFixed(1));
+
+  if (Number.isFinite(radiusMiles)) {
+    params.set('location.within', `${Math.min(Math.max(radiusMiles, 1), 1000).toFixed(1)}mi`);
+  } else {
+    params.set('location.within', '100.0mi');
   }
 
-  const url = `https://api.songkick.com/api/3.0/events.json?${params.toString()}`;
+  const url = `https://www.eventbriteapi.com/v3/events/search/?${params.toString()}`;
 
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${effectiveToken}`
+      }
+    });
     const text = await response.text();
     if (response.ok) {
-      setSongkickCacheEntry(memoryKey, { status: response.status, text });
-      await writeCachedResponse(SONGKICK_CACHE_COLLECTION, songkickCacheKeyParts({
-        apiKey: scope === 'manual' ? queryKey : effectiveKey,
-        latitude,
-        longitude,
-        radiusKm,
-        startDate: normalizedStart,
-        endDate
-      }), {
-        status: response.status,
-        contentType: 'application/json',
-        body: text,
-        metadata: {
+      setEventbriteCacheEntry(memoryKey, { status: response.status, text });
+      await writeCachedResponse(
+        EVENTBRITE_CACHE_COLLECTION,
+        eventbriteCacheKeyParts({
+          token: scope === 'manual' ? queryToken : effectiveToken,
           latitude,
           longitude,
-          radiusMiles: Number.isFinite(radiusMiles) ? radiusMiles : null,
+          radiusMiles,
           startDate: normalizedStart,
-          endDate,
-          usingDefaultKey: !queryKey
+          endDate
+        }),
+        {
+          status: response.status,
+          contentType: 'application/json',
+          body: text,
+          metadata: {
+            latitude,
+            longitude,
+            radiusMiles: Number.isFinite(radiusMiles) ? radiusMiles : null,
+            startDate: normalizedStart,
+            endDate,
+            usingDefaultToken: !queryToken
+          }
         }
-      });
+      );
     }
     res.status(response.status).type('application/json').send(text);
   } catch (err) {
-    console.error('Songkick fetch failed', err);
+    console.error('Eventbrite fetch failed', err);
     res.status(500).json({ error: 'failed' });
   }
 });
