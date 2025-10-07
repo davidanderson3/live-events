@@ -26,9 +26,11 @@ describe('initTabs (streamlined)', () => {
   async function initTabsWithDom(savedPanel) {
     const dom = new JSDOM(`
       <button class="tab-button" data-target="moviesPanel"></button>
+      <button class="tab-button" data-target="tvPanel"></button>
       <button class="tab-button" data-target="showsPanel"></button>
       <button class="tab-button" data-target="restaurantsPanel"></button>
       <div id="moviesPanel"></div>
+      <div id="tvPanel"></div>
       <div id="showsPanel"></div>
       <div id="restaurantsPanel"></div>
     `, { url: 'http://localhost/' });
@@ -39,6 +41,7 @@ describe('initTabs (streamlined)', () => {
     global.localStorage = setupStorage(savedPanel);
 
     global.window.initMoviesPanel = vi.fn();
+    global.window.initTvPanel = vi.fn();
     global.window.initShowsPanel = vi.fn();
     global.window.initRestaurantsPanel = vi.fn();
 
@@ -55,6 +58,14 @@ describe('initTabs (streamlined)', () => {
     expect(active?.dataset.target).toBe('showsPanel');
     expect(dom.window.document.getElementById('showsPanel').style.display).toBe('flex');
     expect(dom.window.initShowsPanel).toHaveBeenCalled();
+  });
+
+  it('activates the tv panel when saved', async () => {
+    const dom = await initTabsWithDom('tvPanel');
+    const active = dom.window.document.querySelector('.tab-button.active');
+    expect(active?.dataset.target).toBe('tvPanel');
+    expect(dom.window.document.getElementById('tvPanel').style.display).toBe('flex');
+    expect(dom.window.initTvPanel).toHaveBeenCalled();
   });
 
   it('defaults to moviesPanel when saved panel is missing', async () => {
