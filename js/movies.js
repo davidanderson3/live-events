@@ -2088,6 +2088,35 @@ function writeTmdbDiscoverState(key, state) {
   markTmdbDiscoverStateDirty();
 }
 
+function normalizeCachedMovie(movie) {
+  if (!movie || typeof movie !== 'object') return null;
+  const normalized = { ...movie };
+
+  if (normalized.vote_average == null && normalized.score != null) {
+    const average = Number(normalized.score);
+    if (Number.isFinite(average)) {
+      normalized.vote_average = average;
+    }
+  }
+
+  if (normalized.vote_count == null && normalized.voteCount != null) {
+    const votes = Number.parseInt(normalized.voteCount, 10);
+    if (Number.isFinite(votes)) {
+      normalized.vote_count = votes;
+    }
+  }
+
+  if (!normalized.release_date && typeof normalized.releaseDate === 'string') {
+    normalized.release_date = normalized.releaseDate;
+  }
+
+  if (!normalized.title && typeof normalized.name === 'string') {
+    normalized.title = normalized.name;
+  }
+
+  return normalized;
+}
+
 function collectMoviesFromCache(results, suppressedIds) {
   const seen = new Set();
   const collected = [];
@@ -2097,7 +2126,9 @@ function collectMoviesFromCache(results, suppressedIds) {
     if (seen.has(idKey)) return;
     seen.add(idKey);
     if (suppressedIds.has(idKey)) return;
-    collected.push(movie);
+    const normalized = normalizeCachedMovie(movie);
+    if (!normalized) return;
+    collected.push(normalized);
   });
   return applyPriorityOrdering(collected);
 }
