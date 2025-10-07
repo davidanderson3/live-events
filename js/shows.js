@@ -1177,7 +1177,8 @@ export async function initShowsPanel() {
     apiKeyInput.style.display = 'none';
   }
 
-  const redirectUri = window.location.origin + window.location.pathname;
+  const canonicalPath = window.location.pathname.replace(/index\.html$/, '');
+  const redirectUri = window.location.origin + (canonicalPath || '/');
 
   const updateSpotifyStatus = () => {
     const storedToken =
