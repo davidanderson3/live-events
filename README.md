@@ -12,7 +12,7 @@ Dashboard is a personal decision-making and entertainment hub that brings movie 
 - [How the Live Music Discover Flow Works](#how-the-live-music-discover-flow-works)
   - [Spotify endpoints in use](#spotify-endpoints-in-use)
   - [Using liked songs instead of top artists](#using-liked-songs-instead-of-top-artists)
-  - [Songkick integration](#songkick-integration)
+- [Eventbrite integration](#eventbrite-integration)
 - [Architecture Overview](#architecture-overview)
 - [Configuration & Required Secrets](#configuration--required-secrets)
 - [Local Development](#local-development)
@@ -33,10 +33,10 @@ The Movies tab is a curated discovery feed for film night:
 ### Live Music
 The Live Music tab surfaces concerts near you for the artists you actually play:
 - **One-click Spotify login** that uses PKCE to obtain a user token with `user-top-read` (and optionally `user-read-email`) scopes.
-- **Songkick API key input** with client-side caching and a server-side rolling cache keyed by location and start date to stay within the daily quota.
+- **Eventbrite API token input** with client-side caching and a server-side rolling cache keyed by location and start date to stay within the daily quota.
 - **Configurable radius and artist limit** stored in local storage so the app remembers your preferences.
 - **Fallback recommendations** – if none of your top artists are touring near you, the tab can show Spotify-generated similar artists based on the same listening history.
-- **Inline status messages** explaining why no shows were found (e.g., no Songkick key, geolocation blocked, Spotify token expired).
+- **Inline status messages** explaining why no shows were found (e.g., no Eventbrite token, geolocation blocked, Spotify token expired).
 
 ### Recipes
 Cook something new with the Recipes tab:
@@ -64,7 +64,7 @@ The Discover button coordinates multiple APIs and caches to turn your Spotify hi
 
 ### Spotify endpoints in use
 1. **`GET https://api.spotify.com/v1/me/top/artists`** – After login the client requests your top artists (default limit 10, user-adjustable up to 50). This endpoint is scoped by `user-top-read` and reflects listening history across roughly the last 6 months.
-2. **`GET https://api.spotify.com/v1/recommendations`** – When the "Show Spotify recommendations" toggle is on and no local concerts are found, the client requests related artists using your top artist IDs as seeds. Those suggestions are clearly labeled so you can tell when they come from Spotify rather than Songkick.
+2. **`GET https://api.spotify.com/v1/recommendations`** – When the "Show Spotify recommendations" toggle is on and no local concerts are found, the client requests related artists using your top artist IDs as seeds. Those suggestions are clearly labeled so you can tell when they come from Spotify rather than Eventbrite.
 
 Additional Spotify endpoints already supported by the backend for auth/UI parity:
 - **`GET /api/spotify-client-id`** – a tiny Express endpoint that keeps the client ID out of source control while letting the browser bootstrap the PKCE flow.
@@ -78,15 +78,15 @@ Spotify does not expose a dedicated "liked artists" API, but you can approximate
 If you want Discover to prefer liked artists, you can swap out the Top Artists call in `js/shows.js` for a loop that pages through the saved tracks endpoint (50 items per request) and tallies unique artist IDs. Keep in mind:
 - Saved tracks are capped at 10,000 entries; fetch in batches using the `offset` parameter.
 - The `user-library-read` scope must be added to the login flow when you initialize the Spotify PKCE request.
-- Liked tracks favor individual songs, so you may wish to weigh artists by the number of occurrences before querying Songkick to avoid one-off features dominating the list.
+- Liked tracks favor individual songs, so you may wish to weigh artists by the number of occurrences before querying Eventbrite to avoid one-off features dominating the list.
 
-### Songkick integration
-The Songkick proxy performs a location-first search and the client highlights artists you already play:
-1. Calls the Express proxy at `/api/songkick` with your latitude, longitude, radius, start date (today), and a 14-day lookahead. The proxy converts miles to kilometers, persists a rolling 24-hour cache keyed by location and start date, and accepts either the server-side key or a manually supplied one. The client mirrors that policy by caching responses for the same 24-hour window to avoid burning additional Songkick quota on repeat searches.
+### Eventbrite integration
+The Eventbrite proxy performs a location-first search and the client highlights artists you already play:
+1. Calls the Express proxy at `/api/eventbrite` with your latitude, longitude, radius, start date (today), and a 14-day lookahead. The proxy converts the radius to Eventbrite's `within` parameter, persists a rolling 24-hour cache keyed by location and start date, and accepts either the server-side token or a manually supplied one. The client mirrors that policy by caching responses for the same 24-hour window to avoid burning additional Eventbrite quota on repeat searches.
 2. Filters the returned events to your configured radius and promotes matches whose performers overlap with your top Spotify artists.
 3. Sorts events by proximity and renders ticket links, badges, and Interested/Not Interested actions in the dashboard.
 
-If no Songkick API key is available, Discover prompts for one and never transmits the request without explicit credentials.
+If no Eventbrite API token is available, Discover prompts for one and never transmits the request without explicit credentials.
 
 ### Alternative live music APIs
 If you want a broader "what's happening near me" search without providing artist keywords, consider wiring an additional proxy
@@ -95,12 +95,12 @@ to one of these location-first providers:
 - **SeatGeek Discovery API** – `https://api.seatgeek.com/2/events` accepts `lat`, `lon`, and `range` (miles) parameters so you can request all concerts within a radius. Scope results by `type=concert` and cache responses per rounded coordinate bucket to avoid burning through rate limits.
 - **Bandsintown Events API** – `https://rest.bandsintown.com/v4/events` lets you search by `location=LAT,LON` and `radius`. It requires a public app ID and the responses already include venue coordinates, which simplifies distance sorting client-side.
 
-Each provider has distinct authentication and rate limits, so mirror the existing Songkick proxy pattern: store keys server-side, normalize fields to the UI's expected shape (e.g., name, venue, datetime, ticket URL, distance), and short-circuit when no credentials are configured.
+Each provider has distinct authentication and rate limits, so mirror the existing Eventbrite proxy pattern: store tokens server-side, normalize fields to the UI's expected shape (e.g., name, venue, datetime, ticket URL, distance), and short-circuit when no credentials are configured.
 
 ## Architecture Overview
 - **Front end** – A hand-rolled SPA in vanilla JS, HTML, and CSS. Each tab has a dedicated module under `js/` that owns its DOM bindings, local storage, and network calls.
 - **Auth & persistence** – Firebase Auth (Google provider) and Firestore handle user login state plus long-term storage for movies, tab descriptions, and other preferences. Firestore is initialized with persistent caching so the UI stays responsive offline.
-- **Server** – `backend/server.js` is an Express app that serves the static bundle, proxies external APIs (Songkick, Yelp, Spoonacular), and exposes helper routes for descriptions, saved movies, Plaid item creation, etc. It also normalizes responses and caches expensive calls to protect third-party rate limits.
+- **Server** – `backend/server.js` is an Express app that serves the static bundle, proxies external APIs (Eventbrite, Yelp, Spoonacular), and exposes helper routes for descriptions, saved movies, Plaid item creation, etc. It also normalizes responses and caches expensive calls to protect third-party rate limits.
 - **Cloud Functions** – The `functions/` directory mirrors much of the server logic for deployments that rely on Firebase Functions instead of the local Express instance.
 - **Shared utilities** – Reusable helpers live under `shared/` (e.g., caching primitives, recipe normalization) so both the server and Cloud Functions share a single implementation.
 - **Node scripts** – `scripts/` contains operational tooling for geodata imports, monitoring, and static asset generation. They rely on environment variables documented below.
@@ -113,7 +113,7 @@ Create a `.env` in the project root (and optionally `backend/.env`) with the cre
 | `PORT` | Express server | Override the default `3003` port. |
 | `HOST` | Express server | Bind address; defaults to `0.0.0.0`. |
 | `SPOTIFY_CLIENT_ID` | `/api/spotify-client-id` | PKCE client ID for Spotify login. |
-| `SONGKICK_API_KEY` | Songkick proxy | Songkick Events API key. |
+| `EVENTBRITE_API_TOKEN` or `EVENTBRITE_OAUTH_TOKEN` | Eventbrite proxy | Eventbrite personal token used for the Events Search API. |
 | `SPOONACULAR_KEY` | Spoonacular proxy | API key for recipe search. |
 | `YELP_API_KEY` | Restaurants proxy | Yelp Fusion API key if you do not pass one per request. |
 | `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV` | Plaid endpoints | Enable financial account linking workflows. |
@@ -132,7 +132,7 @@ Remember to also configure Firebase (see `firebase.json` and `.firebaserc`) if y
    npm start
    ```
    This launches the Express server on `http://localhost:3003` and serves `index.html` plus the API proxies.
-3. **Set up API keys** – Supply environment variables or enter keys in the UI (e.g., TMDB, Songkick). For Spotify you must configure `SPOTIFY_CLIENT_ID` before attempting to log in.
+3. **Set up API keys** – Supply environment variables or enter tokens in the UI (e.g., TMDB, Eventbrite). For Spotify you must configure `SPOTIFY_CLIENT_ID` before attempting to log in.
 4. **Optional Firebase emulators** – If you prefer not to use the production Firestore project during development, configure the Firebase emulator suite and point the app to it.
 
 ## Testing
@@ -141,7 +141,7 @@ Remember to also configure Firebase (see `firebase.json` and `.firebaserc`) if y
 
 ## Troubleshooting Checklist
 - **Spotify login issues** – confirm the redirect URI configured in your Spotify developer dashboard matches the origin and that you requested the correct scopes (`user-top-read` plus `user-library-read` if you enable liked-artist mode).
-- **Empty Discover results** – verify your Songkick key is present and that the search radius encompasses nearby venues; the UI will also display the last error returned by the Songkick API.
+- **Empty Discover results** – verify your Eventbrite token is present and that the search radius encompasses nearby venues; the UI will also display the last error returned by the Eventbrite API.
 - **Spoonacular quota errors** – the proxy caches responses for six hours; if you keep seeing rate-limit messages clear the cache collection in Firestore or wait for the TTL to expire.
 - **Firestore permission denials** – authenticate with Google using the Sign In button; most persistence features require a logged-in user.
 - **Yelp proxy failures** – ensure the `x-api-key` header or `YELP_API_KEY` env var is set. The API returns `missing yelp api key` if not.
