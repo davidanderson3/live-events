@@ -77,6 +77,9 @@ describe('initRecipesPanel', () => {
     const cards = document.querySelectorAll('#recipesList .recipe-card');
     expect(cards.length).toBe(2);
 
+    const preview = cards[0].querySelector('.recipe-card__ingredient-preview');
+    expect(preview.textContent).toBe('Key ingredients: chicken, water');
+
     const summary = cards[0].querySelector('.recipe-card__summary').textContent;
     expect(summary).toBe('Rich soup');
 

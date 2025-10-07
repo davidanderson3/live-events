@@ -357,6 +357,18 @@ export async function initRecipesPanel() {
           card.appendChild(figure);
         }
 
+        if (recipe.ingredients.length) {
+          const preview = document.createElement('p');
+          preview.className = 'recipe-card__ingredient-preview';
+          const previewItems = recipe.ingredients.slice(0, 5);
+          const previewText = previewItems.join(', ');
+          const hasMore = recipe.ingredients.length > previewItems.length;
+          preview.textContent = hasMore
+            ? `Key ingredients: ${previewText}\u2026`
+            : `Key ingredients: ${previewText}`;
+          card.appendChild(preview);
+        }
+
         if (recipe.summary) {
           const summaryWrap = document.createElement('div');
           summaryWrap.className = 'recipe-card__summary-wrap';

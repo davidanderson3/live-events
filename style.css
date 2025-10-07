@@ -3225,6 +3225,13 @@ h2 {
   color: #453c2f;
 }
 
+.recipe-card__ingredient-preview {
+  margin: 0.65rem 0 0.55rem 0;
+  font-size: 0.9rem;
+  color: #4a3d2a;
+  font-weight: 500;
+}
+
 .recipe-card__ingredients,
 .recipe-card__steps {
   margin: 0;
