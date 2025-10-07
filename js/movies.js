@@ -22,6 +22,17 @@ const unsupportedProxyEndpoints = new Set();
 
 const SUPPRESSED_STATUSES = new Set(['watched', 'notInterested', 'interested']);
 
+const FEED_FILTERS_KEY = 'movieFeedFilters';
+const DEFAULT_FEED_FILTER_STATE = Object.freeze({
+  minRating: '',
+  minVotes: '',
+  startYear: '',
+  endYear: '',
+  genreId: ''
+});
+
+let feedFilterState = { ...DEFAULT_FEED_FILTER_STATE };
+
 const domRefs = {
   list: null,
   interestedList: null,
@@ -33,7 +44,13 @@ const domRefs = {
   streamSection: null,
   interestedSection: null,
   watchedSection: null,
-  watchedSort: null
+  watchedSort: null,
+  feedControls: null,
+  feedMinRating: null,
+  feedMinVotes: null,
+  feedStartYear: null,
+  feedEndYear: null,
+  feedGenre: null
 };
 
 let currentMovies = [];
@@ -114,6 +131,201 @@ function saveLocalPrefs(prefs) {
   } catch (_) {
     /* ignore */
   }
+}
+
+function sanitizeFeedFilterValue(name, rawValue) {
+  const value = rawValue == null ? '' : String(rawValue).trim();
+  if (!value) return '';
+
+  if (name === 'minRating') {
+    const number = Number.parseFloat(value.replace(',', '.'));
+    if (!Number.isFinite(number)) return '';
+    const clamped = Math.max(0, Math.min(10, number));
+    return clamped.toString();
+  }
+
+  if (name === 'minVotes') {
+    const number = Number.parseInt(value, 10);
+    if (!Number.isFinite(number)) return '';
+    return Math.max(0, number).toString();
+  }
+
+  if (name === 'startYear' || name === 'endYear') {
+    const number = Number.parseInt(value, 10);
+    if (!Number.isFinite(number)) return '';
+    return number.toString();
+  }
+
+  if (name === 'genreId') {
+    return value;
+  }
+
+  return value;
+}
+
+function sanitizeFeedFiltersState(state) {
+  const base = { ...DEFAULT_FEED_FILTER_STATE };
+  if (!state || typeof state !== 'object') {
+    return base;
+  }
+
+  return {
+    ...base,
+    minRating: sanitizeFeedFilterValue('minRating', state.minRating),
+    minVotes: sanitizeFeedFilterValue('minVotes', state.minVotes),
+    startYear: sanitizeFeedFilterValue('startYear', state.startYear),
+    endYear: sanitizeFeedFilterValue('endYear', state.endYear),
+    genreId: sanitizeFeedFilterValue('genreId', state.genreId)
+  };
+}
+
+function loadFeedFilterStateFromStorage() {
+  if (typeof localStorage === 'undefined') {
+    return { ...DEFAULT_FEED_FILTER_STATE };
+  }
+  try {
+    const raw = localStorage.getItem(FEED_FILTERS_KEY);
+    if (!raw) return { ...DEFAULT_FEED_FILTER_STATE };
+    const parsed = JSON.parse(raw);
+    return sanitizeFeedFiltersState(parsed);
+  } catch (_) {
+    return { ...DEFAULT_FEED_FILTER_STATE };
+  }
+}
+
+function saveFeedFilters(state) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const sanitized = sanitizeFeedFiltersState(state);
+    localStorage.setItem(FEED_FILTERS_KEY, JSON.stringify(sanitized));
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function updateFeedFilterInputsFromState() {
+  if (domRefs.feedMinRating) {
+    domRefs.feedMinRating.value = feedFilterState.minRating ?? '';
+  }
+  if (domRefs.feedMinVotes) {
+    domRefs.feedMinVotes.value = feedFilterState.minVotes ?? '';
+  }
+  if (domRefs.feedStartYear) {
+    domRefs.feedStartYear.value = feedFilterState.startYear ?? '';
+  }
+  if (domRefs.feedEndYear) {
+    domRefs.feedEndYear.value = feedFilterState.endYear ?? '';
+  }
+  if (domRefs.feedGenre) {
+    domRefs.feedGenre.value = feedFilterState.genreId ?? '';
+  }
+}
+
+function setFeedFilter(name, rawValue, { sanitize = false, persist = true } = {}) {
+  if (!Object.prototype.hasOwnProperty.call(feedFilterState, name)) return;
+
+  const rawString = rawValue == null ? '' : String(rawValue);
+  const value = sanitize
+    ? sanitizeFeedFilterValue(name, rawString)
+    : rawString.trim();
+
+  const hasChanged = feedFilterState[name] !== value;
+  if (hasChanged) {
+    feedFilterState = { ...feedFilterState, [name]: value };
+  }
+
+  if (sanitize) {
+    updateFeedFilterInputsFromState();
+  }
+
+  if (persist) {
+    saveFeedFilters(feedFilterState);
+  }
+
+  if (hasChanged || sanitize) {
+    renderFeed();
+  }
+}
+
+function populateFeedGenreOptions() {
+  const select = domRefs.feedGenre;
+  if (!select) return;
+
+  const entries = Object.entries(genreMap || {}).sort((a, b) => {
+    const nameA = String(a[1] ?? '');
+    const nameB = String(b[1] ?? '');
+    return nameA.localeCompare(nameB);
+  });
+
+  const currentValue = feedFilterState.genreId ?? '';
+  const fragment = document.createDocumentFragment();
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent = 'All Genres';
+  fragment.appendChild(defaultOption);
+
+  let hasMatch = currentValue === '';
+  entries.forEach(([id, name]) => {
+    const option = document.createElement('option');
+    option.value = String(id);
+    option.textContent = String(name || 'Unknown');
+    if (!hasMatch && String(id) === currentValue) {
+      hasMatch = true;
+    }
+    fragment.appendChild(option);
+  });
+
+  select.innerHTML = '';
+  select.appendChild(fragment);
+
+  if (!hasMatch && currentValue) {
+    feedFilterState = { ...feedFilterState, genreId: '' };
+    saveFeedFilters(feedFilterState);
+    select.value = '';
+    renderFeed();
+    return;
+  }
+
+  select.value = currentValue;
+}
+
+function attachFeedFilterInput(element, name) {
+  if (!element) return;
+
+  if (element._feedFilterInputHandler) {
+    element.removeEventListener('input', element._feedFilterInputHandler);
+  }
+  if (element._feedFilterChangeHandler) {
+    element.removeEventListener('change', element._feedFilterChangeHandler);
+  }
+
+  const inputHandler = event => {
+    setFeedFilter(name, event.target.value, { persist: false });
+  };
+
+  const changeHandler = event => {
+    setFeedFilter(name, event.target.value, { sanitize: true, persist: true });
+  };
+
+  element._feedFilterInputHandler = inputHandler;
+  element._feedFilterChangeHandler = changeHandler;
+  element.addEventListener('input', inputHandler);
+  element.addEventListener('change', changeHandler);
+}
+
+function attachFeedFilterSelect(element, name) {
+  if (!element) return;
+
+  if (element._feedFilterSelectHandler) {
+    element.removeEventListener('change', element._feedFilterSelectHandler);
+  }
+
+  const handler = event => {
+    setFeedFilter(name, event.target.value, { sanitize: true, persist: true });
+  };
+
+  element._feedFilterSelectHandler = handler;
+  element.addEventListener('change', handler);
 }
 
 async function loadPreferences() {
@@ -452,6 +664,111 @@ function getVoteCountValue(movie) {
   return Number.isFinite(value) ? value : null;
 }
 
+function getFilterFloat(value, min = -Infinity, max = Infinity) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  const number = Number.parseFloat(trimmed.replace(',', '.'));
+  if (!Number.isFinite(number)) return null;
+  const clamped = Math.min(max, Math.max(min, number));
+  return clamped;
+}
+
+function getFilterInt(value, min = -Infinity, max = Infinity) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  const number = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(number)) return null;
+  const clamped = Math.min(max, Math.max(min, number));
+  return clamped;
+}
+
+function getMovieReleaseYear(movie) {
+  if (!movie) return null;
+  const raw = String(movie.release_date || movie.first_air_date || '').trim();
+  if (!raw) return null;
+  const year = Number.parseInt(raw.slice(0, 4), 10);
+  return Number.isFinite(year) ? year : null;
+}
+
+function getMovieGenreIdSet(movie) {
+  const ids = new Set();
+  if (movie && Array.isArray(movie.genre_ids)) {
+    movie.genre_ids.forEach(id => {
+      const num = Number(id);
+      if (Number.isFinite(num)) {
+        ids.add(num);
+      }
+    });
+  }
+  if (movie && Array.isArray(movie.genres)) {
+    movie.genres.forEach(entry => {
+      const num = Number(entry?.id);
+      if (Number.isFinite(num)) {
+        ids.add(num);
+      }
+    });
+  }
+  return ids;
+}
+
+function applyFeedFilters(movies) {
+  if (!Array.isArray(movies) || !movies.length) return [];
+
+  const minRating = getFilterFloat(feedFilterState.minRating, 0, 10);
+  const minVotes = getFilterInt(feedFilterState.minVotes, 0);
+  let startYear = getFilterInt(feedFilterState.startYear, 1800, 3000);
+  let endYear = getFilterInt(feedFilterState.endYear, 1800, 3000);
+
+  if (startYear != null && endYear != null && endYear < startYear) {
+    const temp = startYear;
+    startYear = endYear;
+    endYear = temp;
+  }
+
+  const rawGenreId = feedFilterState.genreId;
+  const genreId = rawGenreId != null && String(rawGenreId).trim() !== ''
+    ? Number.parseInt(rawGenreId, 10)
+    : null;
+  const hasGenreFilter = Number.isFinite(genreId);
+
+  return movies.filter(movie => {
+    if (minRating != null) {
+      const rating = getVoteAverageValue(movie);
+      if (rating == null || rating < minRating) {
+        return false;
+      }
+    }
+
+    if (minVotes != null) {
+      const votes = getVoteCountValue(movie);
+      if (votes == null || votes < minVotes) {
+        return false;
+      }
+    }
+
+    if (startYear != null || endYear != null) {
+      const year = getMovieReleaseYear(movie);
+      if (startYear != null && (year == null || year < startYear)) {
+        return false;
+      }
+      if (endYear != null && (year == null || year > endYear)) {
+        return false;
+      }
+    }
+
+    if (hasGenreFilter) {
+      const ids = getMovieGenreIdSet(movie);
+      if (!ids.has(genreId)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
 function createRatingElement(movie) {
   const rating = getVoteAverageValue(movie);
   const votes = getVoteCountValue(movie);
@@ -736,9 +1053,9 @@ function renderFeed() {
     return;
   }
 
-  const feedMovies = getFeedMovies(currentMovies);
+  const availableMovies = getFeedMovies(currentMovies);
 
-  if (!feedMovies.length) {
+  if (!availableMovies.length) {
     if (refillInProgress) {
       listEl.innerHTML = '<em>Loading more movies...</em>';
       return;
@@ -748,8 +1065,15 @@ function renderFeed() {
     return;
   }
 
+  const filteredMovies = applyFeedFilters(availableMovies);
+
+  if (!filteredMovies.length) {
+    listEl.innerHTML = '<em>No movies match the current filters.</em>';
+    return;
+  }
+
   const ul = document.createElement('ul');
-  feedMovies.forEach(movie => {
+  filteredMovies.forEach(movie => {
     const li = document.createElement('li');
     li.className = 'movie-card';
 
@@ -1295,6 +1619,8 @@ async function loadMovies() {
     const genres = usingProxy ? await fetchGenreMapFromProxy() : await fetchGenreMapDirect(apiKey);
     currentMovies = movies;
     genreMap = genres;
+    populateFeedGenreOptions();
+    updateFeedFilterInputsFromState();
     feedExhausted = !currentMovies.length;
     refreshUI();
   } catch (err) {
@@ -1328,8 +1654,23 @@ export async function initMoviesPanel() {
   domRefs.interestedSection = document.getElementById('savedMoviesSection');
   domRefs.watchedSection = document.getElementById('watchedMoviesSection');
   domRefs.watchedSort = document.getElementById('watchedMoviesSort');
+  domRefs.feedControls = document.getElementById('movieFeedControls');
+  domRefs.feedMinRating = document.getElementById('movieFilterMinRating');
+  domRefs.feedMinVotes = document.getElementById('movieFilterMinVotes');
+  domRefs.feedStartYear = document.getElementById('movieFilterStartYear');
+  domRefs.feedEndYear = document.getElementById('movieFilterEndYear');
+  domRefs.feedGenre = document.getElementById('movieFilterGenre');
 
   currentPrefs = await loadPreferences();
+
+  feedFilterState = loadFeedFilterStateFromStorage();
+  updateFeedFilterInputsFromState();
+
+  attachFeedFilterInput(domRefs.feedMinRating, 'minRating');
+  attachFeedFilterInput(domRefs.feedMinVotes, 'minVotes');
+  attachFeedFilterInput(domRefs.feedStartYear, 'startYear');
+  attachFeedFilterInput(domRefs.feedEndYear, 'endYear');
+  attachFeedFilterSelect(domRefs.feedGenre, 'genreId');
 
   const storedKey =
     (typeof window !== 'undefined' && window.tmdbApiKey) ||

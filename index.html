@@ -60,6 +60,59 @@
             <button class="movie-tab" data-target="watchedMoviesSection">Watched Movies</button>
           </div>
           <div id="movieStreamSection">
+            <div id="movieFeedControls" class="movie-controls movie-filter-controls">
+              <div class="movie-filter-field">
+                <label for="movieFilterMinRating">Min Rating</label>
+                <input
+                  type="number"
+                  id="movieFilterMinRating"
+                  name="movieFilterMinRating"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  inputmode="decimal"
+                  placeholder="e.g. 7"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="movieFilterMinVotes">Min Votes</label>
+                <input
+                  type="number"
+                  id="movieFilterMinVotes"
+                  name="movieFilterMinVotes"
+                  min="0"
+                  step="1"
+                  inputmode="numeric"
+                  placeholder="e.g. 100"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="movieFilterStartYear">Earliest Year</label>
+                <input
+                  type="number"
+                  id="movieFilterStartYear"
+                  name="movieFilterStartYear"
+                  inputmode="numeric"
+                  placeholder="e.g. 2010"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="movieFilterEndYear">Latest Year</label>
+                <input
+                  type="number"
+                  id="movieFilterEndYear"
+                  name="movieFilterEndYear"
+                  inputmode="numeric"
+                  placeholder="e.g. 2024"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="movieFilterGenre">Genre</label>
+                <select id="movieFilterGenre" name="movieFilterGenre">
+                  <option value="">All Genres</option>
+                </select>
+              </div>
+            </div>
             <div id="movieList" class="decision-container"></div>
           </div>
           <div id="savedMoviesSection" style="display:none;">
