@@ -33,6 +33,7 @@
       </div>
       <div class="tabs scroll-tabs" id="tabsContainer" style="visibility:hidden;">
         <button class="tab-button active" data-target="moviesPanel">Movies</button>
+        <button class="tab-button" data-target="tvPanel">TV Shows</button>
         <button class="tab-button" data-target="showsPanel">Live Music</button>
         <button class="tab-button" data-target="restaurantsPanel">Restaurants</button>
       </div>
@@ -131,6 +132,101 @@
             <div id="watchedMoviesList" class="decision-container"></div>
           </div>
           <footer id="tmdbNotice" class="tmdb-notice">
+            Uses the <a href="https://developer.themoviedb.org/reference/intro/getting-started" target="_blank" rel="noopener noreferrer">TMDB API</a>.
+          </footer>
+        </div>
+      </div>
+
+    <!-- TV SHOWS PANEL -->
+      <div id="tvPanel" class="main-layout" style="display:none">
+        <div class="full-column">
+          <div class="panel-header">
+            <h2>TV Shows</h2>
+            <button type="button" class="icon-btn tab-hide-btn" title="Hide Tab">🕒</button>
+          </div>
+          <div id="tvForm" style="margin-bottom:1rem;">
+            <div id="tvApiKeyContainer" style="display:inline-block;">
+              <input type="password" id="tvApiKey" placeholder="TMDB API Key" style="margin-right:.5rem;">
+            </div>
+          </div>
+          <div id="tvTabs" class="movie-tabs">
+            <button class="movie-tab active" data-target="tvStreamSection">Show Stream</button>
+            <button class="movie-tab" data-target="savedTvSection">Saved Shows</button>
+            <button class="movie-tab" data-target="watchedTvSection">Watched Shows</button>
+          </div>
+          <div id="tvStreamSection">
+            <div id="tvFeedControls" class="movie-controls movie-filter-controls">
+              <div class="movie-filter-field">
+                <label for="tvFilterMinRating">Min Rating</label>
+                <input
+                  type="number"
+                  id="tvFilterMinRating"
+                  name="tvFilterMinRating"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  inputmode="decimal"
+                  placeholder="e.g. 7"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="tvFilterMinVotes">Min Votes</label>
+                <input
+                  type="number"
+                  id="tvFilterMinVotes"
+                  name="tvFilterMinVotes"
+                  min="0"
+                  step="1"
+                  inputmode="numeric"
+                  placeholder="e.g. 100"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="tvFilterStartYear">Earliest Year</label>
+                <input
+                  type="number"
+                  id="tvFilterStartYear"
+                  name="tvFilterStartYear"
+                  inputmode="numeric"
+                  placeholder="e.g. 2010"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="tvFilterEndYear">Latest Year</label>
+                <input
+                  type="number"
+                  id="tvFilterEndYear"
+                  name="tvFilterEndYear"
+                  inputmode="numeric"
+                  placeholder="e.g. 2024"
+                />
+              </div>
+              <div class="movie-filter-field">
+                <label for="tvFilterGenre">Genre</label>
+                <select id="tvFilterGenre" name="tvFilterGenre">
+                  <option value="">All Genres</option>
+                </select>
+              </div>
+            </div>
+            <div id="tvStatus" class="movie-status" aria-live="polite"></div>
+            <div id="tvList" class="decision-container"></div>
+          </div>
+          <div id="savedTvSection" style="display:none;">
+            <div id="savedTvFilters" class="genre-filter"></div>
+            <div id="savedTvList" class="decision-container"></div>
+          </div>
+          <div id="watchedTvSection" style="display:none;">
+            <div id="watchedTvControls" class="movie-controls">
+              <label for="watchedTvSort">Sort by:</label>
+              <select id="watchedTvSort">
+                <option value="recent">Recently Updated</option>
+                <option value="ratingDesc">Rating: High to Low</option>
+                <option value="ratingAsc">Rating: Low to High</option>
+              </select>
+            </div>
+            <div id="watchedTvList" class="decision-container"></div>
+          </div>
+          <footer class="tmdb-notice">
             Uses the <a href="https://developer.themoviedb.org/reference/intro/getting-started" target="_blank" rel="noopener noreferrer">TMDB API</a>.
           </footer>
         </div>
@@ -307,6 +403,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module" src="js/main.js"></script>
   <script type="module" src="js/movies.js"></script>
+  <script type="module" src="js/tv.js"></script>
   <script type="module" src="js/shows.js"></script>
   <script type="module" src="js/restaurants.js"></script>
   <script type="module" src="js/weather.js"></script>
