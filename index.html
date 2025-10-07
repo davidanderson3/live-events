@@ -211,7 +211,7 @@
               aria-selected="true"
               aria-controls="restaurantsNearby"
             >
-              Nearby
+              Feed
             </button>
             <button
               type="button"
@@ -223,6 +223,17 @@
               aria-controls="restaurantsSaved"
             >
               Saved
+            </button>
+            <button
+              type="button"
+              id="restaurantsFavoritesTab"
+              class="restaurants-tab"
+              data-view="favorites"
+              role="tab"
+              aria-selected="false"
+              aria-controls="restaurantsFavorites"
+            >
+              Favorites
             </button>
           </div>
           <div
@@ -236,6 +247,13 @@
             class="restaurants-section"
             role="tabpanel"
             aria-labelledby="restaurantsSavedTab"
+            hidden
+          ></div>
+          <div
+            id="restaurantsFavorites"
+            class="restaurants-section"
+            role="tabpanel"
+            aria-labelledby="restaurantsFavoritesTab"
             hidden
           ></div>
           <div id="restaurantsHiddenSection" class="restaurants-hidden" aria-live="polite"></div>

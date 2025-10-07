@@ -10,10 +10,12 @@ let mapMarkersLayer = null;
 
 const STORAGE_KEYS = {
   saved: 'restaurants:saved',
+  favorites: 'restaurants:favorites',
   hidden: 'restaurants:hidden'
 };
 
 let savedRestaurants = [];
+let favoriteRestaurants = [];
 let hiddenRestaurants = [];
 let isHiddenRestaurantsExpanded = false;
 let nearbyRestaurants = [];
@@ -27,6 +29,7 @@ const domRefs = {
   resultsRoot: null,
   nearbyContainer: null,
   savedContainer: null,
+  favoritesContainer: null,
   hiddenContainer: null,
   tabButtons: []
 };
@@ -122,11 +125,19 @@ function loadStoredState() {
   savedRestaurants = sortByDistance(
     dedupeRestaurants(readStoredList(STORAGE_KEYS.saved))
   );
+  favoriteRestaurants = sortByDistance(
+    dedupeRestaurants(readStoredList(STORAGE_KEYS.favorites))
+  );
   hiddenRestaurants = dedupeRestaurants(readStoredList(STORAGE_KEYS.hidden));
+  syncFavoritesWithSaved();
 }
 
 function persistSaved() {
   writeStoredList(STORAGE_KEYS.saved, savedRestaurants);
+}
+
+function persistFavorites() {
+  writeStoredList(STORAGE_KEYS.favorites, favoriteRestaurants);
 }
 
 function persistHidden() {
@@ -139,6 +150,12 @@ function isSaved(id) {
   return savedRestaurants.some(item => normalizeId(item.id) === normalized);
 }
 
+function isFavorite(id) {
+  const normalized = normalizeId(id);
+  if (!normalized) return false;
+  return favoriteRestaurants.some(item => normalizeId(item.id) === normalized);
+}
+
 function isHidden(id) {
   const normalized = normalizeId(id);
   if (!normalized) return false;
@@ -148,11 +165,19 @@ function isHidden(id) {
 function setSavedRestaurants(items) {
   savedRestaurants = sortByDistance(dedupeRestaurants(items));
   persistSaved();
+  syncFavoritesWithSaved();
+}
+
+function setFavoriteRestaurants(items) {
+  favoriteRestaurants = sortByDistance(dedupeRestaurants(items));
+  persistFavorites();
+  syncFavoritesWithSaved();
 }
 
 function setHiddenRestaurants(items) {
   hiddenRestaurants = dedupeRestaurants(items);
   persistHidden();
+  syncFavoritesWithSaved();
 }
 
 function updateSaveButtonState(button, restId) {
@@ -163,6 +188,30 @@ function updateSaveButtonState(button, restId) {
   button.setAttribute('aria-pressed', saved ? 'true' : 'false');
 }
 
+function updateFavoriteButtonState(button, restId) {
+  if (!button) return;
+  const favorite = isFavorite(restId);
+  button.textContent = favorite ? 'Favorited' : 'Favorite';
+  button.classList.toggle('is-active', favorite);
+  button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+}
+
+function syncFavoritesWithSaved() {
+  const savedIds = new Set(
+    savedRestaurants
+      .map(item => normalizeId(item.id))
+      .filter(id => typeof id === 'string' && id)
+  );
+  const filtered = favoriteRestaurants.filter(item => {
+    const id = normalizeId(item.id);
+    return id && savedIds.has(id) && !isHidden(id);
+  });
+  if (filtered.length !== favoriteRestaurants.length) {
+    favoriteRestaurants = filtered;
+    persistFavorites();
+  }
+}
+
 function toggleSaved(rest) {
   if (!rest) return;
   const id = normalizeId(rest.id);
@@ -170,6 +219,12 @@ function toggleSaved(rest) {
   const existingIndex = savedRestaurants.findIndex(item => normalizeId(item.id) === id);
   if (existingIndex >= 0) {
     savedRestaurants.splice(existingIndex, 1);
+    const filteredFavorites = favoriteRestaurants.filter(
+      item => normalizeId(item.id) !== id
+    );
+    if (filteredFavorites.length !== favoriteRestaurants.length) {
+      setFavoriteRestaurants(filteredFavorites);
+    }
   } else {
     const sanitized = sanitizeRestaurant(rest);
     if (sanitized) {
@@ -177,6 +232,29 @@ function toggleSaved(rest) {
     }
   }
   setSavedRestaurants(savedRestaurants);
+  renderAll();
+}
+
+function toggleFavorite(rest) {
+  if (!rest) return;
+  const id = normalizeId(rest.id);
+  if (!id) return;
+  const existingIndex = favoriteRestaurants.findIndex(
+    item => normalizeId(item.id) === id
+  );
+  if (existingIndex >= 0) {
+    const updatedFavorites = favoriteRestaurants.filter(
+      item => normalizeId(item.id) !== id
+    );
+    setFavoriteRestaurants(updatedFavorites);
+  } else {
+    const sanitized = sanitizeRestaurant(rest);
+    if (!sanitized) return;
+    if (!isSaved(id)) {
+      setSavedRestaurants([...savedRestaurants, sanitized]);
+    }
+    setFavoriteRestaurants([...favoriteRestaurants, sanitized]);
+  }
   renderAll();
 }
 
@@ -193,6 +271,11 @@ function hideRestaurant(rest) {
   }
   if (isSaved(id)) {
     setSavedRestaurants(savedRestaurants.filter(item => normalizeId(item.id) !== id));
+  }
+  if (isFavorite(id)) {
+    setFavoriteRestaurants(
+      favoriteRestaurants.filter(item => normalizeId(item.id) !== id)
+    );
   }
   renderAll();
 }
@@ -516,6 +599,17 @@ function createActions(rest) {
   });
   actions.appendChild(saveButton);
 
+  const favoriteButton = document.createElement('button');
+  favoriteButton.type = 'button';
+  favoriteButton.className = 'restaurant-action restaurant-action--favorite';
+  updateFavoriteButtonState(favoriteButton, rest.id);
+  favoriteButton.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleFavorite(rest);
+  });
+  actions.appendChild(favoriteButton);
+
   const hideButton = document.createElement('button');
   hideButton.type = 'button';
   hideButton.className = 'restaurant-action restaurant-action--danger';
@@ -752,6 +846,18 @@ function renderSavedSection() {
   renderRestaurantsList(container, list, 'No saved restaurants yet.');
 }
 
+function renderFavoritesSection() {
+  const container = domRefs.favoritesContainer;
+  if (!container) return;
+  let list = favoriteRestaurants;
+  const filtered = list.filter(rest => !isHidden(rest.id));
+  if (filtered.length !== list.length) {
+    setFavoriteRestaurants(filtered);
+    list = favoriteRestaurants;
+  }
+  renderRestaurantsList(container, list, 'No favorite restaurants yet.');
+}
+
 function renderHiddenSection() {
   const container = domRefs.hiddenContainer;
   if (!container) return;
@@ -820,6 +926,8 @@ function renderHiddenSection() {
 function updateMapForCurrentView() {
   if (currentView === 'saved') {
     updateMap(savedRestaurants);
+  } else if (currentView === 'favorites') {
+    updateMap(favoriteRestaurants);
   } else if (isFetchingNearby && !nearbyRestaurants.length) {
     clearMap();
   } else {
@@ -830,12 +938,14 @@ function updateMapForCurrentView() {
 function renderAll() {
   renderNearbySection();
   renderSavedSection();
+  renderFavoritesSection();
   renderHiddenSection();
   updateMapForCurrentView();
 }
 
 function setActiveView(view) {
-  const targetView = view === 'saved' ? 'saved' : 'nearby';
+  const validViews = ['nearby', 'saved', 'favorites'];
+  const targetView = validViews.includes(view) ? view : 'nearby';
   currentView = targetView;
   domRefs.tabButtons.forEach(button => {
     const isActive = button.dataset.view === targetView;
@@ -847,6 +957,9 @@ function setActiveView(view) {
   }
   if (domRefs.savedContainer) {
     domRefs.savedContainer.hidden = targetView !== 'saved';
+  }
+  if (domRefs.favoritesContainer) {
+    domRefs.favoritesContainer.hidden = targetView !== 'favorites';
   }
   updateMapForCurrentView();
 }
@@ -996,6 +1109,7 @@ export async function initRestaurantsPanel() {
   domRefs.resultsRoot = resultsContainer;
   domRefs.nearbyContainer = document.getElementById('restaurantsNearby');
   domRefs.savedContainer = document.getElementById('restaurantsSaved');
+  domRefs.favoritesContainer = document.getElementById('restaurantsFavorites');
   domRefs.hiddenContainer = document.getElementById('restaurantsHiddenSection');
   domRefs.tabButtons = Array.from(resultsContainer.querySelectorAll('.restaurants-tab'));
 
@@ -1008,6 +1122,7 @@ export async function initRestaurantsPanel() {
   });
 
   renderSavedSection();
+  renderFavoritesSection();
   renderHiddenSection();
   setActiveView(currentView);
 
@@ -1019,12 +1134,25 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
     if (event.key === STORAGE_KEYS.saved) {
       savedRestaurants = dedupeRestaurants(readStoredList(STORAGE_KEYS.saved));
+      savedRestaurants = sortByDistance(savedRestaurants);
+      syncFavoritesWithSaved();
       renderSavedSection();
+      renderFavoritesSection();
+      updateMapForCurrentView();
+    } else if (event.key === STORAGE_KEYS.favorites) {
+      favoriteRestaurants = sortByDistance(
+        dedupeRestaurants(readStoredList(STORAGE_KEYS.favorites))
+      );
+      syncFavoritesWithSaved();
+      renderFavoritesSection();
       updateMapForCurrentView();
     } else if (event.key === STORAGE_KEYS.hidden) {
       hiddenRestaurants = dedupeRestaurants(readStoredList(STORAGE_KEYS.hidden));
+      syncFavoritesWithSaved();
       renderHiddenSection();
       renderNearbySection();
+      renderSavedSection();
+      renderFavoritesSection();
       updateMapForCurrentView();
     }
   });

@@ -2979,6 +2979,19 @@ h2 {
   transform: none;
 }
 
+.restaurant-action--favorite {
+  background: #f4c95d;
+  color: #1f3631;
+}
+
+.restaurant-action--favorite:hover,
+.restaurant-action--favorite:focus-visible,
+.restaurant-action--favorite.is-active {
+  background: #f2b237;
+  color: #1f3631;
+  transform: none;
+}
+
 .restaurant-action--danger {
   background: #7a2e26;
 }
