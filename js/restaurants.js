@@ -370,8 +370,36 @@ function createMetaList(rest) {
 
   if (rest.phone) {
     const phone = document.createElement('li');
-    phone.textContent = `Phone: ${rest.phone}`;
+    const sanitized = sanitizePhone(rest.phone);
+    if (sanitized) {
+      const link = document.createElement('a');
+      link.href = `tel:${sanitized}`;
+      link.textContent = rest.phone;
+      link.rel = 'nofollow';
+      phone.append('Phone: ', link);
+    } else {
+      phone.textContent = `Phone: ${rest.phone}`;
+    }
     meta.appendChild(phone);
+  }
+
+  const numericReviews =
+    typeof rest.reviewCount === 'number'
+      ? rest.reviewCount
+      : typeof rest.reviewCount === 'string'
+        ? Number(rest.reviewCount)
+        : NaN;
+  if (Number.isFinite(numericReviews) && numericReviews > 0) {
+    const reviews = document.createElement('li');
+    reviews.textContent = `Reviews: ${numericReviews.toLocaleString()}`;
+    meta.appendChild(reviews);
+  }
+
+  const distanceText = formatDistance(rest.distance);
+  if (distanceText) {
+    const distance = document.createElement('li');
+    distance.textContent = `Distance: ${distanceText}`;
+    meta.appendChild(distance);
   }
 
   return meta.childNodes.length ? meta : null;
@@ -405,44 +433,15 @@ function createActions(rest) {
     : typeof rest.website === 'string'
       ? rest.website
       : '';
-  if (href) {
+  if (href && !/yelp\.com/i.test(href)) {
     const normalized = href.startsWith('http') ? href : `https://${href}`;
     const websiteLink = document.createElement('a');
     websiteLink.href = normalized;
     websiteLink.target = '_blank';
     websiteLink.rel = 'noopener noreferrer';
     websiteLink.className = 'restaurant-action';
-    websiteLink.textContent = href.includes('yelp.com') ? 'View on Yelp' : 'View Website';
+    websiteLink.textContent = 'Visit Website';
     actions.appendChild(websiteLink);
-  }
-
-  const lat = parseCoordinate(rest.latitude);
-  const lng = parseCoordinate(rest.longitude);
-  let directionsHref = '';
-  if (Number.isFinite(lat) && Number.isFinite(lng)) {
-    directionsHref = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-  } else if (rest.address) {
-    directionsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-      rest.address
-    )}`;
-  }
-  if (directionsHref) {
-    const directions = document.createElement('a');
-    directions.href = directionsHref;
-    directions.target = '_blank';
-    directions.rel = 'noopener noreferrer';
-    directions.className = 'restaurant-action';
-    directions.textContent = 'Directions';
-    actions.appendChild(directions);
-  }
-
-  const phone = sanitizePhone(rest.phone);
-  if (phone) {
-    const call = document.createElement('a');
-    call.href = `tel:${phone}`;
-    call.className = 'restaurant-action';
-    call.textContent = 'Call';
-    actions.appendChild(call);
   }
 
   const saveButton = document.createElement('button');
@@ -478,7 +477,24 @@ function createRestaurantCard(rest) {
   header.className = 'restaurant-card__header';
 
   const title = document.createElement('h3');
-  title.textContent = rest.name || 'Unnamed Restaurant';
+  const name = rest.name || 'Unnamed Restaurant';
+  const href = typeof rest.url === 'string' && rest.url
+    ? rest.url
+    : typeof rest.website === 'string'
+      ? rest.website
+      : '';
+  if (href && /yelp\.com/i.test(href)) {
+    const normalized = href.startsWith('http') ? href : `https://${href}`;
+    const link = document.createElement('a');
+    link.href = normalized;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.className = 'restaurant-card__title-link';
+    link.textContent = name;
+    title.appendChild(link);
+  } else {
+    title.textContent = name;
+  }
   header.appendChild(title);
 
   const ratingBadge = createRatingBadge(rest.rating, rest.reviewCount);
