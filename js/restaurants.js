@@ -594,49 +594,31 @@ function updateMap(items = []) {
   }
 }
 
-function computeRatingScore(rest) {
-  if (!rest) return -Infinity;
+function getDistanceValue(rest) {
+  if (!rest || typeof rest !== 'object') return Infinity;
 
-  const rawRating =
-    typeof rest.rating === 'number'
-      ? rest.rating
-      : typeof rest.rating === 'string'
-        ? Number(rest.rating)
+  const rawDistance =
+    typeof rest.distance === 'number'
+      ? rest.distance
+      : typeof rest.distance === 'string'
+        ? Number(rest.distance)
         : NaN;
-  const rating = Number.isFinite(rawRating) ? rawRating : -Infinity;
-  if (!Number.isFinite(rating)) return -Infinity;
 
-  const rawReviews =
-    typeof rest.reviewCount === 'number'
-      ? rest.reviewCount
-      : typeof rest.reviewCount === 'string'
-        ? Number(rest.reviewCount)
-        : 0;
-  const reviewCount = Number.isFinite(rawReviews) && rawReviews > 0 ? rawReviews : 0;
-
-  if (!reviewCount) {
-    return rating;
-  }
-
-  const reviewBoost = Math.min(0.3, Math.log10(reviewCount + 1) * 0.1);
-  return rating + reviewBoost;
+  return Number.isFinite(rawDistance) && rawDistance >= 0 ? rawDistance : Infinity;
 }
 
-function sortByRating(items) {
+function sortByDistance(items) {
   return [...items].sort((a, b) => {
-    const scoreA = computeRatingScore(a);
-    const scoreB = computeRatingScore(b);
-    if (scoreA === scoreB) {
-      const ratingA = typeof a.rating === 'number' ? a.rating : -Infinity;
-      const ratingB = typeof b.rating === 'number' ? b.rating : -Infinity;
-      if (ratingA === ratingB) {
-        const reviewsA = typeof a.reviewCount === 'number' ? a.reviewCount : -Infinity;
-        const reviewsB = typeof b.reviewCount === 'number' ? b.reviewCount : -Infinity;
-        return reviewsB - reviewsA;
-      }
-      return ratingB - ratingA;
+    const distanceA = getDistanceValue(a);
+    const distanceB = getDistanceValue(b);
+
+    if (distanceA === distanceB) {
+      const nameA = typeof a?.name === 'string' ? a.name.toLowerCase() : '';
+      const nameB = typeof b?.name === 'string' ? b.name.toLowerCase() : '';
+      return nameA.localeCompare(nameB);
     }
-    return scoreB - scoreA;
+
+    return distanceA - distanceB;
   });
 }
 
@@ -645,7 +627,7 @@ function filterByDistance(items, maxDistance) {
   if (!Number.isFinite(maxDistance) || maxDistance <= 0) return items;
 
   const nearby = items.filter(item => {
-    const distance = typeof item.distance === 'number' ? item.distance : NaN;
+    const distance = getDistanceValue(item);
     return Number.isFinite(distance) && distance <= maxDistance;
   });
 
@@ -658,7 +640,7 @@ function getSelectedRadiusMeters() {
 
 function updateNearbyFromRadius() {
   const filtered = filterByDistance(rawNearbyRestaurants, getSelectedRadiusMeters());
-  const sorted = sortByRating(filtered);
+  const sorted = sortByDistance(filtered);
   nearbyRestaurants = sorted;
 }
 
