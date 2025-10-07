@@ -203,6 +203,10 @@ function saveFeedFilters(state) {
   }
 }
 
+function hasActiveFeedFilters() {
+  return Object.values(feedFilterState).some(value => String(value ?? '').trim() !== '');
+}
+
 function updateFeedFilterInputsFromState() {
   if (domRefs.feedMinRating) {
     domRefs.feedMinRating.value = feedFilterState.minRating ?? '';
@@ -1032,6 +1036,7 @@ async function requestAdditionalMovies() {
     await loadMovies();
   } finally {
     refillInProgress = false;
+    renderFeed();
   }
 }
 
@@ -1045,7 +1050,9 @@ function renderFeed() {
       return;
     }
     if (feedExhausted) {
-      listEl.innerHTML = '<em>No movies found.</em>';
+      listEl.innerHTML = hasActiveFeedFilters()
+        ? '<em>No movies match the current filters.</em>'
+        : '<em>No movies found.</em>';
       return;
     }
     listEl.innerHTML = '<em>Loading more movies...</em>';
@@ -1068,7 +1075,18 @@ function renderFeed() {
   const filteredMovies = applyFeedFilters(availableMovies);
 
   if (!filteredMovies.length) {
-    listEl.innerHTML = '<em>No movies match the current filters.</em>';
+    if (refillInProgress) {
+      listEl.innerHTML = '<em>Loading more movies...</em>';
+      return;
+    }
+    if (feedExhausted) {
+      listEl.innerHTML = hasActiveFeedFilters()
+        ? '<em>No movies match the current filters.</em>'
+        : '<em>No movies found.</em>';
+      return;
+    }
+    listEl.innerHTML = '<em>Loading more movies...</em>';
+    requestAdditionalMovies();
     return;
   }
 
