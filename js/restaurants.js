@@ -624,6 +624,54 @@ function sortByDistance(items) {
   });
 }
 
+function getRatingValue(rest) {
+  if (!rest || typeof rest !== 'object') return -Infinity;
+
+  const rawRating =
+    typeof rest.rating === 'number'
+      ? rest.rating
+      : typeof rest.rating === 'string'
+        ? Number(rest.rating)
+        : NaN;
+
+  return Number.isFinite(rawRating) ? rawRating : -Infinity;
+}
+
+function getReviewCount(rest) {
+  if (!rest || typeof rest !== 'object') return 0;
+
+  const rawReviews =
+    typeof rest.reviewCount === 'number'
+      ? rest.reviewCount
+      : typeof rest.reviewCount === 'string'
+        ? Number(rest.reviewCount)
+        : NaN;
+
+  return Number.isFinite(rawReviews) && rawReviews >= 0 ? rawReviews : 0;
+}
+
+function sortByRating(items) {
+  return [...items].sort((a, b) => {
+    const ratingA = getRatingValue(a);
+    const ratingB = getRatingValue(b);
+
+    if (ratingA === ratingB) {
+      const reviewsA = getReviewCount(a);
+      const reviewsB = getReviewCount(b);
+
+      if (reviewsA === reviewsB) {
+        const nameA = typeof a?.name === 'string' ? a.name.toLowerCase() : '';
+        const nameB = typeof b?.name === 'string' ? b.name.toLowerCase() : '';
+        return nameA.localeCompare(nameB);
+      }
+
+      return reviewsB - reviewsA;
+    }
+
+    return ratingB - ratingA;
+  });
+}
+
 function filterByDistance(items, maxDistance) {
   if (!Array.isArray(items) || !items.length) {
     return { filtered: [], hadDistanceData: false };
@@ -632,17 +680,9 @@ function filterByDistance(items, maxDistance) {
     return { filtered: items, hadDistanceData: false };
   }
 
-  const nearby = items.filter(item => {
-    const distance = getDistanceValue(item);
-    return Number.isFinite(distance) && distance <= maxDistance;
   let hadDistanceData = false;
   const filtered = items.filter(item => {
-    const distance =
-      typeof item.distance === 'number'
-        ? item.distance
-        : typeof item.distance === 'string'
-          ? Number.parseFloat(item.distance)
-          : NaN;
+    const distance = getDistanceValue(item);
     if (!Number.isFinite(distance)) {
       return false;
     }
@@ -662,8 +702,6 @@ function getSelectedRadiusMeters() {
 }
 
 function updateNearbyFromRadius() {
-  const filtered = filterByDistance(rawNearbyRestaurants, getSelectedRadiusMeters());
-  const sorted = sortByDistance(filtered);
   const { filtered, hadDistanceData } = filterByDistance(
     rawNearbyRestaurants,
     getSelectedRadiusMeters()
