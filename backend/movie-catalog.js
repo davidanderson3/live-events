@@ -1,5 +1,3 @@
-const path = require('path');
-const fs = require('fs/promises');
 const { readCachedResponse, writeCachedResponse } = require('../shared/cache');
 
 const MIN_SCORE = 6;
@@ -45,7 +43,6 @@ const NEW_RELEASE_CACHE_LIMIT = Math.max(
   10,
   Number(process.env.MOVIE_NEW_RELEASE_CACHE_LIMIT) || 50
 );
-const LOCAL_CACHE_PATH = path.join(__dirname, 'movie-catalog.json');
 const REFRESH_INTERVAL_MS = Math.max(
   60_000,
   Number(process.env.MOVIE_CATALOG_REFRESH_INTERVAL_MS) || 12 * 60 * 60 * 1000
@@ -231,18 +228,6 @@ async function loadCatalogFromFirestore() {
   }
 }
 
-async function loadCatalogFromDisk() {
-  try {
-    const text = await fs.readFile(LOCAL_CACHE_PATH, 'utf8');
-    return JSON.parse(text);
-  } catch (err) {
-    if (err && err.code !== 'ENOENT') {
-      console.error('Failed to read movie catalog cache from disk', err);
-    }
-    return null;
-  }
-}
-
 async function persistCatalog() {
   if (!state.movies.length) return;
   const payload = {
@@ -251,30 +236,15 @@ async function persistCatalog() {
     movies: state.movies.map(stripDerivedMovieFields).filter(Boolean)
   };
   const body = JSON.stringify(payload);
-  const tasks = [];
-  tasks.push(
-    (async () => {
-      try {
-        await writeCachedResponse(MOVIE_CACHE_COLLECTION, MOVIE_CACHE_KEY, {
-          status: 200,
-          contentType: 'application/json',
-          body,
-          metadata: {
-            source: state.metadata?.source || null,
-            total: state.movies.length
-          }
-        });
-      } catch (err) {
-        if (err) console.error('Failed to persist movie catalog to Firestore', err);
-      }
-    })()
-  );
-  tasks.push(
-    fs.writeFile(LOCAL_CACHE_PATH, body, 'utf8').catch(err => {
-      if (err) console.error('Failed to persist movie catalog to disk', err);
-    })
-  );
-  await Promise.all(tasks);
+  await writeCachedResponse(MOVIE_CACHE_COLLECTION, MOVIE_CACHE_KEY, {
+    status: 200,
+    contentType: 'application/json',
+    body,
+    metadata: {
+      source: state.metadata?.source || null,
+      total: state.movies.length
+    }
+  });
 }
 
 function buildReleaseRanges() {
@@ -691,15 +661,6 @@ async function hydrateFromStorage() {
       ...firestoreCatalog.metadata,
       updatedAt: firestoreCatalog.updatedAt,
       loadedFrom: 'firestore'
-    });
-    return state;
-  }
-  const diskCatalog = await loadCatalogFromDisk();
-  if (diskCatalog && Array.isArray(diskCatalog.movies) && diskCatalog.movies.length) {
-    applyState(diskCatalog.movies, {
-      ...diskCatalog.metadata,
-      updatedAt: diskCatalog.updatedAt,
-      loadedFrom: 'disk'
     });
     return state;
   }
