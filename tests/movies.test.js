@@ -118,11 +118,85 @@ describe('initMoviesPanel', () => {
     delete global.localStorage;
   });
 
-  it('renders movies with action buttons and metadata', async () => {
+  it('renders cached movies with action buttons and metadata', async () => {
     const dom = buildDom();
     attachWindow(dom);
     window.tmdbApiKey = 'TEST_KEY';
 
+    const baseMovie = {
+      id: 1,
+      title: 'Sample Movie',
+      release_date: '2024-01-01',
+      vote_average: 7.5,
+      vote_count: 120,
+      overview: 'An exciting film.',
+      genre_ids: [28],
+      poster_path: '/poster.jpg'
+    };
+
+    const cachedResponse = {
+      results: Array.from({ length: 12 }, (_, index) => ({
+        ...baseMovie,
+        id: index + 1,
+        title: index === 0 ? 'Sample Movie' : `Sample Movie ${index + 1}`
+      })),
+      genres: { 28: 'Action' },
+      credits: Object.fromEntries(
+        Array.from({ length: 12 }, (_, index) => {
+          const id = index + 1;
+          return [id, {
+            cast: [
+              { name: index === 0 ? 'Lead Star' : `Cast ${id}` },
+              { name: index === 0 ? 'Supporting Actor' : `Cast ${id} B` }
+            ],
+            crew: [
+              { job: 'Director', name: index === 0 ? 'Jane Doe' : `Director ${id}` },
+              { job: 'Producer', name: 'Producer Person' }
+            ]
+          }];
+        })
+      )
+    };
+
+    configureFetchResponses([
+      {
+        ok: true,
+        json: () => Promise.resolve(cachedResponse)
+      }
+    ]);
+
+    await initMoviesPanel();
+
+    const cards = Array.from(document.querySelectorAll('#movieList li'));
+    expect(cards.length).toBeGreaterThanOrEqual(12);
+    const card = cards[0];
+    expect(card.textContent).toContain('Sample Movie');
+    expect(card.textContent).toContain('Average Score: 7.5');
+    expect(card.textContent).toContain('Votes: 120');
+    const metaText = card.querySelector('.movie-meta')?.textContent || '';
+    expect(metaText).toContain('Genres: Action');
+    expect(metaText).toContain('Director: Jane Doe');
+    expect(metaText).toContain('Cast: Lead Star, Supporting Actor');
+
+    const buttons = Array.from(card.querySelectorAll('button')).map(b => b.textContent);
+    expect(buttons).toEqual(['Watched Already', 'Not Interested', 'Interested']);
+
+    const img = card.querySelector('img');
+    expect(img?.src).toContain('https://image.tmdb.org/t/p/w200/poster.jpg');
+
+    const statusText = document.getElementById('movieStatus')?.textContent || '';
+    expect(statusText).toContain('Loaded 12 movies on attempt 1');
+    expect(statusText).toContain('using the movie cache');
+    expect(statusText).toContain('12 matches your current filters');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to TMDB when the cache cannot satisfy the request', async () => {
+    const dom = buildDom();
+    attachWindow(dom);
+    window.tmdbApiKey = 'TEST_KEY';
+
+    const cacheEmpty = { results: [] };
     const page = {
       results: [
         {
@@ -150,29 +224,16 @@ describe('initMoviesPanel', () => {
     };
     const genres = { genres: [{ id: 28, name: 'Action' }] };
 
-    configureFetchResponses([page, empty, credits, genres]);
+    configureFetchResponses([cacheEmpty, page, empty, credits, genres]);
 
     await initMoviesPanel();
 
     const card = document.querySelector('#movieList li');
     expect(card).not.toBeNull();
     expect(card.textContent).toContain('Sample Movie');
-    expect(card.textContent).toContain('Average Score: 7.5');
-    expect(card.textContent).toContain('Votes: 120');
-    const metaText = card.querySelector('.movie-meta')?.textContent || '';
-    expect(metaText).toContain('Genres: Action');
-    expect(metaText).toContain('Director: Jane Doe');
-    expect(metaText).toContain('Cast: Lead Star, Supporting Actor');
-
-    const buttons = Array.from(card.querySelectorAll('button')).map(b => b.textContent);
-    expect(buttons).toEqual(['Watched Already', 'Not Interested', 'Interested']);
-
-    const img = card.querySelector('img');
-    expect(img?.src).toContain('https://image.tmdb.org/t/p/w200/poster.jpg');
-
     const statusText = document.getElementById('movieStatus')?.textContent || '';
-    expect(statusText).toContain('Loaded 1 movie on attempt 1');
-    expect(statusText).toContain('1 match your current filters');
+    expect(statusText).toContain('using the direct TMDB API');
+    expect(global.fetch.mock.calls.length).toBeGreaterThan(1);
   });
 
   it('provides guidance when TMDB API key is missing', async () => {
@@ -212,7 +273,7 @@ describe('initMoviesPanel', () => {
     attachWindow(dom);
     window.tmdbApiKey = 'FAIL_KEY';
 
-    configureFetchResponses([{ ok: false }]);
+    configureFetchResponses([{ results: [] }, { ok: false }]);
 
     await initMoviesPanel();
 
@@ -283,6 +344,7 @@ describe('initMoviesPanel', () => {
     };
 
     configureFetchResponses([
+      { results: [] },
       page,
       empty,
       credits,
@@ -333,6 +395,7 @@ describe('initMoviesPanel', () => {
     const genres = { genres: [] };
 
     configureFetchResponses([
+      { results: [] },
       initialPage,
       emptyPage,
       credits,
@@ -369,6 +432,7 @@ describe('initMoviesPanel', () => {
     window.tmdbApiKey = 'TEST_KEY';
 
     configureFetchResponses([
+      { results: [] },
       { results: [], total_pages: 1 },
       { genres: [] }
     ]);
@@ -428,7 +492,7 @@ describe('initMoviesPanel', () => {
     };
     const genres = { genres: [] };
 
-    configureFetchResponses([page, empty, creditsHigh, creditsLow, genres]);
+    configureFetchResponses([{ results: [] }, page, empty, creditsHigh, creditsLow, genres]);
 
     await initMoviesPanel();
 
@@ -481,6 +545,7 @@ describe('initMoviesPanel', () => {
     };
 
     configureFetchResponses([
+      { results: [] },
       page,
       empty,
       credits,
@@ -565,22 +630,28 @@ describe('initMoviesPanel', () => {
       })
     });
 
-    global.fetch = vi
-      .fn()
-      .mockResolvedValueOnce({
+    const cachedResponse = {
+      results: Array.from({ length: 12 }, (_, index) => ({
+        id: 500 + index,
+        title: `Cached ${index + 1}`,
+        release_date: '2024-01-01',
+        vote_average: 7.5,
+        vote_count: 150,
+        overview: '',
+        genre_ids: []
+      })),
+      genres: {
+        101: 'Drama',
+        102: 'Comedy'
+      }
+    };
+
+    configureFetchResponses([
+      {
         ok: true,
-        json: () => Promise.resolve({ results: [] })
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            genres: [
-              { id: 101, name: 'Drama' },
-              { id: 102, name: 'Comedy' }
-            ]
-          })
-      });
+        json: () => Promise.resolve(cachedResponse)
+      }
+    ]);
 
     await initMoviesPanel();
 
@@ -651,15 +722,17 @@ describe('initMoviesPanel', () => {
     };
     const genres = { genres: [] };
 
-    configureFetchResponses([page, empty, credits, genres]);
+    configureFetchResponses([{ results: [] }, page, empty, credits, genres]);
 
     await initMoviesPanel();
     const calledUrls = fetch.mock.calls.map(args => args[0]);
     expect(calledUrls.length).toBeGreaterThan(0);
-    expect(calledUrls.every(url => String(url).startsWith('https://mock-functions.net/tmdbProxy'))).toBe(true);
-    expect(calledUrls.some(url => String(url).includes('endpoint=discover'))).toBe(true);
-    expect(calledUrls.some(url => String(url).includes('endpoint=genres'))).toBe(true);
-    expect(calledUrls.some(url => String(url).includes('endpoint=credits'))).toBe(true);
+    expect(String(calledUrls[0])).toContain('/api/movies');
+    const proxyCalls = calledUrls.slice(1).map(url => String(url));
+    expect(proxyCalls.every(url => url.startsWith('https://mock-functions.net/tmdbProxy'))).toBe(true);
+    expect(proxyCalls.some(url => url.includes('endpoint=discover'))).toBe(true);
+    expect(proxyCalls.some(url => url.includes('endpoint=genres'))).toBe(true);
+    expect(proxyCalls.some(url => url.includes('endpoint=credits'))).toBe(true);
     expect(calledUrls.some(url => String(url).includes('api_key='))).toBe(false);
     expect(global.localStorage.getItem('moviesApiKey')).toBeNull();
   });
@@ -691,6 +764,7 @@ describe('initMoviesPanel', () => {
 
     global.fetch = vi
       .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: [] }) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(page) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(empty) })
       .mockResolvedValueOnce({
@@ -708,10 +782,10 @@ describe('initMoviesPanel', () => {
 
     await initMoviesPanel();
 
-    expect(global.fetch).toHaveBeenCalledTimes(6);
-    const firstCreditsUrl = String(global.fetch.mock.calls[2][0]);
-    const secondCreditsUrl = String(global.fetch.mock.calls[3][0]);
-    const finalCreditsUrl = String(global.fetch.mock.calls[4][0]);
+    expect(global.fetch).toHaveBeenCalledTimes(7);
+    const firstCreditsUrl = String(global.fetch.mock.calls[3][0]);
+    const secondCreditsUrl = String(global.fetch.mock.calls[4][0]);
+    const finalCreditsUrl = String(global.fetch.mock.calls[5][0]);
     expect(firstCreditsUrl).toContain('endpoint=credits');
     expect(firstCreditsUrl).toContain('movie_id=');
     expect(secondCreditsUrl).toContain('endpoint=credits');
@@ -752,6 +826,7 @@ describe('initMoviesPanel', () => {
 
     global.fetch = vi
       .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: [] }) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(page) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(empty) })
       .mockResolvedValueOnce({
@@ -764,10 +839,10 @@ describe('initMoviesPanel', () => {
 
     await initMoviesPanel();
 
-    expect(global.fetch).toHaveBeenCalledTimes(5);
-    const creditsUrl = String(global.fetch.mock.calls[2][0]);
+    expect(global.fetch).toHaveBeenCalledTimes(6);
+    const creditsUrl = String(global.fetch.mock.calls[3][0]);
     expect(creditsUrl).toContain('endpoint=credits');
-    const detailsUrl = String(global.fetch.mock.calls[3][0]);
+    const detailsUrl = String(global.fetch.mock.calls[4][0]);
     expect(detailsUrl).toContain('endpoint=movie_details');
     expect(detailsUrl).toContain('append_to_response=credits');
 
@@ -819,6 +894,7 @@ describe('initMoviesPanel', () => {
     };
 
     configureFetchResponses([
+      { results: [] },
       page,
       empty,
       credits,
@@ -890,7 +966,7 @@ describe('initMoviesPanel', () => {
     const creditsB = { cast: [], crew: [] };
     const genres = { genres: [] };
 
-    configureFetchResponses([page, creditsA, creditsB, genres]);
+    configureFetchResponses([{ results: [] }, page, creditsA, creditsB, genres]);
 
     await initMoviesPanel();
 
@@ -964,7 +1040,7 @@ describe('initMoviesPanel', () => {
     };
     const genres = { genres: [] };
 
-    configureFetchResponses([page, empty, credits, genres]);
+    configureFetchResponses([{ results: [] }, page, empty, credits, genres]);
 
     await initMoviesPanel();
 

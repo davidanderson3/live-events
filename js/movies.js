@@ -1,5 +1,11 @@
 import { getCurrentUser, awaitAuthUser, db } from './auth.js';
 
+const API_BASE_URL =
+  (typeof window !== 'undefined' && window.apiBaseUrl) ||
+  (typeof process !== 'undefined' && process.env.API_BASE_URL) ||
+  (typeof window !== 'undefined' && window.location?.origin) ||
+  '';
+
 const MOVIE_PREFS_KEY = 'moviePreferences';
 const API_KEY_STORAGE = 'moviesApiKey';
 const DEFAULT_INTEREST = 3;
@@ -82,6 +88,17 @@ const STATUS_TONE_CLASSES = Object.freeze({
 });
 
 let loadAttemptCounter = 0;
+
+function buildMoviesApiUrl(path = '/api/movies') {
+  const trimmedPath = path.startsWith('/') ? path : `/${path}`;
+  const base = API_BASE_URL && API_BASE_URL !== 'null'
+    ? API_BASE_URL.replace(/\/$/, '')
+    : '';
+  if (!base) {
+    return trimmedPath;
+  }
+  return `${base}${trimmedPath}`;
+}
 
 function formatTimestamp(value) {
   if (!Number.isFinite(value)) return '';
@@ -948,6 +965,13 @@ function applyCreditsToMovie(movie, credits) {
   }
 }
 
+function hasEnrichedCredits(movie) {
+  if (!movie) return false;
+  const cast = getNameList(movie.topCast);
+  const directors = getNameList(movie.directors);
+  return cast.length > 0 && directors.length > 0;
+}
+
 async function fetchCreditsDirect(movieId, apiKey) {
   if (!apiKey) return null;
   try {
@@ -1099,14 +1123,31 @@ async function fetchCreditsForMovie(movieId, { usingProxy, apiKey }) {
   return fetchCreditsDirect(movieId, apiKey);
 }
 
-async function enrichMoviesWithCredits(movies, options) {
+async function enrichMoviesWithCredits(movies, options = {}) {
   if (!Array.isArray(movies) || !movies.length) return;
+  const { prefetchedCredits, ...fetchOptions } = options;
+  const byId = new Map();
+  movies.forEach(movie => {
+    if (!movie || movie.id == null) return;
+    byId.set(String(movie.id), movie);
+  });
+
+  if (prefetchedCredits && typeof prefetchedCredits === 'object') {
+    Object.entries(prefetchedCredits).forEach(([id, credits]) => {
+      const movie = byId.get(String(id));
+      if (!movie) return;
+      applyCreditsToMovie(movie, credits);
+    });
+  }
+
   const limit = Math.min(MAX_CREDIT_REQUESTS, movies.length);
-  const targets = movies.slice(0, limit).filter(movie => movie && movie.id != null);
+  const targets = movies
+    .slice(0, limit)
+    .filter(movie => movie && movie.id != null && !hasEnrichedCredits(movie));
   if (!targets.length) return;
 
   const creditsList = await Promise.all(
-    targets.map(movie => fetchCreditsForMovie(movie.id, options))
+    targets.map(movie => fetchCreditsForMovie(movie.id, fetchOptions))
   );
 
   creditsList.forEach((credits, index) => {
@@ -1779,15 +1820,133 @@ async function fetchDiscoverPageFromProxy(page) {
   };
 }
 
-async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS }) {
-  const suppressedIds = new Set(
-    Object.entries(currentPrefs)
-      .filter(([, pref]) => pref && SUPPRESSED_STATUSES.has(pref.status))
-      .map(([id]) => id)
-  );
+function normalizeGenreMap(raw) {
+  if (!raw) return null;
+  if (Array.isArray(raw)) {
+    const entries = raw
+      .map(entry => {
+        const id = Number(entry?.id);
+        const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+        if (!Number.isFinite(id) || !name) return null;
+        return [id, name];
+      })
+      .filter(Boolean);
+    return entries.length ? Object.fromEntries(entries) : null;
+  }
+  if (typeof raw === 'object') {
+    const entries = Object.entries(raw)
+      .map(([id, value]) => {
+        const numericId = Number(id);
+        const name = typeof value === 'string' ? value.trim() : '';
+        if (!Number.isFinite(numericId) || !name) return null;
+        return [numericId, name];
+      })
+      .filter(Boolean);
+    return entries.length ? Object.fromEntries(entries) : null;
+  }
+  return null;
+}
+
+function normalizeCreditsMap(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const normalized = {};
+  Object.entries(raw).forEach(([id, credits]) => {
+    if (!credits || typeof credits !== 'object') return;
+    const cast = Array.isArray(credits.cast) ? credits.cast : [];
+    const crew = Array.isArray(credits.crew) ? credits.crew : [];
+    if (!cast.length && !crew.length) return;
+    normalized[String(id)] = { cast, crew };
+  });
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function collectMoviesFromCache(results, suppressedIds) {
   const seen = new Set();
   const collected = [];
-  let prioritized = [];
+  (Array.isArray(results) ? results : []).forEach(movie => {
+    if (!movie || movie.id == null) return;
+    const idKey = String(movie.id);
+    if (seen.has(idKey)) return;
+    seen.add(idKey);
+    if (suppressedIds.has(idKey)) return;
+    collected.push(movie);
+  });
+  return applyPriorityOrdering(collected);
+}
+
+async function tryFetchCachedMovies({ suppressedIds, minFeedSize }) {
+  try {
+    const params = new URLSearchParams();
+    const minRating = getFilterFloat(feedFilterState.minRating, 0, 10);
+    const minVotes = getFilterInt(feedFilterState.minVotes, 0);
+    let startYear = getFilterInt(feedFilterState.startYear, 1800, 3000);
+    let endYear = getFilterInt(feedFilterState.endYear, 1800, 3000);
+
+    if (startYear != null && endYear != null && endYear < startYear) {
+      const temp = startYear;
+      startYear = endYear;
+      endYear = temp;
+    }
+
+    const rawGenreId = feedFilterState.genreId;
+    const genreId = rawGenreId != null && String(rawGenreId).trim() !== ''
+      ? Number.parseInt(rawGenreId, 10)
+      : null;
+
+    if (Number.isFinite(minRating)) params.set('minRating', String(minRating));
+    if (Number.isFinite(minVotes)) params.set('minVotes', String(minVotes));
+    if (Number.isFinite(startYear)) params.set('startYear', String(startYear));
+    if (Number.isFinite(endYear)) params.set('endYear', String(endYear));
+    if (Number.isFinite(genreId)) params.set('genreId', String(genreId));
+    if (suppressedIds.size) params.set('excludeIds', Array.from(suppressedIds).join(','));
+    params.set('limit', String(Math.max(minFeedSize, MIN_PRIORITY_RESULTS)));
+
+    const baseUrl = buildMoviesApiUrl('/api/movies');
+    const query = params.toString();
+    const url = query ? `${baseUrl}?${query}` : baseUrl;
+    const res = await fetch(url);
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    const prioritized = collectMoviesFromCache(data?.results, suppressedIds);
+    const filtered = applyFeedFilters(prioritized);
+    const satisfied = filtered.length >= minFeedSize;
+    return {
+      movies: prioritized,
+      genres: normalizeGenreMap(data?.genres ?? data?.genreMap),
+      credits: normalizeCreditsMap(data?.credits),
+      satisfied
+    };
+  } catch (err) {
+    console.warn('Failed to load cached movies', err);
+    return null;
+  }
+}
+
+async function fetchMoviesFromTmdb({
+  usingProxy,
+  apiKey,
+  minFeedSize,
+  suppressedIds,
+  existingMovies = []
+}) {
+  const seen = new Set();
+  const collected = [];
+
+  (Array.isArray(existingMovies) ? existingMovies : []).forEach(movie => {
+    if (!movie || movie.id == null) return;
+    const idKey = String(movie.id);
+    if (seen.has(idKey)) return;
+    seen.add(idKey);
+    collected.push(movie);
+  });
+
+  let prioritized = applyPriorityOrdering(collected);
+  if (applyFeedFilters(prioritized).length >= minFeedSize) {
+    return prioritized;
+  }
+
   let page = 1;
   let totalPages = Infinity;
   let allowedPages = MAX_DISCOVER_PAGES;
@@ -1803,24 +1962,20 @@ async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS 
 
     const pageResults = Array.isArray(results) ? results : [];
     pageResults.forEach(movie => {
-      if (!movie) return;
+      if (!movie || movie.id == null) return;
       const idKey = String(movie.id);
-      if (!seen.has(idKey)) {
-        seen.add(idKey);
-        if (!suppressedIds.has(idKey)) {
-          collected.push(movie);
-        }
+      if (seen.has(idKey)) return;
+      seen.add(idKey);
+      if (!suppressedIds.has(idKey)) {
+        collected.push(movie);
       }
     });
 
     prioritized = applyPriorityOrdering(collected);
 
-    const shouldCheckMinimum = page >= INITIAL_DISCOVER_PAGES;
-    if (shouldCheckMinimum) {
-      const feedMovies = getFeedMovies(prioritized);
-      if (feedMovies.length >= minFeedSize) {
-        return prioritized;
-      }
+    const feedMovies = applyFeedFilters(prioritized);
+    if (feedMovies.length >= minFeedSize) {
+      return prioritized;
     }
 
     if (!pageResults.length && (!Number.isFinite(totalPages) || page >= totalPages)) {
@@ -1830,11 +1985,53 @@ async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS 
     page += 1;
 
     if (page > allowedPages && allowedPages < MAX_DISCOVER_PAGES_LIMIT) {
-      allowedPages = Math.min(MAX_DISCOVER_PAGES_LIMIT, allowedPages + INITIAL_DISCOVER_PAGES);
+      allowedPages = Math.min(
+        MAX_DISCOVER_PAGES_LIMIT,
+        allowedPages + INITIAL_DISCOVER_PAGES
+      );
     }
   }
 
   return prioritized.length ? prioritized : applyPriorityOrdering(collected);
+}
+
+async function fetchMovies({ usingProxy, apiKey, minFeedSize = MIN_FEED_RESULTS }) {
+  const suppressedIds = new Set(
+    Object.entries(currentPrefs)
+      .filter(([, pref]) => pref && SUPPRESSED_STATUSES.has(pref.status))
+      .map(([id]) => id)
+  );
+
+  const cacheResult = await tryFetchCachedMovies({ suppressedIds, minFeedSize });
+  let movies = Array.isArray(cacheResult?.movies) ? cacheResult.movies : [];
+  let usedTmdbFallback = false;
+
+  if (!cacheResult || !cacheResult.satisfied) {
+    try {
+      movies = await fetchMoviesFromTmdb({
+        usingProxy,
+        apiKey,
+        minFeedSize,
+        suppressedIds,
+        existingMovies: movies
+      });
+      usedTmdbFallback = true;
+    } catch (err) {
+      if (!movies.length) {
+        throw err;
+      }
+      console.warn('TMDB fallback failed but cached movies are available', err);
+      usedTmdbFallback = false;
+    }
+  }
+
+  return {
+    movies,
+    genres: cacheResult?.genres || null,
+    credits: cacheResult?.credits || null,
+    usedTmdbFallback,
+    fromCache: Boolean(cacheResult?.movies?.length)
+  };
 }
 
 async function fetchGenreMapFromProxy() {
@@ -1894,8 +2091,8 @@ async function loadMovies({ attemptStart } = {}) {
   );
   const sourceLabel = usingProxy ? 'TMDB proxy service' : 'direct TMDB API';
   const attemptIntro = usingProxy
-    ? 'Reaching out to the TMDB proxy service with your saved preferences.'
-    : 'Contacting TMDB directly using your API key.';
+    ? 'Checking the movie cache before reaching out to the TMDB proxy service with your saved preferences.'
+    : 'Checking the movie cache before contacting TMDB directly using your API key.';
   const fallbackNote = usingProxy
     ? ' If this route fails we will automatically switch to your TMDB API key.'
     : '';
@@ -1908,21 +2105,39 @@ async function loadMovies({ attemptStart } = {}) {
 
   listEl.innerHTML = '<em>Loading...</em>';
   try {
-    const movies = await fetchMovies({ usingProxy, apiKey, minFeedSize: MIN_FEED_RESULTS });
-    await enrichMoviesWithCredits(movies, { usingProxy, apiKey });
-    const genres = usingProxy ? await fetchGenreMapFromProxy() : await fetchGenreMapDirect(apiKey);
-    currentMovies = movies;
-    genreMap = genres;
+    const {
+      movies,
+      genres: cachedGenreMap,
+      credits: prefetchedCredits,
+      usedTmdbFallback,
+      fromCache
+    } = await fetchMovies({ usingProxy, apiKey, minFeedSize: MIN_FEED_RESULTS });
+    await enrichMoviesWithCredits(movies, {
+      usingProxy,
+      apiKey,
+      prefetchedCredits
+    });
+    let genres = cachedGenreMap;
+    const needsGenreFetch =
+      !genres || !Object.keys(genres).length || usedTmdbFallback;
+    if (needsGenreFetch) {
+      genres = usingProxy ? await fetchGenreMapFromProxy() : await fetchGenreMapDirect(apiKey);
+    }
+    currentMovies = Array.isArray(movies) ? movies : [];
+    genreMap = genres || {};
     populateFeedGenreOptions();
     updateFeedFilterInputsFromState();
     feedExhausted = !currentMovies.length;
     refreshUI();
     const availableCount = getFeedMovies(currentMovies).length;
     const completedLabel = formatTimestamp(Date.now());
+    const finalSourceLabel = !usedTmdbFallback && fromCache
+      ? 'the movie cache'
+      : `the ${sourceLabel}`;
     updateFeedStatus(
       `Loaded ${movies.length} movie${movies.length === 1 ? '' : 's'} on attempt ${attemptNumber}${
         completedLabel ? ` at ${completedLabel}` : ''
-      } using the ${sourceLabel}. ${availableCount} ${
+      } using ${finalSourceLabel}. ${availableCount} ${
         availableCount === 1 ? 'match' : 'matches'
       } your current filters.`,
       { tone: availableCount ? 'success' : 'warning' }
