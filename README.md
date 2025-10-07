@@ -1,12 +1,11 @@
 # Dashboard
 
-Dashboard is a personal decision-making and entertainment hub that brings movie discovery, live music scouting, recipe inspiration, and dining ideas into a single web app. The front end is a vanilla JavaScript single-page experience backed by Firebase for auth/persistence and a lightweight Express server for API proxying, caching, and scheduled scripts.
+Dashboard is a personal decision-making and entertainment hub that brings movie discovery, live music scouting, and dining ideas into a single web app. The front end is a vanilla JavaScript single-page experience backed by Firebase for auth/persistence and a lightweight Express server for API proxying, caching, and scheduled scripts.
 
 ## Table of Contents
 - [Feature Tour](#feature-tour)
   - [Movies](#movies)
   - [Live-Music](#live-music)
-  - [Recipes](#recipes)
   - [Restaurants](#restaurants)
   - [Backups, Restore, and Settings Utilities](#backups-restore-and-settings-utilities)
 - [How the Live Music Discover Flow Works](#how-the-live-music-discover-flow-works)
@@ -37,13 +36,6 @@ The Live Music tab surfaces concerts near you for the artists you actually play:
 - **Configurable radius and artist limit** stored in local storage so the app remembers your preferences.
 - **Fallback recommendations** – if none of your top artists are touring near you, the tab can show Spotify-generated similar artists based on the same listening history.
 - **Inline status messages** explaining why no shows were found (e.g., no Eventbrite token, geolocation blocked, Spotify token expired).
-
-### Recipes
-Cook something new with the Recipes tab:
-- **Free-text search** proxies to Spoonacular through `functions/index.js` so your API key stays server-side.
-- **Ingredient previews** and inline nutritional badges pulled from Spoonacular metadata.
-- **Debounced search** and cached responses so repeated queries are instant.
-- **Daily limits respected** – the proxy caches responses for six hours and normalizes queries to avoid wasting Spoonacular credits on duplicates.
 
 ### Restaurants
 Answer the eternal "Where should we eat?" question:
@@ -102,7 +94,7 @@ Each provider has distinct authentication and rate limits, so mirror the existin
 - **Auth & persistence** – Firebase Auth (Google provider) and Firestore handle user login state plus long-term storage for movies, tab descriptions, and other preferences. Firestore is initialized with persistent caching so the UI stays responsive offline.
 - **Server** – `backend/server.js` is an Express app that serves the static bundle, proxies external APIs (Eventbrite, Yelp, Spoonacular), and exposes helper routes for descriptions, saved movies, Plaid item creation, etc. It also normalizes responses and caches expensive calls to protect third-party rate limits.
 - **Cloud Functions** – The `functions/` directory mirrors much of the server logic for deployments that rely on Firebase Functions instead of the local Express instance.
-- **Shared utilities** – Reusable helpers live under `shared/` (e.g., caching primitives, recipe normalization) so both the server and Cloud Functions share a single implementation.
+- **Shared utilities** – Reusable helpers live under `shared/` (e.g., caching primitives) so both the server and Cloud Functions share a single implementation.
 - **Node scripts** – `scripts/` contains operational tooling for geodata imports, monitoring, and static asset generation. They rely on environment variables documented below.
 
 ## Configuration & Required Secrets
@@ -136,7 +128,7 @@ Remember to also configure Firebase (see `firebase.json` and `.firebaserc`) if y
 4. **Optional Firebase emulators** – If you prefer not to use the production Firestore project during development, configure the Firebase emulator suite and point the app to it.
 
 ## Testing
-- **Unit/integration tests** – run `npm test` to execute the Vitest suite (covers recipe search, Spotify show parsing, etc.).
+- **Unit/integration tests** – run `npm test` to execute the Vitest suite (covers movie discovery, Spotify show parsing, etc.).
 - **End-to-end tests** – run `npm run e2e` to launch Playwright scenarios when the supporting services are available.
 
 ## Troubleshooting Checklist

@@ -33,6 +33,7 @@ function buildDom() {
         <input id="movieFilterEndYear" type="number" />
         <select id="movieFilterGenre"></select>
       </div>
+      <div id="movieStatus" class="movie-status"></div>
       <div id="movieList"></div>
     </div>
     <div id="savedMoviesSection" style="display:none">
@@ -67,6 +68,7 @@ function mockLocalStorage() {
 function attachWindow(dom) {
   global.window = dom.window;
   global.document = dom.window.document;
+  window.tmdbProxyEndpoint = '';
   Object.defineProperty(window, 'localStorage', {
     configurable: true,
     get: () => global.localStorage
@@ -167,6 +169,57 @@ describe('initMoviesPanel', () => {
 
     const img = card.querySelector('img');
     expect(img?.src).toContain('https://image.tmdb.org/t/p/w200/poster.jpg');
+
+    const statusText = document.getElementById('movieStatus')?.textContent || '';
+    expect(statusText).toContain('Loaded 1 movie on attempt 1');
+    expect(statusText).toContain('1 match your current filters');
+  });
+
+  it('provides guidance when TMDB API key is missing', async () => {
+    const dom = buildDom();
+    attachWindow(dom);
+
+    const originalVitest = process.env.VITEST;
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.VITEST = 'false';
+    process.env.NODE_ENV = 'development';
+
+    try {
+      await initMoviesPanel();
+    } finally {
+      if (originalVitest === undefined) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = originalVitest;
+      }
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
+
+    const listText = document.getElementById('movieList')?.innerHTML || '';
+    expect(listText).toContain('TMDB API key not provided');
+    const statusText = document.getElementById('movieStatus')?.textContent || '';
+    expect(statusText).toBe(
+      'TMDB API key not provided. Enter a key or enable the proxy to load movies.'
+    );
+  });
+
+  it('reports failure details when TMDB request fails', async () => {
+    const dom = buildDom();
+    attachWindow(dom);
+    window.tmdbApiKey = 'FAIL_KEY';
+
+    configureFetchResponses([{ ok: false }]);
+
+    await initMoviesPanel();
+
+    const statusText = document.getElementById('movieStatus')?.textContent || '';
+    expect(statusText).toBe(
+      'Attempt 1 using the direct TMDB API failed (Failed to fetch movies). No movies were loaded. Check your TMDB API key and try again.'
+    );
   });
 
   it('filters out movies below rating or vote thresholds', async () => {
@@ -636,9 +689,15 @@ describe('initMoviesPanel', () => {
     };
     const genres = { genres: [] };
 
-    global.fetch = vi.fn()
+    global.fetch = vi
+      .fn()
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(page) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(empty) })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: () => Promise.resolve(JSON.stringify({ error: 'invalid_endpoint_params' }))
+      })
       .mockResolvedValueOnce({
         ok: false,
         status: 400,
@@ -649,13 +708,16 @@ describe('initMoviesPanel', () => {
 
     await initMoviesPanel();
 
-    expect(global.fetch).toHaveBeenCalledTimes(5);
+    expect(global.fetch).toHaveBeenCalledTimes(6);
     const firstCreditsUrl = String(global.fetch.mock.calls[2][0]);
-    const retryCreditsUrl = String(global.fetch.mock.calls[3][0]);
+    const secondCreditsUrl = String(global.fetch.mock.calls[3][0]);
+    const finalCreditsUrl = String(global.fetch.mock.calls[4][0]);
     expect(firstCreditsUrl).toContain('endpoint=credits');
     expect(firstCreditsUrl).toContain('movie_id=');
-    expect(retryCreditsUrl).toContain('endpoint=credits');
-    expect(retryCreditsUrl).toContain('movieId=');
+    expect(secondCreditsUrl).toContain('endpoint=credits');
+    expect(secondCreditsUrl).toContain('id=');
+    expect(finalCreditsUrl).toContain('endpoint=credits');
+    expect(finalCreditsUrl).toContain('movieId=');
 
     const listContent = document.getElementById('movieList')?.textContent || '';
     expect(listContent).toContain('Proxy Legacy Star');
