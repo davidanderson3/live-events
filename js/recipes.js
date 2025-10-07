@@ -129,24 +129,139 @@ const toIngredientList = r => {
   const ordered = [];
   const unique = new Set();
   let hadData = false;
+
+  const normalizeAmount = value => {
+    if (value === undefined || value === null || value === '') return '';
+    if (typeof value === 'number') {
+      if (Number.isNaN(value)) return '';
+      const rounded = Math.round(value * 100) / 100;
+      return String(rounded);
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed;
+    }
+    return '';
+  };
+
+  const normalizeText = value => {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'number') return String(value);
+    if (typeof value !== 'string') return '';
+    const normalized = stripHtml(value);
+    return normalized.replace(/\s+/g, ' ').trim();
+  };
+
+  const normalizeIngredientEntry = entry => {
+    if (!entry) return '';
+    if (typeof entry === 'string' || typeof entry === 'number') {
+      return normalizeText(entry);
+    }
+    if (typeof entry !== 'object') return '';
+
+    const preferred = [
+      entry.original,
+      entry.originalString,
+      entry.ingredientString,
+      entry.nameOriginal,
+      entry.nameClean,
+      entry.name,
+      entry.title,
+      entry.text
+    ];
+    for (const candidate of preferred) {
+      const normalized = normalizeText(candidate);
+      if (normalized) return normalized;
+    }
+
+    const parts = [];
+    const amount =
+      normalizeAmount(
+        entry.amount ??
+          entry.measures?.us?.amount ??
+          entry.measures?.metric?.amount ??
+          entry.quantity
+      );
+    if (amount) parts.push(amount);
+
+    const unit = normalizeText(
+      entry.unitShort ||
+        entry.unit ||
+        entry.unitLong ||
+        entry.measures?.us?.unitShort ||
+        entry.measures?.us?.unitLong ||
+        entry.measures?.metric?.unitShort ||
+        entry.measures?.metric?.unitLong
+    );
+    if (unit) parts.push(unit);
+
+    const name = normalizeText(entry.nameClean || entry.name || entry.ingredient || entry.title);
+    if (name) parts.push(name);
+
+    return parts.join(' ').trim();
+  };
+
+  const registerPresence = value => {
+    if (Array.isArray(value)) {
+      if (value.length) hadData = true;
+    } else if (value) {
+      hadData = true;
+    }
+  };
+
   const pushItems = items => {
+    registerPresence(items);
     if (!Array.isArray(items) || !items.length) return;
     let added = false;
-    items.forEach(text => {
-      const normalized = stripHtml(text || '');
+    items.forEach(item => {
+      const normalized = normalizeIngredientEntry(item);
       if (!normalized) return;
-      const trimmed = normalized.replace(/\s+/g, ' ').trim();
-      if (!trimmed || unique.has(trimmed.toLowerCase())) return;
-      unique.add(trimmed.toLowerCase());
-      ordered.push(trimmed);
+      const key = normalized.toLowerCase();
+      if (unique.has(key)) return;
+      unique.add(key);
+      ordered.push(normalized);
       added = true;
     });
     if (added) hadData = true;
   };
 
+  const pushStringList = text => {
+    const normalized = normalizeText(text);
+    if (!normalized) return;
+    registerPresence(normalized);
+    const newlineSplit = normalized
+      .split(/\r?\n+/)
+      .map(part => part.trim())
+      .filter(Boolean);
+    if (newlineSplit.length > 1) {
+      pushItems(newlineSplit);
+      return;
+    }
+    const bulletSplit = normalized
+      .split(/,|•|\u2022|\u2023|\u2043/)
+      .map(part => part.trim())
+      .filter(Boolean);
+    if (bulletSplit.length > 1) {
+      pushItems(bulletSplit);
+      return;
+    }
+    pushItems([normalized]);
+  };
+
   if (Array.isArray(r.extendedIngredients)) {
-    const ingredients = r.extendedIngredients.map(ing => ing?.original || ing?.name || '');
-    pushItems(ingredients);
+    pushItems(r.extendedIngredients);
+  }
+
+  if (Array.isArray(r.missedIngredients)) {
+    pushItems(r.missedIngredients);
+  }
+
+  if (Array.isArray(r.usedIngredients)) {
+    pushItems(r.usedIngredients);
+  }
+
+  if (Array.isArray(r.unusedIngredients)) {
+    pushItems(r.unusedIngredients);
   }
 
   if (Array.isArray(r.ingredientLines)) {
@@ -156,56 +271,31 @@ const toIngredientList = r => {
   if (Array.isArray(r.ingredients)) {
     pushItems(r.ingredients);
   } else if (typeof r.ingredients === 'string') {
-    const trimmed = stripHtml(r.ingredients);
-    if (trimmed) {
-      const newlineSplit = trimmed.split(/\r?\n+/).map(text => text.trim()).filter(Boolean);
-      if (newlineSplit.length > 1) {
-        pushItems(newlineSplit);
-      } else {
-        const bullets = trimmed
-          .split(/,|•|\u2022/)
-          .map(text => text.trim())
-          .filter(Boolean);
-        if (bullets.length) {
-          pushItems(bullets);
-        } else {
-          pushItems([trimmed]);
-        }
-      }
-    }
+    pushStringList(r.ingredients);
   }
 
   const nutritionIngredients = Array.isArray(r.nutrition?.ingredients)
     ? r.nutrition.ingredients
     : [];
   if (nutritionIngredients.length) {
-    const formatted = nutritionIngredients.map(ing => {
-      if (!ing) return '';
-      if (ing.original) return ing.original;
-      const parts = [];
-      if (ing.amount !== undefined && ing.amount !== null && ing.amount !== '') {
-        const amount = typeof ing.amount === 'number' ? ing.amount : Number(ing.amount);
-        if (!Number.isNaN(amount)) {
-          const rounded = Math.round(amount * 100) / 100;
-          parts.push(String(rounded));
-        } else if (typeof ing.amount === 'string') {
-          parts.push(ing.amount);
-        }
-      }
-      if (ing.unit) parts.push(ing.unit);
-      if (ing.name) parts.push(ing.name);
-      return parts.join(' ');
-    });
-    pushItems(formatted);
+    pushItems(
+      nutritionIngredients.map(ing => {
+        if (!ing) return '';
+        if (ing.original) return ing.original;
+        const amount = normalizeAmount(ing.amount);
+        const unit = normalizeText(ing.unit);
+        const name = normalizeText(ing.name);
+        return [amount, unit, name].filter(Boolean).join(' ');
+      })
+    );
   }
 
   if (typeof r.nutrition?.ingredientList === 'string') {
-    const normalized = stripHtml(r.nutrition.ingredientList);
-    const list = normalized
-      .split(/\r?\n+/)
-      .map(text => text.trim())
-      .filter(Boolean);
-    pushItems(list);
+    pushStringList(r.nutrition.ingredientList);
+  }
+
+  if (typeof r.ingredientList === 'string') {
+    pushStringList(r.ingredientList);
   }
 
   return {
