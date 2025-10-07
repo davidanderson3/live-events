@@ -4,9 +4,21 @@ import { JSDOM } from 'jsdom';
 function setupDom() {
   return new JSDOM(
     `
-    <div id="restaurantsPanel">
+      <div id="restaurantsPanel">
       <div id="restaurantsMap"></div>
       <div id="restaurantsResults">
+        <form id="restaurantsFilters">
+          <fieldset>
+            <label for="restaurantsDistanceSelect">Within</label>
+            <select id="restaurantsDistanceSelect">
+              <option value="5">5 miles</option>
+              <option value="10">10 miles</option>
+              <option value="25" selected>25 miles</option>
+              <option value="50">50 miles</option>
+              <option value="100">100 miles</option>
+            </select>
+          </fieldset>
+        </form>
         <div class="restaurants-tabs" role="tablist">
           <button type="button" class="restaurants-tab is-active" data-view="nearby" aria-selected="true"></button>
           <button type="button" class="restaurants-tab" data-view="saved" aria-selected="false"></button>
@@ -182,6 +194,56 @@ describe('initRestaurantsPanel', () => {
     const results = document.getElementById('restaurantsResults');
     const headings = Array.from(results.querySelectorAll('h3')).map(el => el.textContent);
     expect(headings).toEqual(['Local Favorite']);
+  });
+
+  it('updates nearby restaurants when the distance filter changes', async () => {
+    const dom = setupDom();
+    global.window = dom.window;
+    global.document = dom.window.document;
+    window.localStorage.clear();
+
+    const geoMock = {
+      getCurrentPosition: vi.fn(success => {
+        success({ coords: { latitude: 35.2271, longitude: -80.8431 } });
+      })
+    };
+    Object.defineProperty(window.navigator, 'geolocation', {
+      configurable: true,
+      value: geoMock
+    });
+    global.navigator = window.navigator;
+
+    const sampleData = [
+      { name: 'Nearby Spot', rating: 4.6, reviewCount: 80, distance: 2500 },
+      { name: 'Across Town', rating: 4.3, reviewCount: 60, distance: 75000 }
+    ];
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ address: { city: 'Charlotte' } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(sampleData)
+      });
+
+    await initRestaurantsPanel();
+
+    let headings = Array.from(
+      document.querySelectorAll('#restaurantsNearby h3')
+    ).map(el => el.textContent);
+    expect(headings).toEqual(['Nearby Spot']);
+
+    const distanceSelect = document.getElementById('restaurantsDistanceSelect');
+    distanceSelect.value = '50';
+    distanceSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+
+    headings = Array.from(
+      document.querySelectorAll('#restaurantsNearby h3')
+    ).map(el => el.textContent);
+    expect(headings).toEqual(['Nearby Spot', 'Across Town']);
   });
 
   it('allows saving and unsaving restaurants', async () => {

@@ -208,6 +208,19 @@
           aria-label="Map showing nearby restaurant locations"
         ></div>
         <div id="restaurantsResults" class="restaurants-list decision-container" aria-live="polite">
+          <form id="restaurantsFilters" class="restaurants-filters" aria-labelledby="restaurantsFiltersLegend">
+            <fieldset>
+              <legend id="restaurantsFiltersLegend">Filter restaurants</legend>
+              <label class="restaurants-filters__label" for="restaurantsDistanceSelect">Within</label>
+              <select id="restaurantsDistanceSelect" class="restaurants-filters__control">
+                <option value="5">5 miles</option>
+                <option value="10">10 miles</option>
+                <option value="25" selected>25 miles</option>
+                <option value="50">50 miles</option>
+                <option value="100">100 miles</option>
+              </select>
+            </fieldset>
+          </form>
           <div class="restaurants-tabs" role="tablist" aria-label="Restaurant lists">
             <button
               type="button"
