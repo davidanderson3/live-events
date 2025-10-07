@@ -1709,14 +1709,21 @@ export async function initMoviesPanel() {
   }
 
   if (domRefs.tabs) {
+    domRefs.tabs.setAttribute('role', 'tablist');
     const buttons = Array.from(domRefs.tabs.querySelectorAll('.movie-tab'));
     buttons.forEach(btn => {
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', btn.classList.contains('active') ? 'true' : 'false');
       if (btn._movieTabHandler) {
         btn.removeEventListener('click', btn._movieTabHandler);
       }
       const handler = () => {
-        buttons.forEach(b => b.classList.remove('active'));
+        buttons.forEach(b => {
+          b.classList.remove('active');
+          b.setAttribute('aria-selected', 'false');
+        });
         btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
         const target = btn.dataset.target;
         if (domRefs.streamSection) {
           domRefs.streamSection.style.display =

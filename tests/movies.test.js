@@ -245,6 +245,33 @@ describe('initMoviesPanel', () => {
     expect(document.querySelector('#movieList').textContent).not.toContain('Too Low Rating');
   });
 
+  it('marks the selected movie tab clearly', async () => {
+    const dom = buildDom();
+    attachWindow(dom);
+    window.tmdbApiKey = 'TEST_KEY';
+
+    configureFetchResponses([
+      { results: [], total_pages: 1 },
+      { genres: [] }
+    ]);
+
+    await initMoviesPanel();
+
+    const tabs = Array.from(document.querySelectorAll('#movieTabs .movie-tab'));
+    expect(tabs).toHaveLength(3);
+    expect(tabs[0].classList.contains('active')).toBe(true);
+    expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(tabs[1].getAttribute('aria-selected')).toBe('false');
+    expect(tabs[2].getAttribute('aria-selected')).toBe('false');
+
+    tabs[1].dispatchEvent(new window.Event('click'));
+
+    expect(tabs[0].classList.contains('active')).toBe(false);
+    expect(tabs[0].getAttribute('aria-selected')).toBe('false');
+    expect(tabs[1].classList.contains('active')).toBe(true);
+    expect(tabs[1].getAttribute('aria-selected')).toBe('true');
+  });
+
   it('prioritizes movies using weighted score (75% average, 25% votes)', async () => {
     const dom = buildDom();
     attachWindow(dom);

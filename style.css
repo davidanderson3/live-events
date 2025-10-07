@@ -2427,14 +2427,27 @@ h2 {
   flex: 1 1 0;
   padding: 6px;
   border: 1px solid #ccc;
+  border-radius: 8px;
   background: #f8f8f8;
+  color: #2c2c2c;
   cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.movie-tab:focus-visible,
+.shows-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(122, 166, 140, 0.45);
 }
 
 .movie-tab.active,
 .shows-tab.active {
-  background: #7aa68c;
+  background: #2f6b43;
   color: #fff;
+  border-color: #2f6b43;
+  box-shadow: 0 0 0 2px rgba(47, 107, 67, 0.35);
+  font-weight: 600;
 }
 
 .movie-action {
