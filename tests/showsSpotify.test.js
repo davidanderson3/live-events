@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 
 // simple localStorage mock
@@ -49,9 +49,17 @@ const makeEventbriteResponse = events => ({ events });
 
 describe('initShowsPanel', () => {
   let initShowsPanel;
-  beforeEach(async () => {
+
+  async function setup({ apiBaseUrl } = {}) {
     storage.clear();
     vi.resetModules();
+
+    if (apiBaseUrl === undefined) {
+      delete process.env.API_BASE_URL;
+    } else {
+      process.env.API_BASE_URL = apiBaseUrl;
+    }
+
     const dom = new JSDOM(`
       <button id="spotifyTokenBtn"></button>
       <span id="spotifyStatus"></span>
@@ -77,6 +85,14 @@ describe('initShowsPanel', () => {
     };
     window.__NO_SPOTIFY_REDIRECT = true;
     ({ initShowsPanel } = await import('../js/shows.js'));
+  }
+
+  beforeEach(async () => {
+    await setup();
+  });
+
+  afterEach(() => {
+    delete process.env.API_BASE_URL;
   });
 
   it('renders a preview when Spotify token is missing', async () => {
@@ -148,6 +164,43 @@ describe('initShowsPanel', () => {
     expect(fetch.mock.calls[3][0]).toContain('eventbriteProxy');
     expect(document.querySelectorAll('.show-card').length).toBe(1);
     expect(document.querySelector('.show-card__title')?.textContent).toContain('Fallback Concert');
+  });
+
+  it('falls back to the deployed proxy when a remote API base returns HTML', async () => {
+    await setup({ apiBaseUrl: 'https://example.com/api' });
+
+    fetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ clientId: 'cid', hasEventbriteToken: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [{ name: 'Remote Artist' }] }) })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        headers: { get: () => 'text/html' },
+        text: async () => '<!doctype html>missing',
+        json: async () => ({})
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          makeEventbriteResponse([
+            makeEventbriteEvent({
+              id: 'remote-fallback',
+              name: 'Remote Concert',
+              artists: ['Remote Artist']
+            })
+          ])
+      });
+
+    localStorage.setItem('spotifyToken', 'token');
+    await initShowsPanel();
+
+    await flush();
+    await flush();
+
+    expect(fetch.mock.calls[2][0]).toContain('https://example.com/api/eventbrite');
+    expect(fetch.mock.calls[3][0]).toContain('cloudfunctions.net/eventbriteProxy');
+    expect(document.querySelectorAll('.show-card').length).toBe(1);
+    expect(document.querySelector('.show-card__title')?.textContent).toContain('Remote Concert');
   });
 
   it('respects updated configuration values on Discover reload', async () => {

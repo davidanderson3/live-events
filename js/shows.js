@@ -1490,10 +1490,11 @@ export async function initShowsPanel() {
         if (requiresManualToken) {
           params.set('token', manualApiToken);
         }
-        const { endpoint: eventbriteEndpoint, isRemote } = resolveEventbriteEndpoint(apiBase);
-        const fallbackEndpoint = !isRemote && eventbriteEndpoint !== DEFAULT_EVENTBRITE_ENDPOINT
-          ? DEFAULT_EVENTBRITE_ENDPOINT
-          : null;
+        const { endpoint: eventbriteEndpoint } = resolveEventbriteEndpoint(apiBase);
+        const fallbackEndpoint =
+          eventbriteEndpoint !== DEFAULT_EVENTBRITE_ENDPOINT
+            ? DEFAULT_EVENTBRITE_ENDPOINT
+            : null;
 
         const primaryUrl = appendQuery(eventbriteEndpoint, params);
         const fallbackUrl = fallbackEndpoint ? appendQuery(fallbackEndpoint, params) : null;
