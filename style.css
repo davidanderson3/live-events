@@ -2802,6 +2802,16 @@ h2 {
   color: #1f3631;
 }
 
+.restaurant-card__title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.restaurant-card__title-link:hover,
+.restaurant-card__title-link:focus {
+  text-decoration: underline;
+}
+
 .rating-badge {
   display: inline-flex;
   align-items: center;

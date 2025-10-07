@@ -11,10 +11,22 @@ function setupDom() {
           <fieldset>
             <label for="restaurantsDistanceSelect">Within</label>
             <select id="restaurantsDistanceSelect">
+              <option value="1">1 mile</option>
+              <option value="2">2 miles</option>
+              <option value="3">3 miles</option>
+              <option value="4">4 miles</option>
               <option value="5">5 miles</option>
+              <option value="6">6 miles</option>
+              <option value="7">7 miles</option>
+              <option value="8">8 miles</option>
+              <option value="9">9 miles</option>
               <option value="10">10 miles</option>
+              <option value="15">15 miles</option>
+              <option value="20">20 miles</option>
               <option value="25" selected>25 miles</option>
+              <option value="35">35 miles</option>
               <option value="50">50 miles</option>
+              <option value="75">75 miles</option>
               <option value="100">100 miles</option>
             </select>
           </fieldset>
