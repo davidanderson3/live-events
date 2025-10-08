@@ -241,6 +241,59 @@ describe('initRestaurantsPanel', () => {
     expect(headings).toEqual(['Fallback Favorite', 'Backup Bistro']);
   });
 
+  it('continues expanding the search radius until results are found', async () => {
+    const dom = setupDom();
+    global.window = dom.window;
+    global.document = dom.window.document;
+    window.localStorage.clear();
+
+    const geoMock = {
+      getCurrentPosition: vi.fn(success => {
+        success({ coords: { latitude: 30.2672, longitude: -97.7431 } });
+      })
+    };
+    Object.defineProperty(window.navigator, 'geolocation', {
+      configurable: true,
+      value: geoMock
+    });
+    global.navigator = window.navigator;
+
+    const farResults = [
+      { name: 'Outskirts Eatery', rating: 4.0, reviewCount: 40, distance: 2000 }
+    ];
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ address: { city: 'Austin' } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([])
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([])
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(farResults)
+      });
+
+    await initRestaurantsPanel();
+
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls[1][0]).toContain('limit=60');
+    expect(fetch.mock.calls[2][0]).toContain('radius=25');
+    expect(fetch.mock.calls[3][0]).toContain('radius=50');
+
+    const headings = Array.from(
+      document.querySelectorAll('#restaurantsNearby h3')
+    ).map(el => el.textContent);
+    expect(headings).toEqual(['Outskirts Eatery']);
+  });
+
   it('uses user coordinates to sort by true distance even when API distances are misleading', async () => {
     const dom = setupDom();
     global.window = dom.window;
@@ -349,6 +402,62 @@ describe('initRestaurantsPanel', () => {
 
     expect(savedContainer?.textContent).toContain('No saved restaurants yet.');
     expect(nearbyContainer?.textContent).toContain('Top Rated');
+  });
+
+  it('surfaces fallback restaurants after hiding higher-review picks', async () => {
+    const dom = setupDom();
+    global.window = dom.window;
+    global.document = dom.window.document;
+    window.localStorage.clear();
+
+    const geoMock = {
+      getCurrentPosition: vi.fn(success => {
+        success({ coords: { latitude: 34.0522, longitude: -118.2437 } });
+      })
+    };
+    Object.defineProperty(window.navigator, 'geolocation', {
+      configurable: true,
+      value: geoMock
+    });
+    global.navigator = window.navigator;
+
+    const sampleData = [
+      { id: 'hi-1', name: 'Critics Choice', rating: 4.9, reviewCount: 120, distance: 400 },
+      { id: 'hi-2', name: 'Popular Spot', rating: 4.7, reviewCount: 65, distance: 700 },
+      { id: 'lo-1', name: 'Neighborhood Diner', rating: 4.0, reviewCount: 3, distance: 600 },
+      { id: 'lo-2', name: 'Late Night Bites', rating: 3.5, reviewCount: 2, distance: 900 }
+    ];
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ address: { city: 'Los Angeles' } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(sampleData)
+      });
+
+    await initRestaurantsPanel();
+
+    const hideByName = name => {
+      const card = Array.from(
+        document.querySelectorAll('#restaurantsNearby .restaurant-card')
+      ).find(element => element.querySelector('h3')?.textContent === name);
+      card?.querySelector('.restaurant-action--danger')?.click();
+    };
+
+    hideByName('Critics Choice');
+    hideByName('Popular Spot');
+
+    const nearbyContainer = document.getElementById('restaurantsNearby');
+    const headings = Array.from(
+      nearbyContainer.querySelectorAll('h3')
+    ).map(element => element.textContent);
+
+    expect(headings).toEqual(['Neighborhood Diner', 'Late Night Bites']);
+    expect(nearbyContainer.textContent).not.toContain('No restaurants found.');
   });
 
   it('allows favoriting restaurants and keeps favorites in sync with saved list', async () => {
