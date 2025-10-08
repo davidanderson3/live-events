@@ -5,7 +5,7 @@ const FALLBACK_API_BASE = DEFAULT_REMOTE_API_BASE;
 const TARGET_NEARBY_RESULTS = 60;
 const MAX_NEARBY_RESULTS = 200;
 const NEARBY_RESULTS_INCREMENT = 40;
-const NEARBY_RADIUS_STEPS_MILES = [null, 25];
+const NEARBY_RADIUS_STEPS_MILES = [null, 25, 50, 100];
 
 let initialized = false;
 let mapInstance = null;
@@ -943,9 +943,24 @@ function getReviewCountValue(rest) {
 function updateNearbyRestaurants() {
   const list = Array.isArray(rawNearbyRestaurants) ? rawNearbyRestaurants : [];
   const normalized = list.map(normalizeRestaurant).filter(Boolean);
-  const filtered = normalized.filter(rest => getReviewCountValue(rest) >= 5);
-  const prioritized = filtered.length ? filtered : normalized;
-  nearbyRestaurants = sortByDistance(prioritized);
+  if (!normalized.length) {
+    nearbyRestaurants = [];
+    return;
+  }
+
+  const sorted = sortByDistance(normalized);
+  const highReview = [];
+  const fallback = [];
+
+  sorted.forEach(rest => {
+    if (getReviewCountValue(rest) >= 5) {
+      highReview.push(rest);
+    } else {
+      fallback.push(rest);
+    }
+  });
+
+  nearbyRestaurants = highReview.length ? [...highReview, ...fallback] : sorted;
 }
 
 function renderRestaurantsList(container, items, emptyMessage) {
