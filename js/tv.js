@@ -630,7 +630,7 @@ function populateFeedGenreOptions() {
   const excludeButtonsWrap = document.createElement('div');
   excludeButtonsWrap.className = 'genre-filter-buttons genre-filter-buttons--exclude';
   excludeButtonsWrap.setAttribute('role', 'group');
-  excludeButtonsWrap.setAttribute('aria-label', 'Exclude genres from TV show stream');
+  excludeButtonsWrap.setAttribute('aria-label', 'Exclude genres from TV stream');
 
   const createExcludeButton = (value, label, { action } = {}) => {
     const btn = document.createElement('button');
