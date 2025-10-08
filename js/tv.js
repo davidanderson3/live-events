@@ -312,7 +312,7 @@ function updateFeedFilterInputsFromState() {
     domRefs.feedEndYear.value = feedFilterState.endYear ?? '';
   }
   if (domRefs.feedGenre) {
-    domRefs.feedGenre.value = feedFilterState.genreId ?? '';
+    updateFeedGenreUI();
   }
 }
 
@@ -342,9 +342,55 @@ function setFeedFilter(name, rawValue, { sanitize = false, persist = true } = {}
   }
 }
 
+function updateFeedGenreUI() {
+  const container = domRefs.feedGenre;
+  if (!container) return;
+
+  const currentValue = feedFilterState.genreId ?? '';
+  const buttons = container.querySelectorAll('.genre-filter-btn');
+  buttons.forEach(btn => {
+    const value = btn.dataset.genre ?? '';
+    const isActive = value === currentValue;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+
+  const activeValueEl = container.querySelector('.genre-filter-active-value');
+  if (!activeValueEl) return;
+
+  activeValueEl.innerHTML = '';
+
+  if (currentValue && genreMap && Object.prototype.hasOwnProperty.call(genreMap, currentValue)) {
+    const chip = document.createElement('span');
+    chip.className = 'genre-filter-chip';
+
+    const text = document.createElement('span');
+    text.className = 'genre-filter-chip-text';
+    text.textContent = genreMap[currentValue] || 'Selected';
+    chip.appendChild(text);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'genre-filter-chip-remove';
+    removeBtn.setAttribute('aria-label', 'Clear genre filter');
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => {
+      setFeedFilter('genreId', '', { sanitize: true, persist: true });
+    });
+    chip.appendChild(removeBtn);
+
+    activeValueEl.appendChild(chip);
+  } else {
+    const span = document.createElement('span');
+    span.className = 'genre-filter-active-empty';
+    span.textContent = 'All genres';
+    activeValueEl.appendChild(span);
+  }
+}
+
 function populateFeedGenreOptions() {
-  const select = domRefs.feedGenre;
-  if (!select) return;
+  const container = domRefs.feedGenre;
+  if (!container) return;
 
   const entries = Object.entries(genreMap || {}).sort((a, b) => {
     const nameA = String(a[1] ?? '');
@@ -353,35 +399,68 @@ function populateFeedGenreOptions() {
   });
 
   const currentValue = feedFilterState.genreId ?? '';
-  const fragment = document.createDocumentFragment();
-  const defaultOption = document.createElement('option');
-  defaultOption.value = '';
-  defaultOption.textContent = 'All Genres';
-  fragment.appendChild(defaultOption);
+  const availableIds = new Set(entries.map(([id]) => String(id)));
+  const needsReset = currentValue && !availableIds.has(currentValue);
 
-  let hasMatch = currentValue === '';
+  container.innerHTML = '';
+
+  const buttonsWrap = document.createElement('div');
+  buttonsWrap.className = 'genre-filter-buttons';
+  buttonsWrap.setAttribute('role', 'group');
+  buttonsWrap.setAttribute('aria-label', 'Filter TV shows by genre');
+
+  const createButton = (value, label) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'genre-filter-btn';
+    btn.dataset.genre = value;
+    btn.textContent = label;
+    btn.addEventListener('click', handleFeedGenreButtonClick);
+    buttonsWrap.appendChild(btn);
+  };
+
+  createButton('', 'All Genres');
   entries.forEach(([id, name]) => {
-    const option = document.createElement('option');
-    option.value = String(id);
-    option.textContent = String(name || 'Unknown');
-    if (!hasMatch && String(id) === currentValue) {
-      hasMatch = true;
-    }
-    fragment.appendChild(option);
+    createButton(String(id), String(name || 'Unknown'));
   });
 
-  select.innerHTML = '';
-  select.appendChild(fragment);
+  container.appendChild(buttonsWrap);
 
-  if (!hasMatch && currentValue) {
+  const activeWrap = document.createElement('div');
+  activeWrap.className = 'genre-filter-active';
+
+  const label = document.createElement('span');
+  label.className = 'genre-filter-active-label';
+  label.textContent = 'Active filter:';
+  activeWrap.appendChild(label);
+
+  const valueEl = document.createElement('div');
+  valueEl.className = 'genre-filter-active-value';
+  activeWrap.appendChild(valueEl);
+
+  container.appendChild(activeWrap);
+
+  if (needsReset) {
     feedFilterState = { ...feedFilterState, genreId: '' };
     saveFeedFilters(feedFilterState);
-    select.value = '';
     renderFeed();
-    return;
   }
 
-  select.value = currentValue;
+  updateFeedGenreUI();
+}
+
+function handleFeedGenreButtonClick(event) {
+  event.preventDefault();
+  const button = event.currentTarget;
+  if (!button) return;
+
+  const value = button.dataset.genre ?? '';
+  const currentValue = feedFilterState.genreId ?? '';
+  const nextValue = currentValue === value ? '' : value;
+
+  if (nextValue === currentValue) return;
+
+  setFeedFilter('genreId', nextValue, { sanitize: true, persist: true });
 }
 
 function attachFeedFilterInput(element, name) {
@@ -406,21 +485,6 @@ function attachFeedFilterInput(element, name) {
   element._feedFilterChangeHandler = changeHandler;
   element.addEventListener('input', inputHandler);
   element.addEventListener('change', changeHandler);
-}
-
-function attachFeedFilterSelect(element, name) {
-  if (!element) return;
-
-  if (element._feedFilterSelectHandler) {
-    element.removeEventListener('change', element._feedFilterSelectHandler);
-  }
-
-  const handler = event => {
-    setFeedFilter(name, event.target.value, { sanitize: true, persist: true });
-  };
-
-  element._feedFilterSelectHandler = handler;
-  element.addEventListener('change', handler);
 }
 
 async function loadPreferences() {
@@ -2516,7 +2580,6 @@ export async function initTvPanel() {
   attachFeedFilterInput(domRefs.feedMinVotes, 'minVotes');
   attachFeedFilterInput(domRefs.feedStartYear, 'startYear');
   attachFeedFilterInput(domRefs.feedEndYear, 'endYear');
-  attachFeedFilterSelect(domRefs.feedGenre, 'genreId');
 
   const storedKey =
     (typeof window !== 'undefined' && window.tmdbApiKey) ||
