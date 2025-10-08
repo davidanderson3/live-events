@@ -91,6 +91,15 @@ const STATUS_TONE_CLASSES = Object.freeze({
   error: 'movie-status--error'
 });
 
+function escapeForAttribute(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 let loadAttemptCounter = 0;
 
 function buildMoviesApiUrl(path = '/api/movies') {
@@ -129,15 +138,36 @@ function summarizeError(err) {
   return 'Unknown error';
 }
 
-function updateFeedStatus(message, { tone = 'info' } = {}) {
+function updateFeedStatus(message, { tone = 'info', showSpinner = false } = {}) {
   const statusEl = domRefs.feedStatus;
   if (!statusEl) return;
-  statusEl.textContent = message;
+  const normalizedMessage = typeof message === 'string' ? message : String(message ?? '');
+  if (showSpinner) {
+    const ariaLabel = normalizedMessage.trim() ? escapeForAttribute(normalizedMessage) : '';
+    statusEl.innerHTML = `
+      <div class="movie-status__loader" role="status" aria-live="polite"${
+        ariaLabel ? ` aria-label="${ariaLabel}"` : ''
+      }>
+        <span class="movie-status__sr">${ariaLabel}</span>
+        <span class="movie-status__dot"></span>
+        <span class="movie-status__dot"></span>
+        <span class="movie-status__dot"></span>
+      </div>
+    `;
+    statusEl.setAttribute('aria-busy', 'true');
+    if (normalizedMessage.trim()) {
+      console.info(normalizedMessage);
+    }
+  } else {
+    statusEl.textContent = normalizedMessage;
+    statusEl.removeAttribute('aria-busy');
+  }
   Object.values(STATUS_TONE_CLASSES).forEach(cls => {
     statusEl.classList.remove(cls);
   });
   const toneClass = STATUS_TONE_CLASSES[tone] || STATUS_TONE_CLASSES.info;
   statusEl.classList.add(toneClass);
+  statusEl.classList.toggle('movie-status--loading', Boolean(showSpinner));
 }
 
 function clampUserRating(value) {
@@ -1307,7 +1337,10 @@ async function requestAdditionalMovies() {
   if (refillInProgress) {
     const started = formatTimestamp(lastRefillAttempt);
     const label = started ? ` (started at ${started})` : '';
-    updateFeedStatus(`Movie request already in progress${label}.`, { tone: 'info' });
+    updateFeedStatus(`Movie request already in progress${label}.`, {
+      tone: 'info',
+      showSpinner: true
+    });
     return;
   }
   if (now - lastRefillAttempt < REFILL_COOLDOWN_MS) {
@@ -1346,7 +1379,10 @@ function renderFeed() {
   if (!currentMovies.length) {
     if (refillInProgress) {
       listEl.innerHTML = '<em>Loading more movies...</em>';
-      updateFeedStatus('Waiting for movies from TMDB...', { tone: 'info' });
+      updateFeedStatus('Waiting for movies from TMDB...', {
+        tone: 'info',
+        showSpinner: true
+      });
       return;
     }
     if (feedExhausted) {
@@ -1362,7 +1398,10 @@ function renderFeed() {
       return;
     }
     listEl.innerHTML = '<em>Loading more movies...</em>';
-    updateFeedStatus('Requesting the first batch of movies...', { tone: 'info' });
+    updateFeedStatus('Requesting the first batch of movies...', {
+      tone: 'info',
+      showSpinner: true
+    });
     requestAdditionalMovies();
     return;
   }
@@ -1373,14 +1412,15 @@ function renderFeed() {
     if (refillInProgress) {
       listEl.innerHTML = '<em>Loading more movies...</em>';
       updateFeedStatus('All current results are hidden; waiting for new movies...', {
-        tone: 'info'
+        tone: 'info',
+        showSpinner: true
       });
       return;
     }
     listEl.innerHTML = '<em>Loading more movies...</em>';
     updateFeedStatus(
       'All fetched movies are hidden by saved statuses. Looking for fresh titles...',
-      { tone: 'warning' }
+      { tone: 'warning', showSpinner: true }
     );
     requestAdditionalMovies();
     return;
@@ -1392,7 +1432,8 @@ function renderFeed() {
     if (refillInProgress) {
       listEl.innerHTML = '<em>Loading more movies...</em>';
       updateFeedStatus('Filters removed the current batch; waiting for more movies...', {
-        tone: 'info'
+        tone: 'info',
+        showSpinner: true
       });
       return;
     }
@@ -1414,7 +1455,7 @@ function renderFeed() {
       hiddenByFilters
         ? `Filters are hiding ${hiddenByFilters} movie${hiddenByFilters === 1 ? '' : 's'}; requesting more options...`
         : 'Filters removed the current batch; requesting more movies...',
-      { tone: 'warning' }
+      { tone: 'warning', showSpinner: true }
     );
     requestAdditionalMovies();
     return;
@@ -2408,7 +2449,7 @@ async function loadMovies({ attemptStart } = {}) {
     `Loading movies (attempt ${attemptNumber})${
       startedLabel ? ` started at ${startedLabel}` : ''
     }. ${attemptIntro}${fallbackNote}`,
-    { tone: 'info' }
+    { tone: 'info', showSpinner: true }
   );
 
   listEl.innerHTML = '<em>Loading...</em>';
