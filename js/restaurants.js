@@ -4,10 +4,10 @@ import { auth, db, getCurrentUser } from './auth.js';
 const FALLBACK_API_BASE = DEFAULT_REMOTE_API_BASE;
 
 const TARGET_NEARBY_RESULTS = 60;
-const MAX_NEARBY_RESULTS = 200;
-const NEARBY_RESULTS_INCREMENT = 40;
-const YELP_MAX_RADIUS_MILES = 25;
-const NEARBY_RADIUS_STEPS_MILES = [null, YELP_MAX_RADIUS_MILES];
+const MAX_NEARBY_RESULTS = 1000;
+const NEARBY_RESULTS_INCREMENT = 80;
+const FOURSQUARE_MAX_RADIUS_MILES = 25;
+const NEARBY_RADIUS_STEPS_MILES = [null, FOURSQUARE_MAX_RADIUS_MILES];
 const MIN_NEARBY_RESULTS_THRESHOLD = 20;
 const METERS_PER_MILE = 1609.34;
 const MIN_NEARBY_DISTANCE_VARIETY_MILES = 5;
@@ -120,6 +120,7 @@ function sanitizeRestaurant(rest) {
     'url',
     'website',
     'distance',
+    'imageUrl',
     'serviceOptions'
   ];
   const sanitized = {};
@@ -712,12 +713,24 @@ function clearMap() {
   setActiveRestaurantCard(null);
   const mapElement =
     typeof document !== 'undefined' ? document.getElementById('restaurantsMap') : null;
+  const hasUserLocation =
+    userLocation &&
+    Number.isFinite(userLocation.latitude) &&
+    Number.isFinite(userLocation.longitude);
   if (mapElement) {
-    mapElement.classList.add('restaurants-map--empty');
+    if (hasUserLocation) {
+      mapElement.classList.remove('restaurants-map--empty');
+    } else {
+      mapElement.classList.add('restaurants-map--empty');
+    }
   }
   if (mapInstance) {
     try {
-      mapInstance.setView([39.5, -98.35], 4);
+      if (hasUserLocation) {
+        mapInstance.setView([userLocation.latitude, userLocation.longitude], 13);
+      } else {
+        mapInstance.setView([39.5, -98.35], 4);
+      }
     } catch {}
   }
 }
@@ -1016,7 +1029,7 @@ function createActions(rest) {
     : typeof rest.website === 'string'
       ? rest.website
       : '';
-  if (href && !/yelp\.com/i.test(href)) {
+  if (href) {
     const normalized = href.startsWith('http') ? href : `https://${href}`;
     const websiteLink = document.createElement('a');
     websiteLink.href = normalized;
@@ -1077,12 +1090,11 @@ function createRestaurantCard(rest) {
 
   const title = document.createElement('h3');
   const name = rest.name || 'Unnamed Restaurant';
-  const href = typeof rest.url === 'string' && rest.url
-    ? rest.url
-    : typeof rest.website === 'string'
-      ? rest.website
-      : '';
-  if (href && /yelp\.com/i.test(href)) {
+  const href =
+    (typeof rest.url === 'string' && rest.url) ||
+    (typeof rest.website === 'string' && rest.website) ||
+    '';
+  if (href) {
     const normalized = href.startsWith('http') ? href : `https://${href}`;
     const link = document.createElement('a');
     link.href = normalized;
@@ -1347,10 +1359,10 @@ function getNearbyEmptyMessage() {
     !Array.isArray(rawNearbyRestaurants) || rawNearbyRestaurants.length === 0;
   const reachedMaxRadius =
     nearbyRadiusIndex >= NEARBY_RADIUS_STEPS_MILES.length - 1 &&
-    NEARBY_RADIUS_STEPS_MILES[nearbyRadiusIndex] === YELP_MAX_RADIUS_MILES;
+    NEARBY_RADIUS_STEPS_MILES[nearbyRadiusIndex] === FOURSQUARE_MAX_RADIUS_MILES;
 
   if (noRawResults && reachedMaxRadius) {
-    return `No restaurants found within Yelp’s ${YELP_MAX_RADIUS_MILES}-mile search radius.`;
+    return `No restaurants found within Foursquare’s ${FOURSQUARE_MAX_RADIUS_MILES}-mile search radius.`;
   }
 
   return 'No restaurants found.';
@@ -1617,22 +1629,29 @@ async function fetchRestaurants({
   return Array.isArray(data) ? data : [];
 }
 
-function isMissingYelpApiKeyError(err) {
+function isMissingFoursquareApiKeyError(err) {
   if (!err) return false;
   const message = typeof err.message === 'string' ? err.message : '';
   if (!message) return false;
   const normalized = message.trim().toLowerCase();
   if (!normalized) return false;
-  if (normalized === 'missing yelp api key' || normalized === 'missing_yelp_api_key') {
+  if (
+    normalized === 'missing foursquare api key' ||
+    normalized === 'missing_foursquare_api_key'
+  ) {
     return true;
   }
-  return normalized.includes('missing') && normalized.includes('yelp') && normalized.includes('key');
+  return (
+    normalized.includes('missing') &&
+    normalized.includes('foursquare') &&
+    normalized.includes('key')
+  );
 }
 
 function interpretRestaurantsError(err) {
   if (!err) return 'Failed to load restaurants.';
-  if (isMissingYelpApiKeyError(err)) {
-    return 'Configure the server with YELP_API_KEY to search for nearby restaurants.';
+  if (isMissingFoursquareApiKeyError(err)) {
+    return 'Configure the server with FOURSQUARE_API_KEY to search for nearby restaurants.';
   }
   if (typeof err.message === 'string' && err.message.trim()) {
     return err.message;

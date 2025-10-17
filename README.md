@@ -37,10 +37,10 @@ The Live Music tab now focuses on quick Eventbrite lookups for nearby concerts a
 ### Restaurants
 Answer the eternal "Where should we eat?" question:
 - **City or coordinate search** with optional cuisine filters.
-- **Yelp integration** via the Express proxy that accepts a key from request headers, query parameters, or environment variables.
-- **Result cards** include ratings, categories, price tier, distance, and direct Yelp links.
-- **Caching layer** – identical Yelp queries are cached for 30 minutes to slash API calls.
-- **Map-friendly data** – coordinates are included when Yelp provides them, so you can plot results in custom map overlays.
+- **Foursquare Places integration** via the Express proxy that accepts a key from request headers, query parameters, or the `FOURSQUARE_API_KEY` environment variable.
+- **Result cards** include ratings, categories, price tier, distance, and external links when Foursquare supplies them.
+- **Caching layer** – identical Foursquare lookups are cached for 30 minutes to conserve API quota.
+- **Map-friendly data** – coordinates are included whenever Foursquare returns them, so you can plot results in custom map overlays.
 
 ### Backups, Restore, and Settings Utilities
 Separate helper pages (`backup.json`, `restore.html`, `settings.html`) provide advanced utilities:
@@ -70,7 +70,7 @@ Each provider has distinct authentication and rate limits, so mirror the existin
 ## Architecture Overview
 - **Front end** – A hand-rolled SPA in vanilla JS, HTML, and CSS. Each tab has a dedicated module under `js/` that owns its DOM bindings, local storage, and network calls.
 - **Auth & persistence** – Firebase Auth (Google provider) and Firestore handle user login state plus long-term storage for movies, tab descriptions, and other preferences. Firestore is initialized with persistent caching so the UI stays responsive offline.
-- **Server** – `backend/server.js` is an Express app that serves the static bundle, proxies external APIs (Eventbrite, Yelp, Spoonacular), and exposes helper routes for descriptions, saved movies, Plaid item creation, etc. It also normalizes responses and caches expensive calls to protect third-party rate limits.
+- **Server** – `backend/server.js` is an Express app that serves the static bundle, proxies external APIs (Eventbrite, Foursquare Places, Spoonacular), and exposes helper routes for descriptions, saved movies, Plaid item creation, etc. It also normalizes responses and caches expensive calls to protect third-party rate limits.
 - **Cloud Functions** – The `functions/` directory mirrors much of the server logic for deployments that rely on Firebase Functions instead of the local Express instance.
 - **Shared utilities** – Reusable helpers live under `shared/` (e.g., caching primitives) so both the server and Cloud Functions share a single implementation.
 - **Node scripts** – `scripts/` contains operational tooling for geodata imports, monitoring, and static asset generation. They rely on environment variables documented below.
@@ -86,7 +86,7 @@ Create a `.env` in the project root (and optionally `backend/.env`) with the cre
 | `EVENTBRITE_API_TOKEN`, `EVENTBRITE_OAUTH_TOKEN`, or `EVENTBRITE_TOKEN` | Eventbrite proxy | Eventbrite personal token used for the Events Search API. |
 | `SPOONACULAR_KEY` | Spoonacular proxy | API key for recipe search. |
 | `OMDB_API_KEY` (or `OMDB_KEY`/`OMDB_TOKEN`) | Movie ratings proxy | OMDb key for Rotten Tomatoes and Metacritic lookups. |
-| `YELP_API_KEY` | Restaurants proxy | Yelp Fusion API key if you do not pass one per request. |
+| `FOURSQUARE_API_KEY` | Restaurants proxy | Foursquare Places API key if you do not pass one per request. |
 | `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV` | Plaid endpoints | Enable financial account linking workflows. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | `/contact` endpoint | Enable contact form email delivery. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `ALERT_PHONE` | `scripts/tempAlert.js` | SMS alerts for monitoring. |
@@ -116,4 +116,4 @@ Remember to also configure Firebase (see `firebase.json` and `.firebaserc`) if y
 - **`Cannot GET /api/eventbrite`** – point `API_BASE_URL` at the deployed API (`https://narrow-down.web.app/api`) or start the Express server with `npm start` so the Discover tab can reach the Eventbrite search endpoint.
 - **Spoonacular quota errors** – the proxy caches responses for six hours; if you keep seeing rate-limit messages clear the cache collection in Firestore or wait for the TTL to expire.
 - **Firestore permission denials** – authenticate with Google using the Sign In button; most persistence features require a logged-in user.
-- **Yelp proxy failures** – ensure the `x-api-key` header or `YELP_API_KEY` env var is set. The API returns `missing yelp api key` if not.
+- **Foursquare proxy failures** – ensure the `x-api-key` header or `FOURSQUARE_API_KEY` env var is set. The API returns `missing foursquare api key` if not.

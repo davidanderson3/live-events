@@ -36,15 +36,26 @@ const EVENTBRITE_API_TOKEN =
   process.env.EVENTBRITE_TOKEN ||
   '2YR3RA4K6VCZVEUZMBG4';
 const HAS_EVENTBRITE_TOKEN = Boolean(EVENTBRITE_API_TOKEN);
-const YELP_BASE_URL = 'https://api.yelp.com/v3/businesses/search';
-const YELP_DETAILS_BASE_URL = 'https://api.yelp.com/v3/businesses';
-const YELP_CACHE_COLLECTION = 'yelpCache';
-const YELP_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
-const YELP_MAX_PAGE_LIMIT = 50;
-const YELP_DEFAULT_TOTAL_LIMIT = 120;
-const YELP_ABSOLUTE_MAX_LIMIT = 200;
-const YELP_DETAILS_MAX_ENRICH = 40;
-const YELP_DETAILS_CONCURRENCY = 5;
+const FOURSQUARE_SEARCH_URL = 'https://api.foursquare.com/v3/places/search';
+const FOURSQUARE_PLACE_URL = 'https://api.foursquare.com/v3/places';
+const FOURSQUARE_CACHE_COLLECTION = 'foursquareCache';
+const FOURSQUARE_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
+const FOURSQUARE_MAX_LIMIT = 50;
+const FOURSQUARE_DETAILS_MAX = 15;
+const FOURSQUARE_DETAILS_CONCURRENCY = 4;
+const FOURSQUARE_CATEGORY_RESTAURANTS = '13065';
+const FOURSQUARE_SEARCH_FIELDS =
+  'fsq_id,name,location,geocodes,distance,link,website,tel,categories,price,rating,rating_signals';
+const FOURSQUARE_DETAIL_FIELDS =
+  'fsq_id,name,location,geocodes,distance,link,website,tel,categories,price,rating,rating_signals,photos,popularity,hours,social_media';
+const METERS_PER_MILE = 1609.34;
+const MOVIE_STATS_BUCKETS = [
+  { label: '9-10', min: 9, max: Infinity },
+  { label: '8-8.9', min: 8, max: 9 },
+  { label: '7-7.9', min: 7, max: 8 },
+  { label: '6-6.9', min: 6, max: 7 },
+  { label: '< 6', min: -Infinity, max: 6 }
+];
 const EVENTBRITE_CACHE_COLLECTION = 'eventbriteCache';
 const SPOONACULAR_CACHE_COLLECTION = 'recipeCache';
 const SPOONACULAR_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
@@ -57,6 +68,23 @@ const OMDB_API_KEY =
   '';
 const OMDB_CACHE_COLLECTION = 'omdbRatings';
 const OMDB_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
+
+async function safeReadCachedResponse(collection, keyParts, ttlMs) {
+  try {
+    return await readCachedResponse(collection, keyParts, ttlMs);
+  } catch (err) {
+    console.warn('Cache read failed', err?.message || err);
+    return null;
+  }
+}
+
+async function safeWriteCachedResponse(collection, keyParts, payload) {
+  try {
+    await writeCachedResponse(collection, keyParts, payload);
+  } catch (err) {
+    console.warn('Cache write failed', err?.message || err);
+  }
+}
 
 function resolveTmdbApiKey() {
   return (
@@ -216,16 +244,15 @@ function normalizeOmdbPayload(data, { type, requestedTitle, requestedYear }) {
   return payload;
 }
 
-function yelpCacheKeyParts({ city, latitude, longitude, cuisine, limit, radiusMiles }) {
+function foursquareCacheKeyParts({ city, latitude, longitude, cuisine, limit, radiusMeters }) {
   const normalizedCity = typeof city === 'string' ? city.trim().toLowerCase() : '';
   const normalizedCuisine = typeof cuisine === 'string' ? cuisine.trim().toLowerCase() : '';
   const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
-  const parts = ['yelp'];
+  const parts = ['foursquare', 'v1'];
   if (hasCoords) {
     const lat = Number(latitude);
     const lon = Number(longitude);
-    parts.push('coords');
-    parts.push(`${lat.toFixed(4)},${lon.toFixed(4)}`);
+    parts.push(`coords:${lat.toFixed(4)},${lon.toFixed(4)}`);
   } else {
     parts.push('coords:none');
   }
@@ -236,259 +263,112 @@ function yelpCacheKeyParts({ city, latitude, longitude, cuisine, limit, radiusMi
     parts.push(`cuisine:${normalizedCuisine}`);
   }
   if (Number.isFinite(limit) && limit > 0) {
-    parts.push(`limit:${limit}`);
+    const clampedLimit = Math.min(Math.max(1, Math.floor(limit)), FOURSQUARE_MAX_LIMIT);
+    parts.push(`limit:${clampedLimit}`);
   } else {
     parts.push('limit:default');
   }
-  if (Number.isFinite(radiusMiles) && radiusMiles > 0) {
-    parts.push(`radius:${Number(radiusMiles.toFixed(1))}`);
+  if (Number.isFinite(radiusMeters) && radiusMeters > 0) {
+    parts.push(`radius:${Math.round(radiusMeters)}`);
   } else {
     parts.push('radius:none');
   }
   return parts;
 }
 
-function toRadians(value) {
-  return (Number(value) * Math.PI) / 180;
+function formatFoursquarePrice(level) {
+  if (!Number.isFinite(level) || level <= 0) return '';
+  const clamped = Math.max(1, Math.min(4, Math.round(level)));
+  return '$'.repeat(clamped);
 }
 
-function toDegrees(value) {
-  return (Number(value) * 180) / Math.PI;
-}
-
-function normalizeLongitudeDegrees(value) {
-  if (!Number.isFinite(value)) return null;
-  let longitude = value;
-  while (longitude > 180) longitude -= 360;
-  while (longitude < -180) longitude += 360;
-  return longitude;
-}
-
-function destinationPointMiles(latitude, longitude, distanceMiles, bearingDegrees) {
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (!Number.isFinite(distanceMiles) || distanceMiles <= 0) return null;
-  const R = 3958.8; // Earth radius in miles
-  const phi1 = toRadians(latitude);
-  const lambda1 = toRadians(longitude);
-  const theta = toRadians(bearingDegrees);
-  const delta = distanceMiles / R;
-
-  const sinPhi1 = Math.sin(phi1);
-  const cosPhi1 = Math.cos(phi1);
-  const sinDelta = Math.sin(delta);
-  const cosDelta = Math.cos(delta);
-  const sinTheta = Math.sin(theta);
-  const cosTheta = Math.cos(theta);
-
-  const sinPhi2 = sinPhi1 * cosDelta + cosPhi1 * sinDelta * cosTheta;
-  const phi2 = Math.asin(Math.min(Math.max(sinPhi2, -1), 1));
-  const y = sinTheta * sinDelta * cosPhi1;
-  const x = cosDelta - sinPhi1 * Math.sin(phi2);
-  const lambda2 = lambda1 + Math.atan2(y, x);
-
-  const lat2 = toDegrees(phi2);
-  const lon2 = toDegrees(lambda2);
-  const normalizedLon = normalizeLongitudeDegrees(lon2);
-
-  if (!Number.isFinite(lat2) || !Number.isFinite(normalizedLon)) {
-    return null;
+function buildFoursquareAddress(location) {
+  if (!location || typeof location !== 'object') return '';
+  if (typeof location.formatted_address === 'string' && location.formatted_address.trim()) {
+    return location.formatted_address.trim();
   }
-
-  return { latitude: lat2, longitude: normalizedLon };
+  const locality =
+    [location.locality || location.city || '', location.region || location.state || '']
+      .filter(Boolean)
+      .join(', ');
+  const parts = [
+    location.address || location.address_line1 || '',
+    locality,
+    location.postcode || '',
+    location.country || ''
+  ]
+    .map(part => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean);
+  return parts.join(', ');
 }
 
-function generateExpandedSearchCenters(
-  latitude,
-  longitude,
-  { rings = 6, startDistanceMiles = 18, ringStepMiles = 14 } = {}
+function extractBestPhotoUrl(detail) {
+  const photos = detail && Array.isArray(detail.photos) ? detail.photos : [];
+  if (!photos.length) return '';
+  const preferred =
+    photos.find(photo => photo && photo.prefix && photo.suffix && photo.width && photo.height) ||
+    photos.find(photo => photo && photo.prefix && photo.suffix);
+  if (!preferred || !preferred.prefix || !preferred.suffix) {
+    return '';
+  }
+  const size =
+    Number.isFinite(preferred.width) && Number.isFinite(preferred.height)
+      ? `${preferred.width}x${preferred.height}`
+      : 'original';
+  return `${preferred.prefix}${size}${preferred.suffix}`;
+}
+
+function simplifyFoursquareCategories(categories) {
+  if (!Array.isArray(categories)) return [];
+  return categories
+    .map(category => {
+      if (!category) return '';
+      if (typeof category === 'string') return category.trim();
+      if (typeof category.name === 'string' && category.name.trim()) return category.name.trim();
+      if (typeof category.short_name === 'string' && category.short_name.trim()) {
+        return category.short_name.trim();
+      }
+      return '';
+    })
+    .filter(Boolean);
+}
+
+async function fetchFoursquareSearch(params, apiKey) {
+  const url = `${FOURSQUARE_SEARCH_URL}?${params.toString()}`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: apiKey,
+      Accept: 'application/json'
+    }
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw Object.assign(
+      new Error(`Foursquare request failed: ${response.status} ${text.slice(0, 200)}`),
+      { status: response.status }
+    );
+  }
+  return response.json();
+}
+
+async function fetchFoursquareDetails(
+  places,
+  apiKey,
+  { limit = FOURSQUARE_DETAILS_MAX, concurrency = FOURSQUARE_DETAILS_CONCURRENCY } = {}
 ) {
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
-  const centers = [];
+  if (!Array.isArray(places) || !places.length) return new Map();
+  const ids = [];
   const seen = new Set();
-
-  for (let ring = 0; ring < rings; ring += 1) {
-    const distanceMiles = startDistanceMiles + ring * ringStepMiles;
-    if (!Number.isFinite(distanceMiles) || distanceMiles <= 0) continue;
-
-    const bearingsCount = Math.min(16, 6 + ring * 2);
-    const bearings = Array.from({ length: bearingsCount }, (_, index) => {
-      const baseAngle = (360 / bearingsCount) * index;
-      const offset = ring % 2 === 0 ? 0 : 180 / bearingsCount;
-      return (baseAngle + offset) % 360;
-    });
-
-    for (const bearing of bearings) {
-      const point = destinationPointMiles(latitude, longitude, distanceMiles, bearing);
-      if (!point) continue;
-      const key = `${point.latitude.toFixed(4)},${point.longitude.toFixed(4)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      centers.push(point);
-    }
-  }
-
-  return centers;
-}
-
-async function fetchYelpBusinessesWithPagination(baseParams, { yelpKey, targetTotal, aggregated, seenIds }) {
-  let offset = 0;
-  let totalAvailable = null;
-  let shouldContinue = true;
-
-  while (shouldContinue && aggregated.length < targetTotal) {
-    const remainingNeeded = targetTotal - aggregated.length;
-    const batchLimit = Math.min(YELP_MAX_PAGE_LIMIT, remainingNeeded);
-    if (batchLimit <= 0) break;
-
-    const params = new URLSearchParams(baseParams);
-    params.set('limit', String(batchLimit));
-    if (offset > 0) {
-      params.set('offset', String(offset));
-    } else {
-      params.delete('offset');
-    }
-
-    const apiRes = await fetch(`${YELP_BASE_URL}?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${yelpKey}`
-      }
-    });
-
-    const data = await apiRes.json().catch(() => null);
-
-    if (!apiRes.ok || !data) {
-      const message =
-        data?.error?.description || data?.error?.code || data?.error || 'failed';
-      const error = new Error(message);
-      error.status = apiRes.status || 500;
-      throw error;
-    }
-
-    const results = Array.isArray(data?.businesses) ? data.businesses : [];
-    totalAvailable =
-      typeof data?.total === 'number' && data.total >= 0 ? data.total : totalAvailable;
-
-    offset += results.length;
-
-    for (const biz of results) {
-      if (!biz || typeof biz !== 'object') continue;
-      const id = biz.id;
-      if (!id || seenIds.has(id)) continue;
-      seenIds.add(id);
-      aggregated.push(biz);
-      if (aggregated.length >= targetTotal) {
-        break;
-      }
-    }
-
-    if (results.length < batchLimit) {
-      shouldContinue = false;
-    } else if (totalAvailable !== null && offset >= totalAvailable) {
-      shouldContinue = false;
-    }
-  }
-
-  return { totalAvailable };
-}
-
-function parseYelpBoolean(value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
-    if (value === 1) return true;
-    if (value === 0) return false;
-    return null;
-  }
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) return null;
-    if (['1', 'true', 'yes', 'y'].includes(normalized)) return true;
-    if (['0', 'false', 'no', 'n'].includes(normalized)) return false;
-  }
-  return null;
-}
-
-function deriveYelpServiceOptions({ searchBiz = null, details = null } = {}) {
-  const result = { takeout: null, sitDown: null };
-
-  function setOption(key, value) {
-    if (typeof value !== 'boolean') return;
-    if (value) {
-      result[key] = true;
-    } else if (result[key] !== true) {
-      result[key] = false;
-    }
-  }
-
-  function applyTransactions(transactions) {
-    if (!Array.isArray(transactions)) return;
-    const normalized = transactions
-      .map(item => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
-      .filter(Boolean);
-    if (normalized.some(entry => ['pickup', 'delivery', 'takeout'].includes(entry))) {
-      setOption('takeout', true);
-    }
-    if (
-      normalized.some(entry => ['dine-in', 'dinein', 'dine_in', 'restaurant_reservation'].includes(entry))
-    ) {
-      setOption('sitDown', true);
-    }
-  }
-
-  applyTransactions(searchBiz?.transactions);
-  applyTransactions(details?.transactions);
-
-  const attributes =
-    (details && typeof details.attributes === 'object' && details.attributes) ||
-    (searchBiz && typeof searchBiz.attributes === 'object' && searchBiz.attributes) ||
-    {};
-
-  const takeoutAttr = parseYelpBoolean(attributes.RestaurantsTakeOut);
-  if (takeoutAttr !== null) setOption('takeout', takeoutAttr);
-
-  const deliveryAttr = parseYelpBoolean(attributes.RestaurantsDelivery);
-  if (deliveryAttr !== null) setOption('takeout', deliveryAttr);
-
-  const tableServiceAttr = parseYelpBoolean(attributes.RestaurantsTableService);
-  if (tableServiceAttr !== null) setOption('sitDown', tableServiceAttr);
-
-  const reservationsAttr = parseYelpBoolean(attributes.RestaurantsReservations);
-  if (reservationsAttr) {
-    setOption('sitDown', true);
-  } else if (reservationsAttr === false) {
-    setOption('sitDown', false);
-  }
-
-  const serviceOptions =
-    details && typeof details.service_options === 'object' ? details.service_options : null;
-  if (serviceOptions) {
-    const takeoutOption = parseYelpBoolean(serviceOptions.takeout);
-    if (takeoutOption !== null) setOption('takeout', takeoutOption);
-    const dineInOption = parseYelpBoolean(serviceOptions.dine_in ?? serviceOptions.dineIn);
-    if (dineInOption !== null) setOption('sitDown', dineInOption);
-  }
-
-  return result;
-}
-
-async function fetchYelpBusinessDetails(businesses, apiKey, { limit, concurrency } = {}) {
-  if (!Array.isArray(businesses) || !businesses.length) {
-    return new Map();
-  }
-  const uniqueIds = [];
-  const seen = new Set();
-  for (const biz of businesses) {
-    const id = typeof biz?.id === 'string' ? biz.id.trim() : '';
+  for (const place of places) {
+    const id = place?.fsq_id;
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    uniqueIds.push(id);
-    if (limit && uniqueIds.length >= limit) break;
+    ids.push(id);
+    if (Number.isFinite(limit) && limit > 0 && ids.length >= limit) break;
   }
+  if (!ids.length) return new Map();
 
   const results = new Map();
-  const ids = uniqueIds;
-  if (!ids.length) return results;
-
   const workerCount = Math.max(1, Math.min(concurrency || 1, ids.length));
   let index = 0;
 
@@ -496,67 +376,92 @@ async function fetchYelpBusinessDetails(businesses, apiKey, { limit, concurrency
     while (index < ids.length) {
       const currentIndex = index++;
       const id = ids[currentIndex];
-      const url = `${YELP_DETAILS_BASE_URL}/${encodeURIComponent(id)}`;
+      const detailUrl = `${FOURSQUARE_PLACE_URL}/${encodeURIComponent(
+        id
+      )}?fields=${encodeURIComponent(FOURSQUARE_DETAIL_FIELDS)}`;
       try {
-        const response = await fetch(url, {
+        const response = await fetch(detailUrl, {
           headers: {
-            Authorization: `Bearer ${apiKey}`
+            Authorization: apiKey,
+            Accept: 'application/json'
           }
         });
         if (!response.ok) {
           continue;
         }
         const data = await response.json().catch(() => null);
-        if (!data || typeof data !== 'object') {
-          continue;
+        if (data && typeof data === 'object') {
+          results.set(id, data);
         }
-        const detailSubset = {
-          attributes:
-            data.attributes && typeof data.attributes === 'object' ? data.attributes : undefined,
-          transactions: Array.isArray(data.transactions) ? data.transactions : undefined,
-          service_options:
-            data.service_options && typeof data.service_options === 'object'
-              ? data.service_options
-              : undefined
-        };
-        results.set(id, detailSubset);
       } catch (err) {
-        console.error('Yelp business details fetch failed', err);
+        console.error('Foursquare detail fetch failed', err);
       }
     }
   }
 
-  const workers = Array.from({ length: workerCount }, () => runWorker());
-  await Promise.all(workers);
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
   return results;
 }
 
-function simplifyYelpBusiness(biz, { details } = {}) {
-  if (!biz || typeof biz !== 'object') return null;
-  const serviceOptions = deriveYelpServiceOptions({ searchBiz: biz, details });
-  const hasServiceInfo =
-    typeof serviceOptions.takeout === 'boolean' || typeof serviceOptions.sitDown === 'boolean';
+function simplifyFoursquarePlace(place, detail) {
+  if (!place || typeof place !== 'object') return null;
+  const location = detail?.location || place.location || {};
+  const geocodes = detail?.geocodes || place.geocodes || {};
+  const mainGeo = geocodes.main || geocodes.roof || geocodes.display || {};
+  const latitude = Number.isFinite(mainGeo.latitude) ? mainGeo.latitude : null;
+  const longitude = Number.isFinite(mainGeo.longitude) ? mainGeo.longitude : null;
+
+  const rawRating =
+    Number.isFinite(detail?.rating) && detail.rating > 0
+      ? detail.rating
+      : Number.isFinite(place.rating) && place.rating > 0
+      ? place.rating
+      : null;
+  const normalizedRating =
+    Number.isFinite(rawRating) && rawRating > 0 ? Math.round((rawRating / 2) * 10) / 10 : null;
+
+  const ratingSignals =
+    Number.isFinite(detail?.rating_signals) && detail.rating_signals >= 0
+      ? detail.rating_signals
+      : Number.isFinite(place.rating_signals) && place.rating_signals >= 0
+      ? place.rating_signals
+      : null;
+
+  const priceLevel =
+    Number.isFinite(detail?.price) && detail.price > 0
+      ? detail.price
+      : Number.isFinite(place.price) && place.price > 0
+      ? place.price
+      : null;
+
+  const address = buildFoursquareAddress(location);
+  const categories = simplifyFoursquareCategories(detail?.categories || place.categories);
+  const phone = detail?.tel || place.tel || '';
+  const website = detail?.website || place.website || '';
+  const link = detail?.link || place.link || '';
+  const url = website || link || (place.fsq_id ? `https://foursquare.com/v/${place.fsq_id}` : '');
+  const distance = Number.isFinite(place.distance) ? place.distance : null;
+  const imageUrl = extractBestPhotoUrl(detail);
+
   return {
-    id: biz.id,
-    name: biz.name,
-    address: Array.isArray(biz.location?.display_address)
-      ? biz.location.display_address.join(', ')
-      : biz.location?.address1 || '',
-    city: biz.location?.city || '',
-    state: biz.location?.state || '',
-    zip: biz.location?.zip_code || '',
-    phone: biz.display_phone || biz.phone || '',
-    rating: biz.rating ?? null,
-    reviewCount: biz.review_count ?? null,
-    price: biz.price || '',
-    categories: Array.isArray(biz.categories)
-      ? biz.categories.map(c => c.title).filter(Boolean)
-      : [],
-    latitude: typeof biz.coordinates?.latitude === 'number' ? biz.coordinates.latitude : null,
-    longitude: typeof biz.coordinates?.longitude === 'number' ? biz.coordinates.longitude : null,
-    url: biz.url || '',
-    distance: typeof biz.distance === 'number' ? biz.distance : null,
-    ...(hasServiceInfo ? { serviceOptions } : {})
+    id: place.fsq_id || detail?.fsq_id || null,
+    name: detail?.name || place.name || 'Unnamed Venue',
+    address,
+    city: location.locality || location.city || '',
+    state: location.region || location.state || '',
+    zip: location.postcode || '',
+    country: location.country || '',
+    phone,
+    rating: normalizedRating,
+    reviewCount: Number.isFinite(ratingSignals) ? ratingSignals : null,
+    price: formatFoursquarePrice(priceLevel),
+    categories,
+    latitude,
+    longitude,
+    url,
+    website: website || undefined,
+    imageUrl: imageUrl || undefined,
+    distance
   };
 }
 
@@ -710,154 +615,105 @@ app.get('/api/tmdb-config', (req, res) => {
 
 app.get('/api/restaurants', async (req, res) => {
   const { city, cuisine = '' } = req.query || {};
-  const rawLatitude = req.query?.latitude;
-  const rawLongitude = req.query?.longitude;
-  const latitude = typeof rawLatitude === 'string' ? Number(rawLatitude) : Number(rawLatitude);
-  const longitude = typeof rawLongitude === 'string' ? Number(rawLongitude) : Number(rawLongitude);
-  const yelpKey = req.get('x-api-key') || req.query.apiKey || process.env.YELP_API_KEY;
-  if (!yelpKey) {
-    return res.status(500).json({ error: 'missing yelp api key' });
+  const latitude = Number.parseFloat(req.query?.latitude);
+  const longitude = Number.parseFloat(req.query?.longitude);
+  const foursquareKey =
+    req.get('x-api-key') || req.query.apiKey || process.env.FOURSQUARE_API_KEY;
+  if (!foursquareKey) {
+    return res.status(500).json({ error: 'missing foursquare api key' });
   }
   const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
-  if (!city && !hasCoords) {
+  if (!hasCoords && !city) {
     return res.status(400).json({ error: 'missing location' });
   }
 
   const rawLimitParam = req.query?.limit ?? req.query?.maxResults;
   const requestedLimit = normalizePositiveInteger(rawLimitParam, {
     min: 1,
-    max: YELP_ABSOLUTE_MAX_LIMIT
+    max: FOURSQUARE_MAX_LIMIT
   });
-  const targetTotal = requestedLimit || YELP_DEFAULT_TOTAL_LIMIT;
+  const limit = requestedLimit || FOURSQUARE_MAX_LIMIT;
 
   const parsedRadius = parseNumberQuery(req.query?.radius);
   const radiusMiles =
     Number.isFinite(parsedRadius) && parsedRadius > 0 ? Math.min(parsedRadius, 25) : null;
   const radiusMeters =
-    Number.isFinite(radiusMiles) && radiusMiles > 0
-      ? Math.min(Math.round(radiusMiles * 1609.34), 40000)
-      : null;
+    Number.isFinite(radiusMiles) && radiusMiles > 0 ? Math.round(radiusMiles * METERS_PER_MILE) : null;
 
-  const cacheKeyParts = yelpCacheKeyParts({
+  const cacheKeyParts = foursquareCacheKeyParts({
     city,
     latitude,
     longitude,
     cuisine,
-    limit: targetTotal,
-    radiusMiles
+    limit,
+    radiusMeters
   });
-  const cached = await readCachedResponse(YELP_CACHE_COLLECTION, cacheKeyParts, YELP_CACHE_TTL_MS);
+
+  const cached = await safeReadCachedResponse(
+    FOURSQUARE_CACHE_COLLECTION,
+    cacheKeyParts,
+    FOURSQUARE_CACHE_TTL_MS
+  );
   if (sendCachedResponse(res, cached)) {
     return;
   }
 
   try {
-    const baseParams = new URLSearchParams({
-      categories: 'restaurants'
-    });
+    const searchLimit = Math.min(
+      FOURSQUARE_MAX_LIMIT,
+      Math.max(limit, FOURSQUARE_DETAILS_MAX)
+    );
+    const params = new URLSearchParams();
+    params.set('limit', String(searchLimit));
+    params.set('categories', FOURSQUARE_CATEGORY_RESTAURANTS);
+    params.set('fields', FOURSQUARE_SEARCH_FIELDS);
     if (hasCoords) {
-      baseParams.set('latitude', String(latitude));
-      baseParams.set('longitude', String(longitude));
-      baseParams.set('sort_by', 'distance');
+      params.set('ll', `${latitude},${longitude}`);
       if (Number.isFinite(radiusMeters) && radiusMeters > 0) {
-        baseParams.set('radius', String(radiusMeters));
+        params.set('radius', String(radiusMeters));
       }
+      params.set('sort', 'DISTANCE');
     } else if (city) {
-      baseParams.set('location', String(city));
+      params.set('near', String(city));
+      params.set('sort', 'RELEVANCE');
     }
     if (cuisine) {
-      baseParams.set('term', String(cuisine));
+      params.set('query', String(cuisine));
     }
 
-    const aggregated = [];
-    const seenIds = new Set();
-    let totalAvailable = null;
-
-    const baseMeta = await fetchYelpBusinessesWithPagination(baseParams, {
-      yelpKey,
-      targetTotal,
-      aggregated,
-      seenIds
-    });
-    if (baseMeta && typeof baseMeta.totalAvailable === 'number') {
-      totalAvailable = baseMeta.totalAvailable;
-    }
-
-    if (hasCoords && aggregated.length < targetTotal) {
-      const ringsNeeded = Math.min(8, 3 + Math.ceil((targetTotal - aggregated.length) / 40));
-      const startDistanceMiles = Math.max(
-        12,
-        Number.isFinite(radiusMiles) && radiusMiles > 0 ? Math.min(radiusMiles * 0.8, 28) : 18
-      );
-      const expansionCenters = generateExpandedSearchCenters(latitude, longitude, {
-        rings: ringsNeeded,
-        startDistanceMiles,
-        ringStepMiles: 14
+    const data = await fetchFoursquareSearch(params, foursquareKey);
+    const results = Array.isArray(data?.results) ? data.results : [];
+    if (!results.length) {
+      const emptyPayload = JSON.stringify([]);
+      await safeWriteCachedResponse(FOURSQUARE_CACHE_COLLECTION, cacheKeyParts, {
+        status: 200,
+        contentType: 'application/json',
+        body: emptyPayload,
+        metadata: {
+          city: typeof city === 'string' ? city : '',
+          hasCoords,
+          latitude: hasCoords ? latitude : null,
+          longitude: hasCoords ? longitude : null,
+          cuisine: typeof cuisine === 'string' ? cuisine : '',
+          limit,
+          returned: 0,
+          totalResults: Array.isArray(data?.results) ? data.results.length : 0,
+          radiusMeters: Number.isFinite(radiusMeters) ? radiusMeters : null
+        }
       });
-      const expansionRadiusMeters = 40000; // Yelp API maximum
-
-      for (const center of expansionCenters) {
-        if (aggregated.length >= targetTotal) break;
-        const params = new URLSearchParams(baseParams);
-        params.set('latitude', String(center.latitude));
-        params.set('longitude', String(center.longitude));
-        params.set('radius', String(expansionRadiusMeters));
-
-        try {
-          const meta = await fetchYelpBusinessesWithPagination(params, {
-            yelpKey,
-            targetTotal,
-            aggregated,
-            seenIds
-          });
-          if (meta && typeof meta.totalAvailable === 'number') {
-            if (totalAvailable === null) {
-              totalAvailable = meta.totalAvailable;
-            } else {
-              totalAvailable = Math.max(totalAvailable, meta.totalAvailable);
-            }
-          }
-        } catch (err) {
-          console.warn('Expanded Yelp search attempt failed', err);
-        }
-      }
+      res.type('application/json').send(emptyPayload);
+      return;
     }
 
-    if (city && aggregated.length < targetTotal) {
-      const locationParams = new URLSearchParams(baseParams);
-      locationParams.delete('latitude');
-      locationParams.delete('longitude');
-      locationParams.delete('radius');
-      locationParams.delete('sort_by');
-      locationParams.set('location', String(city));
-      try {
-        const meta = await fetchYelpBusinessesWithPagination(locationParams, {
-          yelpKey,
-          targetTotal,
-          aggregated,
-          seenIds
-        });
-        if (meta && typeof meta.totalAvailable === 'number') {
-          if (totalAvailable === null) {
-            totalAvailable = meta.totalAvailable;
-          } else {
-            totalAvailable = Math.max(totalAvailable, meta.totalAvailable);
-          }
-        }
-      } catch (err) {
-        console.warn('City-based Yelp search attempt failed', err);
-      }
-    }
-
-    const detailsMap = await fetchYelpBusinessDetails(aggregated, yelpKey, {
-      limit: YELP_DETAILS_MAX_ENRICH,
-      concurrency: YELP_DETAILS_CONCURRENCY
-    });
-    const simplified = aggregated
-      .map(biz => simplifyYelpBusiness(biz, { details: detailsMap.get(biz.id) }))
+    const details = await fetchFoursquareDetails(results, foursquareKey);
+    const simplified = results
+      .slice(0, limit)
+      .map(place => simplifyFoursquarePlace(place, details.get(place.fsq_id)))
       .filter(Boolean);
+
     const payload = JSON.stringify(simplified);
-    await writeCachedResponse(YELP_CACHE_COLLECTION, cacheKeyParts, {
+
+    await safeWriteCachedResponse(FOURSQUARE_CACHE_COLLECTION, cacheKeyParts, {
       status: 200,
       contentType: 'application/json',
       body: payload,
@@ -867,16 +723,16 @@ app.get('/api/restaurants', async (req, res) => {
         latitude: hasCoords ? latitude : null,
         longitude: hasCoords ? longitude : null,
         cuisine: typeof cuisine === 'string' ? cuisine : '',
-        requestedLimit: targetTotal,
+        limit,
         returned: simplified.length,
-        totalAvailable,
-        radiusMiles: Number.isFinite(radiusMiles) ? radiusMiles : null
+        totalResults: Array.isArray(data?.results) ? data.results.length : null,
+        radiusMeters: Number.isFinite(radiusMeters) ? radiusMeters : null
       }
     });
 
     res.type('application/json').send(payload);
   } catch (err) {
-    console.error('Restaurant proxy failed', err);
+    console.error('Foursquare restaurant search failed', err);
     const status =
       err && typeof err.status === 'number' && err.status >= 400 ? err.status : 500;
     const message =
@@ -1067,7 +923,7 @@ app.get('/api/eventbrite', async (req, res) => {
       return { segment: key, description, status: cached.status, text: cached.text };
     }
 
-    const sharedCached = await readCachedResponse(
+    const sharedCached = await safeReadCachedResponse(
       EVENTBRITE_CACHE_COLLECTION,
       eventbriteCacheKeyParts({
         token: scope === 'manual' ? queryToken : effectiveToken,
@@ -1120,7 +976,7 @@ app.get('/api/eventbrite', async (req, res) => {
     const text = await response.text();
     if (response.ok) {
       setEventbriteCacheEntry(memoryKey, { status: response.status, text });
-      await writeCachedResponse(
+      await safeWriteCachedResponse(
         EVENTBRITE_CACHE_COLLECTION,
         eventbriteCacheKeyParts({
           token: scope === 'manual' ? queryToken : effectiveToken,
@@ -1147,9 +1003,32 @@ app.get('/api/eventbrite', async (req, res) => {
           }
         }
       );
+      return { segment: key, description, status: response.status, text };
     }
 
-    return { segment: key, description, status: response.status, text };
+    let errorMessage = `Eventbrite request failed (${response.status})`;
+    let parsedError = null;
+    try {
+      parsedError = text ? JSON.parse(text) : null;
+    } catch {
+      parsedError = null;
+    }
+    if (parsedError) {
+      const descriptionMessage =
+        parsedError.error_description ||
+        parsedError.error ||
+        parsedError.message;
+      if (typeof descriptionMessage === 'string' && descriptionMessage.trim()) {
+        errorMessage = descriptionMessage.trim();
+      }
+    } else if (text && text.trim()) {
+      const snippet = text.trim().slice(0, 200);
+      errorMessage = `${errorMessage}: ${snippet}`;
+    }
+    const err = new Error(errorMessage);
+    err.status = response.status;
+    err.details = parsedError || null;
+    throw err;
   }
 
   try {
@@ -1166,11 +1045,16 @@ app.get('/api/eventbrite', async (req, res) => {
     for (const result of segmentResponses) {
       const { segment, description } = result;
       if (result.error) {
-        console.error('Eventbrite segment fetch failed', description || segment, result.error);
+        console.error(
+          'Eventbrite segment fetch failed',
+          description || segment,
+          result.error
+        );
         segmentSummaries.push({
           key: segment,
           description,
           ok: false,
+          status: typeof result.error.status === 'number' ? result.error.status : null,
           error: result.error.message || 'Unknown error'
         });
         continue;
@@ -1262,7 +1146,10 @@ app.get('/api/eventbrite', async (req, res) => {
     });
   } catch (err) {
     console.error('Eventbrite fetch failed', err);
-    res.status(500).json({ error: 'failed' });
+    res.status(500).json({
+      error: err?.message || 'failed',
+      details: err?.details || null
+    });
   }
 });
 
@@ -1314,8 +1201,12 @@ LIMIT 10`;
         properties: {
           name: b.cityLabel?.value || '',
           population: b.population ? Number(b.population.value) : null
-  }
-};
+        }
+      };
+    })
+    .filter(Boolean);
+  return { type: 'FeatureCollection', features };
+}
 
 function parseTimeParts(value) {
   if (typeof value !== 'string') return null;
@@ -1346,6 +1237,10 @@ function haversineMiles(lat1, lon1, lat2, lon2) {
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+}
+
+function toRadians(value) {
+  return (Number(value) * Math.PI) / 180;
 }
 
 function buildFallbackStart(dateString, timeString) {
@@ -1432,11 +1327,6 @@ function fallbackEventsFor({ latitude, longitude, radiusMiles, startDate, endDat
 
   return results;
 }
-    })
-    .filter(Boolean);
-  return { type: 'FeatureCollection', features };
-}
-
 async function ensureCitiesForCountry(code) {
   const dir = path.join(__dirname, '../geolayers-game/public/data', code);
   const file = path.join(dir, 'cities.geojson');
@@ -1537,12 +1427,24 @@ app.get('/api/movies', async (req, res) => {
 
     const catalogState = await movieCatalog.ensureCatalog({ forceRefresh });
     const hasCredentials = movieCatalog.hasTmdbCredentials();
-    const curatedResults = freshOnly
-      ? []
-      : movieCatalog.searchCatalog(query, {
-          limit: curatedLimit,
-          minScore: minScore == null ? undefined : minScore
-        });
+    const curatedSearch = movieCatalog.searchCatalogWithStats(query, {
+      limit: curatedLimit,
+      minScore: minScore == null ? undefined : minScore
+    });
+    const curatedResults = freshOnly ? [] : curatedSearch.results;
+    const curatedTotalMatches = Math.max(
+      0,
+      Number.isFinite(curatedSearch?.totalMatches)
+        ? Number(curatedSearch.totalMatches)
+        : Array.isArray(curatedSearch?.results)
+        ? curatedSearch.results.length
+        : 0
+    );
+    const curatedReturnedCount = freshOnly
+      ? 0
+      : Array.isArray(curatedResults)
+      ? curatedResults.length
+      : 0;
 
     let freshResults = [];
     let freshError = null;
@@ -1574,7 +1476,8 @@ app.get('/api/movies', async (req, res) => {
       fresh: freshResults,
       metadata: {
         query: query || null,
-        curatedCount: curatedResults.length,
+        curatedCount: curatedTotalMatches,
+        curatedReturnedCount,
         freshCount: freshResults.length,
         totalCatalogSize:
           catalogState?.metadata?.total ?? catalogState?.movies?.length ?? 0,
@@ -1586,6 +1489,7 @@ app.get('/api/movies', async (req, res) => {
         minScore: minScore == null ? movieCatalog.MIN_SCORE : minScore,
         includeFresh: Boolean(shouldFetchFresh && hasCredentials),
         freshOnly: Boolean(freshOnly),
+        curatedLimit,
         source: catalogState?.metadata?.source || null,
         freshRequested: Boolean(shouldFetchFresh)
       }
@@ -1604,6 +1508,69 @@ app.get('/api/movies', async (req, res) => {
   } catch (err) {
     console.error('Failed to fetch movies', err);
     res.status(500).json({ error: 'Failed to fetch movies' });
+  }
+});
+
+app.get('/api/movies/stats', async (req, res) => {
+  try {
+    const catalogState = await movieCatalog.ensureCatalog();
+    const movies = Array.isArray(catalogState?.movies) ? catalogState.movies : [];
+    const excludeRaw = req.query.excludeIds;
+    const excludeSet = new Set();
+
+    const addExclusions = value => {
+      if (!value) return;
+      const parts = String(value)
+        .split(/[,|\s]+/)
+        .map(part => part.trim())
+        .filter(Boolean);
+      parts.forEach(part => excludeSet.add(part));
+    };
+
+    if (Array.isArray(excludeRaw)) {
+      excludeRaw.forEach(addExclusions);
+    } else if (typeof excludeRaw === 'string') {
+      addExclusions(excludeRaw);
+    }
+
+    const bucketStats = MOVIE_STATS_BUCKETS.map(bucket => ({
+      label: bucket.label,
+      min: bucket.min,
+      max: bucket.max,
+      count: 0
+    }));
+
+    let total = 0;
+    movies.forEach(movie => {
+      if (!movie || movie.id == null) return;
+      const id = String(movie.id);
+      if (excludeSet.has(id)) return;
+      total += 1;
+      const score = Number(movie.score);
+      if (!Number.isFinite(score)) return;
+      for (const bucket of bucketStats) {
+        const meetsMin = bucket.min === -Infinity ? true : score >= bucket.min;
+        const belowMax = bucket.max === Infinity ? true : score < bucket.max;
+        if (meetsMin && belowMax) {
+          bucket.count += 1;
+          break;
+        }
+      }
+    });
+
+    res.json({
+      total,
+      catalogTotal: movies.length,
+      catalogUpdatedAt:
+        catalogState?.metadata?.updatedAt ||
+        (catalogState?.updatedAt
+          ? new Date(catalogState.updatedAt).toISOString()
+          : null),
+      buckets: bucketStats.map(({ label, count }) => ({ label, count }))
+    });
+  } catch (err) {
+    console.error('Failed to compute movie stats', err);
+    res.status(500).json({ error: 'failed_to_compute_movie_stats' });
   }
 });
 
@@ -1640,7 +1607,11 @@ app.get('/api/movie-ratings', async (req, res) => {
   });
 
   if (!forceRefresh) {
-    const cached = await readCachedResponse(OMDB_CACHE_COLLECTION, cacheParts, OMDB_CACHE_TTL_MS);
+    const cached = await safeReadCachedResponse(
+      OMDB_CACHE_COLLECTION,
+      cacheParts,
+      OMDB_CACHE_TTL_MS
+    );
     if (sendCachedResponse(res, cached)) {
       return;
     }
@@ -1692,7 +1663,7 @@ app.get('/api/movie-ratings', async (req, res) => {
     }
 
     const body = JSON.stringify(payload);
-    await writeCachedResponse(OMDB_CACHE_COLLECTION, cacheParts, {
+    await safeWriteCachedResponse(OMDB_CACHE_COLLECTION, cacheParts, {
       body,
       metadata: {
         imdbId: payload.imdbId || imdbId || null,

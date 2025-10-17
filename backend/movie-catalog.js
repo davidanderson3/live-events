@@ -819,11 +819,24 @@ function buildSearchMatches(query, { limit, minScore }) {
     }
   }
   matches.sort((a, b) => b.score - a.score);
-  return matches.slice(0, limit).map(entry => formatMovieForResponse(entry.movie, 'catalog'));
+  const limited = matches.slice(0, limit);
+  return {
+    totalMatches: matches.length,
+    results: limited.map(entry => formatMovieForResponse(entry.movie, 'catalog'))
+  };
 }
 
 function searchCatalog(query, options = {}) {
   if (!state.movies.length) return [];
+  const limit = Math.max(1, Number(options.limit) || DEFAULT_LIMIT);
+  const minScore = options.minScore;
+  return buildSearchMatches(query, { limit, minScore }).results;
+}
+
+function searchCatalogWithStats(query, options = {}) {
+  if (!state.movies.length) {
+    return { results: [], totalMatches: 0 };
+  }
   const limit = Math.max(1, Number(options.limit) || DEFAULT_LIMIT);
   const minScore = options.minScore;
   return buildSearchMatches(query, { limit, minScore });
@@ -1039,6 +1052,7 @@ module.exports = {
   stop,
   ensureCatalog,
   searchCatalog,
+  searchCatalogWithStats,
   fetchNewReleases,
   hasTmdbCredentials
 };

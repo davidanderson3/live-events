@@ -333,10 +333,10 @@ describe('initMoviesPanel', () => {
     }
 
     const listText = document.getElementById('movieList')?.innerHTML || '';
-    expect(listText).toContain('TMDB API key not provided');
+    expect(listText).toContain('TMDB API key unavailable');
     const statusText = document.getElementById('movieStatus')?.textContent || '';
     expect(statusText).toBe(
-      'TMDB API key not provided. Enter a key or enable the proxy to load movies.'
+      'TMDB API key unavailable. Configure the server secret or enable the proxy to load movies.'
     );
   });
 
@@ -351,7 +351,7 @@ describe('initMoviesPanel', () => {
 
     const statusText = document.getElementById('movieStatus')?.textContent || '';
     expect(statusText).toBe(
-      'Attempt 1 using the direct TMDB API failed (Failed to fetch movies). No movies were loaded. Check your TMDB API key and try again.'
+      'Attempt 1 using the direct TMDB API failed (Failed to fetch movies). No movies were loaded. Check the TMDB API configuration and try again.'
     );
   });
 

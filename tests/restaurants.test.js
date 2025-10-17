@@ -226,7 +226,7 @@ describe('initRestaurantsPanel', () => {
     expect(results.textContent).toContain('failed');
   });
 
-  it('shows configuration guidance when Yelp API key is missing', async () => {
+  it('shows configuration guidance when Foursquare API key is missing', async () => {
     const dom = setupDom();
     global.window = dom.window;
     global.document = dom.window.document;
@@ -251,7 +251,7 @@ describe('initRestaurantsPanel', () => {
       })
       .mockResolvedValueOnce({
         ok: false,
-        json: () => Promise.resolve({ error: 'missing yelp api key' })
+        json: () => Promise.resolve({ error: 'missing foursquare api key' })
       });
 
     await initRestaurantsPanel();
@@ -259,7 +259,7 @@ describe('initRestaurantsPanel', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
 
     const message = document.querySelector('#restaurantsNearby .restaurants-message');
-    expect(message?.textContent).toContain('YELP_API_KEY');
+    expect(message?.textContent).toContain('FOURSQUARE_API_KEY');
   });
 
   it('renders all restaurants returned by the API', async () => {
@@ -379,7 +379,7 @@ describe('initRestaurantsPanel', () => {
     expect(headings).toEqual(['Fallback Favorite', 'Backup Bistro']);
   });
 
-  it("falls back to a city search after reaching Yelp's radius cap", async () => {
+  it("falls back to a city search after reaching Foursquare's radius cap", async () => {
     const dom = setupDom();
     global.window = dom.window;
     global.document = dom.window.document;
@@ -435,7 +435,7 @@ describe('initRestaurantsPanel', () => {
     expect(headings).toEqual(['Outskirts Eatery']);
   });
 
-  it('shows Yelp radius guidance when no restaurants are available', async () => {
+  it('shows Foursquare radius guidance when no restaurants are available', async () => {
     const dom = setupDom();
     global.window = dom.window;
     global.document = dom.window.document;
@@ -478,7 +478,7 @@ describe('initRestaurantsPanel', () => {
 
     const message = document.querySelector('#restaurantsNearby .restaurants-message');
     expect(message?.textContent).toBe(
-      'No restaurants found within Yelp’s 25-mile search radius.'
+      'No restaurants found within Foursquare’s 25-mile search radius.'
     );
   });
 
