@@ -22,9 +22,6 @@ let initialized = false;
 function normalizeEndpoint(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
-function normalizeEndpoint(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
 
 function isRemoteEndpoint(endpoint) {
   if (!endpoint) return false;
@@ -487,20 +484,25 @@ async function discoverNearbyShows() {
     console.error('Unable to load live events', err);
     setStatus(interpretShowsError(err), 'error');
 
-    let parsed = null;
-    if (err.responseText) {
-      try {
-        parsed = JSON.parse(err.responseText);
-      } catch (_) {
-        parsed = null;
+    const hasRemoteDetails = Boolean(err && (err.requestUrl || err.responseText));
+    if (hasRemoteDetails) {
+      let parsed = null;
+      if (err.responseText) {
+        try {
+          parsed = JSON.parse(err.responseText);
+        } catch (_) {
+          parsed = null;
+        }
       }
-    }
 
-    setDebugInfo({
-      requestUrl: err.requestUrl,
-      error: err.message,
-      segments: parsed && Array.isArray(parsed.segments) ? parsed.segments : []
-    });
+      setDebugInfo({
+        requestUrl: err.requestUrl,
+        error: err.message,
+        segments: parsed && Array.isArray(parsed.segments) ? parsed.segments : []
+      });
+    } else {
+      setDebugInfo(null);
+    }
     clearList();
   } finally {
     setLoading(false);

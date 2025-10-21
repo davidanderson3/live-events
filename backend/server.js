@@ -596,7 +596,12 @@ app.get('/api/spotify-client-id', (req, res) => {
   if (!clientId) {
     return res.status(500).json({ error: 'missing' });
   }
-  res.json({ clientId });
+  const hasEventbriteToken = Boolean(
+    process.env.EVENTBRITE_TOKEN ||
+    process.env.EVENTBRITE_API_TOKEN ||
+    process.env.EVENTBRITE_OAUTH_TOKEN
+  );
+  res.json({ clientId, hasEventbriteToken });
 });
 
 app.get('/api/tmdb-config', (req, res) => {
@@ -1451,10 +1456,8 @@ app.get('/api/transactions', async (req, res) => {
   }
 });
 
-const shouldListen = process.env.NODE_ENV !== 'test';
-
-let server = null;
-if (shouldListen) {
+if (require.main === module) {
+  let server = null;
   server = app
     .listen(PORT, HOST, () => {
       console.log(

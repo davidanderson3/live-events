@@ -37,7 +37,7 @@ const SUPPRESSED_STATUSES = new Set(['watched', 'notInterested', 'interested']);
 
 const FEED_FILTERS_KEY = 'movieFeedFilters';
 const DEFAULT_FEED_FILTER_STATE = Object.freeze({
-  minRating: '8',
+  minRating: '',
   minVotes: '',
   startYear: '',
   endYear: '',
@@ -45,6 +45,10 @@ const DEFAULT_FEED_FILTER_STATE = Object.freeze({
 });
 
 let feedFilterState = { ...DEFAULT_FEED_FILTER_STATE };
+
+function getDocument() {
+  return typeof document !== 'undefined' ? document : null;
+}
 
 const TMDB_DISCOVER_HISTORY_LIMIT = 50;
 const TMDB_DISCOVER_STATE_VERSION = 1;
@@ -1161,7 +1165,9 @@ function buildMovieStats() {
 }
 
 function updateMovieStats() {
-  const container = document.getElementById('movieStats');
+  const doc = getDocument();
+  if (!doc) return;
+  const container = doc.getElementById('movieStats');
   if (!container) return;
   ensureServerMovieStats();
   const stats = buildMovieStats();
@@ -1757,6 +1763,7 @@ function removeInterestedGenre(value) {
 }
 
 function renderInterestedFilters(genres) {
+  if (!getDocument()) return;
   const container = domRefs.interestedFilters;
   if (!container) return;
 
@@ -2428,6 +2435,7 @@ async function requestAdditionalMovies() {
 }
 
 function renderFeed() {
+  if (!getDocument()) return;
   const listEl = domRefs.list;
   updateMovieStats();
   if (!listEl) return;
@@ -2595,6 +2603,7 @@ function renderFeed() {
 }
 
 function renderInterestedList() {
+  if (!getDocument()) return;
   const listEl = domRefs.interestedList;
   if (!listEl) return;
 
@@ -2720,6 +2729,7 @@ function renderInterestedList() {
 }
 
 function renderWatchedList() {
+  if (!getDocument()) return;
   const listEl = domRefs.watchedList;
   if (!listEl) return;
 
@@ -3723,7 +3733,10 @@ async function loadMovies({ attemptStart } = {}) {
 }
 
 export async function initMoviesPanel() {
-  domRefs.list = document.getElementById('movieList');
+  const doc = getDocument();
+  if (!doc) return;
+
+  domRefs.list = doc.getElementById('movieList');
   if (!domRefs.list) return;
 
   await ensureTmdbCredentialsLoaded().catch(err => {
@@ -3732,23 +3745,23 @@ export async function initMoviesPanel() {
     }
   });
 
-  domRefs.interestedList = document.getElementById('savedMoviesList');
-  domRefs.interestedFilters = document.getElementById('savedMoviesFilters');
-  domRefs.watchedList = document.getElementById('watchedMoviesList');
-  domRefs.apiKeyInput = document.getElementById('moviesApiKey');
-  domRefs.apiKeyContainer = document.getElementById('moviesApiKeyContainer');
-  domRefs.tabs = document.getElementById('movieTabs');
-  domRefs.streamSection = document.getElementById('movieStreamSection');
-  domRefs.interestedSection = document.getElementById('savedMoviesSection');
-  domRefs.watchedSection = document.getElementById('watchedMoviesSection');
-  domRefs.watchedSort = document.getElementById('watchedMoviesSort');
-  domRefs.feedControls = document.getElementById('movieFeedControls');
-  domRefs.feedStatus = document.getElementById('movieStatus');
-  domRefs.feedMinRating = document.getElementById('movieFilterMinRating');
-  domRefs.feedMinVotes = document.getElementById('movieFilterMinVotes');
-  domRefs.feedStartYear = document.getElementById('movieFilterStartYear');
-  domRefs.feedEndYear = document.getElementById('movieFilterEndYear');
-  domRefs.feedGenre = document.getElementById('movieFilterGenre');
+  domRefs.interestedList = doc.getElementById('savedMoviesList');
+  domRefs.interestedFilters = doc.getElementById('savedMoviesFilters');
+  domRefs.watchedList = doc.getElementById('watchedMoviesList');
+  domRefs.apiKeyInput = doc.getElementById('moviesApiKey');
+  domRefs.apiKeyContainer = doc.getElementById('moviesApiKeyContainer');
+  domRefs.tabs = doc.getElementById('movieTabs');
+  domRefs.streamSection = doc.getElementById('movieStreamSection');
+  domRefs.interestedSection = doc.getElementById('savedMoviesSection');
+  domRefs.watchedSection = doc.getElementById('watchedMoviesSection');
+  domRefs.watchedSort = doc.getElementById('watchedMoviesSort');
+  domRefs.feedControls = doc.getElementById('movieFeedControls');
+  domRefs.feedStatus = doc.getElementById('movieStatus');
+  domRefs.feedMinRating = doc.getElementById('movieFilterMinRating');
+  domRefs.feedMinVotes = doc.getElementById('movieFilterMinVotes');
+  domRefs.feedStartYear = doc.getElementById('movieFilterStartYear');
+  domRefs.feedEndYear = doc.getElementById('movieFilterEndYear');
+  domRefs.feedGenre = doc.getElementById('movieFilterGenre');
 
   updateMovieStats();
 
