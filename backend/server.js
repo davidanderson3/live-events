@@ -814,7 +814,93 @@ function formatTicketmasterEvent(event, segmentKey) {
   }
   const utcIso = start.dateTime ? new Date(start.dateTime).toISOString() : null;
   const distance = Number.isFinite(event.distance) ? Number(event.distance) : null;
-  return {
+  const classificationNameSet = new Set();
+  const classifications = Array.isArray(event.classifications)
+    ? event.classifications.map(cls => {
+        const normalized = {
+          primary: Boolean(cls?.primary),
+          segment: cls?.segment || null,
+          genre: cls?.genre || null,
+          subGenre: cls?.subGenre || null,
+          type: cls?.type || null,
+          subType: cls?.subType || null
+        };
+        [
+          normalized.segment?.name,
+          normalized.genre?.name,
+          normalized.subGenre?.name,
+          normalized.type?.name,
+          normalized.subType?.name
+        ]
+          .map(name => (typeof name === 'string' ? name.trim() : ''))
+          .filter(Boolean)
+          .forEach(name => classificationNameSet.add(name));
+        return normalized;
+      })
+    : [];
+
+  const attractions = Array.isArray(event?._embedded?.attractions)
+    ? event._embedded.attractions.map(attraction => {
+        const homepage =
+          Array.isArray(attraction?.externalLinks?.homepage) &&
+          attraction.externalLinks.homepage.length
+            ? attraction.externalLinks.homepage[0].url
+            : null;
+        return {
+          id: attraction?.id || null,
+          name: attraction?.name || '',
+          type: attraction?.type || null,
+          url: attraction?.url || homepage || null,
+          locale: attraction?.locale || null,
+          classifications: Array.isArray(attraction?.classifications)
+            ? attraction.classifications
+            : null
+        };
+      })
+    : [];
+
+  const images = Array.isArray(event?.images)
+    ? event.images.map(image => ({
+        url: image?.url || null,
+        ratio: image?.ratio || null,
+        width: Number.isFinite(image?.width) ? image.width : null,
+        height: Number.isFinite(image?.height) ? image.height : null,
+        fallback: Boolean(image?.fallback)
+      }))
+    : [];
+
+  const ticketmasterDetails = {
+    raw: event,
+    classifications: classifications.length ? classifications : undefined,
+    priceRanges: Array.isArray(event.priceRanges) && event.priceRanges.length ? event.priceRanges : undefined,
+    products: Array.isArray(event.products) && event.products.length ? event.products : undefined,
+    promoter: event.promoter || undefined,
+    promoters: Array.isArray(event.promoters) && event.promoters.length ? event.promoters : undefined,
+    promotions: Array.isArray(event.promotions) && event.promotions.length ? event.promotions : undefined,
+    sales: event.sales || undefined,
+    seatmap: event.seatmap || undefined,
+    ticketLimit: event.ticketLimit || undefined,
+    outlets: Array.isArray(event.outlets) && event.outlets.length ? event.outlets : undefined,
+    accessibility: event.accessibility || undefined,
+    ageRestrictions: event.ageRestrictions || undefined,
+    images: images.length ? images : undefined,
+    attractions: attractions.length ? attractions : undefined,
+    info: event.info || undefined,
+    pleaseNote: event.pleaseNote || undefined
+  };
+
+  Object.keys(ticketmasterDetails).forEach(key => {
+    const value = ticketmasterDetails[key];
+    if (
+      value === undefined ||
+      (Array.isArray(value) && value.length === 0) ||
+      (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
+    ) {
+      delete ticketmasterDetails[key];
+    }
+  });
+
+  const formatted = {
     id,
     name: { text: event.name || '' },
     start: { local: localIso, utc: utcIso },
@@ -830,8 +916,15 @@ function formatTicketmasterEvent(event, segmentKey) {
     segment: segmentKey || null,
     distance,
     summary: event.info || event.pleaseNote || '',
-    source: 'ticketmaster'
+    source: 'ticketmaster',
+    genres: Array.from(classificationNameSet)
   };
+
+  if (Object.keys(ticketmasterDetails).length) {
+    formatted.ticketmaster = ticketmasterDetails;
+  }
+
+  return formatted;
 }
 
 async function fetchTicketmasterSegment({ latitude, longitude, radiusMiles, startDateTime, endDateTime, segment }) {

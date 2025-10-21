@@ -240,6 +240,243 @@ function formatEventDate(start) {
   }
 }
 
+function createMetadataTree(value) {
+  if (value === null || value === undefined) {
+    const span = document.createElement('span');
+    span.textContent = '—';
+    return span;
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const span = document.createElement('span');
+    span.textContent = typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
+    return span;
+  }
+
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      const span = document.createElement('span');
+      span.textContent = '—';
+      return span;
+    }
+    const list = document.createElement('ul');
+    list.className = 'show-card__metadata-list';
+    value.forEach((item, index) => {
+      const li = document.createElement('li');
+      if (typeof item === 'object' && item !== null) {
+        const label = document.createElement('span');
+        label.className = 'show-card__metadata-index';
+        label.textContent = `#${index + 1}`;
+        li.appendChild(label);
+      }
+      li.appendChild(createMetadataTree(item));
+      list.appendChild(li);
+    });
+    return list;
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+    if (!entries.length) {
+      const span = document.createElement('span');
+      span.textContent = '—';
+      return span;
+    }
+    const dl = document.createElement('dl');
+    dl.className = 'show-card__metadata-dl';
+    entries.forEach(([key, val]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = key;
+      const dd = document.createElement('dd');
+      dd.appendChild(createMetadataTree(val));
+      dl.append(dt, dd);
+    });
+    return dl;
+  }
+
+  const fallback = document.createElement('span');
+  fallback.textContent = String(value);
+  return fallback;
+}
+
+function createMetadataSection(title, data) {
+  const section = document.createElement('section');
+  section.className = 'show-card__metadata-section';
+
+  const heading = document.createElement('h4');
+  heading.className = 'show-card__metadata-heading';
+  heading.textContent = title;
+  section.appendChild(heading);
+
+  section.appendChild(createMetadataTree(data));
+  return section;
+}
+
+function buildNormalizedEventMetadata(event) {
+  if (!event || typeof event !== 'object') {
+    return {};
+  }
+  const {
+    id,
+    name,
+    start,
+    url,
+    venue,
+    segment,
+    distance,
+    summary,
+    source,
+    genres
+  } = event;
+
+  const normalized = { id, name, start, url, venue, segment, distance, summary, source };
+  if (Array.isArray(genres) && genres.length) {
+    normalized.genres = genres;
+  }
+  return normalized;
+}
+
+function formatDistance(distance) {
+  if (!Number.isFinite(distance)) return '';
+  const rounded = Math.round(distance * 10) / 10;
+  return `${rounded} mi`;
+}
+
+function formatPriceRange(range) {
+  if (!range || typeof range !== 'object') return '';
+  const min = Number.isFinite(range.min) ? range.min : null;
+  const max = Number.isFinite(range.max) ? range.max : null;
+  const currency = typeof range.currency === 'string' ? range.currency : '';
+  if (min == null && max == null) return '';
+  if (min != null && max != null) {
+    return `${currency ? `${currency} ` : ''}${min.toFixed(2)} - ${max.toFixed(2)}`;
+  }
+  const value = min != null ? min : max;
+  return `${currency ? `${currency} ` : ''}${value.toFixed(2)}`;
+}
+
+function formatPriceRanges(priceRanges) {
+  if (!Array.isArray(priceRanges) || !priceRanges.length) return '';
+  const formatted = priceRanges
+    .map(range => formatPriceRange(range))
+    .filter(Boolean);
+  return formatted.join(', ');
+}
+
+function formatSalesWindow(window) {
+  if (!window || typeof window !== 'object') return '';
+  const { startDateTime, endDateTime } = window;
+  if (!startDateTime && !endDateTime) return '';
+  const parts = [];
+  if (startDateTime) {
+    const start = new Date(startDateTime);
+    if (!Number.isNaN(start.getTime())) {
+      parts.push(`Opens ${start.toLocaleString()}`);
+    }
+  }
+  if (endDateTime) {
+    const end = new Date(endDateTime);
+    if (!Number.isNaN(end.getTime())) {
+      parts.push(`Closes ${end.toLocaleString()}`);
+    }
+  }
+  return parts.join(' • ');
+}
+
+function buildHighlightRows(event) {
+  const rows = [];
+  if (!event || typeof event !== 'object') {
+    return rows;
+  }
+
+  const ticketmaster = event.ticketmaster && typeof event.ticketmaster === 'object'
+    ? event.ticketmaster
+    : null;
+
+  const attractions = Array.isArray(ticketmaster?.attractions)
+    ? ticketmaster.attractions
+        .map(attraction => (typeof attraction?.name === 'string' ? attraction.name.trim() : ''))
+        .filter(Boolean)
+    : [];
+  if (attractions.length) {
+    rows.push({ label: 'Performers', value: attractions.join(', ') });
+  }
+
+  const distanceLabel = formatDistance(event.distance);
+  if (distanceLabel) {
+    rows.push({ label: 'Distance', value: distanceLabel });
+  }
+
+  const priceLabel = formatPriceRanges(ticketmaster?.priceRanges);
+  if (priceLabel) {
+    rows.push({ label: 'Price range', value: priceLabel });
+  }
+
+  const publicSale = ticketmaster?.sales?.public;
+  const publicSaleLabel = formatSalesWindow(publicSale);
+  if (publicSaleLabel) {
+    rows.push({ label: 'On sale', value: publicSaleLabel });
+  }
+
+  const ageRestriction = ticketmaster?.ageRestrictions;
+  if (ageRestriction && typeof ageRestriction === 'object') {
+    const pieces = [];
+    if (ageRestriction.legalAgeEnforced) pieces.push('Legal age enforced');
+    if (typeof ageRestriction.minAge === 'number') pieces.push(`Minimum age ${ageRestriction.minAge}+`);
+    if (pieces.length) {
+      rows.push({ label: 'Age restrictions', value: pieces.join(', ') });
+    }
+  }
+
+  if (ticketmaster?.promoter?.name) {
+    rows.push({ label: 'Promoter', value: ticketmaster.promoter.name });
+  }
+
+  return rows;
+}
+
+function renderEventImages(event, container) {
+  const ticketmaster = event && typeof event === 'object' ? event.ticketmaster : null;
+  const images = ticketmaster && Array.isArray(ticketmaster.images) ? ticketmaster.images : [];
+  if (!images.length) {
+    return;
+  }
+
+  const gallery = document.createElement('div');
+  gallery.className = 'show-card__gallery';
+
+  images.forEach(image => {
+    if (!image || typeof image !== 'object' || !image.url) return;
+    const figure = document.createElement('figure');
+    figure.className = 'show-card__gallery-item';
+
+    const img = document.createElement('img');
+    img.src = image.url;
+    img.alt = `${event?.name?.text || 'Event'} image`;
+    if (Number.isFinite(image.width)) {
+      img.width = image.width;
+    }
+    if (Number.isFinite(image.height)) {
+      img.height = image.height;
+    }
+    figure.appendChild(img);
+
+    const figcaption = document.createElement('figcaption');
+    const parts = [];
+    if (image.ratio) parts.push(`Ratio ${image.ratio}`);
+    if (Number.isFinite(image.width) && Number.isFinite(image.height)) {
+      parts.push(`${image.width}×${image.height}`);
+    }
+    if (image.fallback) parts.push('Fallback');
+    figcaption.textContent = parts.length ? parts.join(' • ') : 'Ticketmaster image';
+    figure.appendChild(figcaption);
+
+    gallery.appendChild(figure);
+  });
+
+  container.appendChild(gallery);
+}
+
 function createEventCard(event) {
   const card = document.createElement('article');
   card.className = 'show-card';
@@ -297,6 +534,13 @@ function createEventCard(event) {
     meta.appendChild(locationSpan);
   }
 
+  if (Array.isArray(event?.genres) && event.genres.length) {
+    const genreSpan = document.createElement('span');
+    genreSpan.className = 'show-card__genres';
+    genreSpan.textContent = `Genres: ${event.genres.join(', ')}`;
+    meta.appendChild(genreSpan);
+  }
+
   if (meta.childNodes.length) {
     content.appendChild(meta);
   }
@@ -306,6 +550,22 @@ function createEventCard(event) {
     summary.className = 'show-card__sample-note';
     summary.textContent = event.summary.trim();
     content.appendChild(summary);
+  }
+
+  renderEventImages(event, content);
+
+  const highlightRows = buildHighlightRows(event);
+  if (highlightRows.length) {
+    const highlightList = document.createElement('dl');
+    highlightList.className = 'show-card__highlights';
+    highlightRows.forEach(row => {
+      const dt = document.createElement('dt');
+      dt.textContent = row.label;
+      const dd = document.createElement('dd');
+      dd.textContent = row.value;
+      highlightList.append(dt, dd);
+    });
+    content.appendChild(highlightList);
   }
 
   const cta = document.createElement('a');
@@ -319,6 +579,29 @@ function createEventCard(event) {
   }
   cta.textContent = 'View on Ticketmaster';
   content.appendChild(cta);
+
+  const metadataDetails = document.createElement('details');
+  metadataDetails.className = 'show-card__metadata';
+  metadataDetails.open = false;
+
+  const metadataSummary = document.createElement('summary');
+  metadataSummary.textContent = 'All metadata';
+  metadataDetails.appendChild(metadataSummary);
+
+  const metadataContent = document.createElement('div');
+  metadataContent.className = 'show-card__metadata-content';
+
+  metadataContent.appendChild(
+    createMetadataSection('Normalized event', buildNormalizedEventMetadata(event))
+  );
+
+  if (event && typeof event === 'object' && event.ticketmaster) {
+    metadataContent.appendChild(createMetadataSection('Ticketmaster details', event.ticketmaster));
+  }
+
+  metadataDetails.appendChild(metadataContent);
+
+  content.appendChild(metadataDetails);
 
   return card;
 }
