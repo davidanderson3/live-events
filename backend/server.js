@@ -30,12 +30,6 @@ movieCatalog
   });
 const PORT = Number(process.env.PORT) || 3003;
 const HOST = process.env.HOST || (process.env.VITEST ? '127.0.0.1' : '0.0.0.0');
-const EVENTBRITE_API_TOKEN =
-  process.env.EVENTBRITE_API_TOKEN ||
-  process.env.EVENTBRITE_OAUTH_TOKEN ||
-  process.env.EVENTBRITE_TOKEN ||
-  '2YR3RA4K6VCZVEUZMBG4';
-const HAS_EVENTBRITE_TOKEN = Boolean(EVENTBRITE_API_TOKEN);
 const FOURSQUARE_SEARCH_URL = 'https://api.foursquare.com/v3/places/search';
 const FOURSQUARE_PLACE_URL = 'https://api.foursquare.com/v3/places';
 const FOURSQUARE_CACHE_COLLECTION = 'foursquareCache';
@@ -56,7 +50,6 @@ const MOVIE_STATS_BUCKETS = [
   { label: '6-6.9', min: 6, max: 7 },
   { label: '< 6', min: -Infinity, max: 6 }
 ];
-const EVENTBRITE_CACHE_COLLECTION = 'eventbriteCache';
 const SPOONACULAR_CACHE_COLLECTION = 'recipeCache';
 const SPOONACULAR_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 const DEFAULT_MOVIE_LIMIT = 20;
@@ -140,6 +133,22 @@ function parseNumberQuery(value) {
   if (value === undefined || value === null || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function normalizeCoordinate(value, digits = 3) {
+  const num = Number.parseFloat(value);
+  if (!Number.isFinite(num)) return null;
+  const factor = Math.pow(10, Math.max(0, digits));
+  return Math.round(num * factor) / factor;
+}
+
+function clampDays(value) {
+  if (value === undefined || value === null || value === '') {
+    return TICKETMASTER_DEFAULT_DAYS;
+  }
+  const num = Number.parseInt(value, 10);
+  if (!Number.isFinite(num)) return TICKETMASTER_DEFAULT_DAYS;
+  return Math.min(Math.max(num, 1), 31);
 }
 
 function normalizePositiveInteger(value, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
@@ -585,9 +594,9 @@ app.post('/api/saved-movies', (req, res) => {
 app.get('/api/spotify-client-id', (req, res) => {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   if (!clientId) {
-    return res.status(500).json({ error: 'missing', hasEventbriteToken: HAS_EVENTBRITE_TOKEN });
+    return res.status(500).json({ error: 'missing' });
   }
-  res.json({ clientId, hasEventbriteToken: HAS_EVENTBRITE_TOKEN });
+  res.json({ clientId });
 });
 
 app.get('/api/tmdb-config', (req, res) => {
@@ -741,418 +750,275 @@ app.get('/api/restaurants', async (req, res) => {
   }
 });
 
-// --- Eventbrite proxy ---
-const EVENTBRITE_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
-const EVENTBRITE_CACHE_MAX_ENTRIES = 200;
+// --- Ticketmaster shows proxy ---
+const TICKETMASTER_API_KEY =
+  process.env.TICKETMASTER_API_KEY ||
+  process.env.TICKETMASTER_KEY ||
+  process.env.TICKETMASTER_CONSUMER_KEY ||
+  '';
+const TICKETMASTER_API_URL = 'https://app.ticketmaster.com/discovery/v2/events.json';
+const TICKETMASTER_CACHE_COLLECTION = 'ticketmasterCache';
+const TICKETMASTER_CACHE_TTL_MS = 1000 * 60 * 15; // 15 minutes
+const TICKETMASTER_CACHE_VERSION = 'v1';
+const TICKETMASTER_MAX_RADIUS_MILES = 150;
+const TICKETMASTER_DEFAULT_RADIUS = 100;
+const TICKETMASTER_DEFAULT_DAYS = 14;
+const TICKETMASTER_PAGE_SIZE = 100;
+const TICKETMASTER_SEGMENTS = [
+  { key: 'music', description: 'Live music', params: { classificationName: 'Music' } },
+  { key: 'comedy', description: 'Comedy', params: { classificationName: 'Comedy' } }
+];
 
-const FALLBACK_EVENTBRITE_PATH = path.join(
-  __dirname,
-  'data',
-  'eventbrite-fallback.json'
-);
-
-let fallbackEventTemplates = [];
-try {
-  const text = fs.readFileSync(FALLBACK_EVENTBRITE_PATH, 'utf8');
-  const parsed = JSON.parse(text);
-  if (Array.isArray(parsed)) {
-    fallbackEventTemplates = parsed.filter(Boolean);
-  }
-} catch (err) {
-  console.warn('Unable to load Eventbrite fallback templates', err.message);
-  fallbackEventTemplates = [];
-}
-
-const eventbriteCache = new Map();
-
-function normalizeCoordinate(value, digits = 3) {
-  const num = Number.parseFloat(value);
-  if (!Number.isFinite(num)) return null;
-  return Number(num.toFixed(digits));
-}
-
-function toDateString(date) {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function addDays(dateString, days) {
-  const date = new Date(`${dateString}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  date.setUTCDate(date.getUTCDate() + days);
-  return toDateString(date);
-}
-
-function eventbriteMemoryCacheKey({
-  scope,
-  latitude,
-  longitude,
-  radiusMiles,
-  startDate,
-  endDate,
-  segment
-}) {
-  const latPart = normalizeCoordinate(latitude, 3);
-  const lonPart = normalizeCoordinate(longitude, 3);
-  const radiusPart = Number.isFinite(radiusMiles) ? Number(radiusMiles.toFixed(1)) : 'none';
-  return [scope, latPart, lonPart, radiusPart, startDate, endDate, segment || 'all'].join('::');
-}
-
-function eventbriteCacheKeyParts({
-  token,
-  latitude,
-  longitude,
-  radiusMiles,
-  startDate,
-  endDate,
-  segment
-}) {
-  const tokenPart = String(token || '');
-  const latPart = normalizeCoordinate(latitude, 3);
-  const lonPart = normalizeCoordinate(longitude, 3);
-  const radiusPart = Number.isFinite(radiusMiles) ? Number(radiusMiles.toFixed(1)) : 'none';
+function ticketmasterCacheKeyParts({ latitude, longitude, radiusMiles, startDateTime, endDateTime }) {
+  const lat = Number.isFinite(latitude) ? latitude.toFixed(4) : 'lat:none';
+  const lon = Number.isFinite(longitude) ? longitude.toFixed(4) : 'lon:none';
+  const radius = Number.isFinite(radiusMiles) ? radiusMiles.toFixed(1) : 'radius:none';
   return [
-    'eventbrite',
-    tokenPart,
-    `lat:${latPart}`,
-    `lon:${lonPart}`,
-    `radius:${radiusPart}`,
-    `from:${startDate}`,
-    `to:${endDate}`,
-    `segment:${segment || 'all'}`
+    'ticketmaster',
+    TICKETMASTER_CACHE_VERSION,
+    `lat:${lat}`,
+    `lon:${lon}`,
+    `radius:${radius}`,
+    `start:${startDateTime || ''}`,
+    `end:${endDateTime || ''}`
   ];
 }
 
-function getEventbriteCacheEntry(key) {
-  const entry = eventbriteCache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > EVENTBRITE_CACHE_TTL_MS) {
-    eventbriteCache.delete(key);
-    return null;
-  }
-  eventbriteCache.delete(key);
-  eventbriteCache.set(key, entry);
-  return entry.value;
-}
-
-function setEventbriteCacheEntry(key, value) {
-  eventbriteCache.set(key, { timestamp: Date.now(), value });
-  if (eventbriteCache.size > EVENTBRITE_CACHE_MAX_ENTRIES) {
-    const oldestKey = eventbriteCache.keys().next().value;
-    if (oldestKey) {
-      eventbriteCache.delete(oldestKey);
+function formatTicketmasterEvent(event, segmentKey) {
+  if (!event || event.id == null) return null;
+  const id = String(event.id);
+  const start = event.dates && event.dates.start ? event.dates.start : {};
+  const embeddedVenue = event._embedded && Array.isArray(event._embedded.venues)
+    ? event._embedded.venues[0]
+    : null;
+  const venue = embeddedVenue || {};
+  const city = venue.city && venue.city.name ? venue.city.name : '';
+  const region =
+    (venue.state && (venue.state.stateCode || venue.state.name)) ||
+    '';
+  const country =
+    (venue.country && (venue.country.countryCode || venue.country.name)) ||
+    '';
+  const localDateTime = start.dateTime || (start.localDate ? `${start.localDate}${start.localTime ? 'T' + start.localTime : 'T00:00:00'}` : null);
+  let localIso = null;
+  if (localDateTime) {
+    const parsed = new Date(localDateTime);
+    if (!Number.isNaN(parsed.getTime())) {
+      localIso = parsed.toISOString();
     }
   }
-}
-
-function clampDays(value) {
-  const num = Number.parseInt(value, 10);
-  if (!Number.isFinite(num)) return 14;
-  return Math.min(Math.max(num, 1), 31);
-}
-
-function normalizeDateString(value) {
-  if (!value) return null;
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return null;
-  return toDateString(date);
-}
-
-const EVENTBRITE_SEGMENTS = [
-  {
-    key: 'music',
-    description: 'Live music',
-    params: { categories: '103' }
-  },
-  {
-    key: 'comedy',
-    description: 'Comedy',
-    params: { subcategories: '3004' }
-  }
-];
-
-function extractEventStart(event) {
-  const start = event?.start;
-  if (!start) return Number.POSITIVE_INFINITY;
-  const raw = start.utc || start.local;
-  if (!raw) return Number.POSITIVE_INFINITY;
-  const timestamp = Date.parse(raw);
-  return Number.isNaN(timestamp) ? Number.POSITIVE_INFINITY : timestamp;
-}
-
-app.get('/api/eventbrite', async (req, res) => {
-  const { token: queryToken, lat, lon, radius, startDate: startParam, days } = req.query || {};
-  const latitude = normalizeCoordinate(lat, 4);
-  const longitude = normalizeCoordinate(lon, 4);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return res.status(400).json({ error: 'missing coordinates' });
-  }
-
-  const radiusMilesRaw = Number.parseFloat(radius);
-  const radiusMiles = Number.isFinite(radiusMilesRaw) && radiusMilesRaw > 0 ? radiusMilesRaw : null;
-
-  const today = toDateString(new Date());
-  const normalizedStart = normalizeDateString(startParam) || today;
-  const lookaheadDays = clampDays(days);
-  const endDate = addDays(normalizedStart, lookaheadDays - 1) || normalizedStart;
-
-  const effectiveToken = queryToken || EVENTBRITE_API_TOKEN;
-  if (!effectiveToken) {
-    return res.status(500).json({ error: 'missing eventbrite api token' });
-  }
-
-  const scope = queryToken ? 'manual' : 'server';
-
-  async function fetchSegment({ key, params: segmentParams, description }) {
-    const memoryKey = eventbriteMemoryCacheKey({
-      scope,
-      latitude,
-      longitude,
-      radiusMiles,
-      startDate: normalizedStart,
-      endDate,
-      segment: key
-    });
-
-    const cached = getEventbriteCacheEntry(memoryKey);
-    if (cached) {
-      return { segment: key, description, status: cached.status, text: cached.text };
-    }
-
-    const sharedCached = await safeReadCachedResponse(
-      EVENTBRITE_CACHE_COLLECTION,
-      eventbriteCacheKeyParts({
-        token: scope === 'manual' ? queryToken : effectiveToken,
-        latitude,
-        longitude,
-        radiusMiles,
-        startDate: normalizedStart,
-        endDate,
-        segment: key
-      }),
-      EVENTBRITE_CACHE_TTL_MS
-    );
-    if (sharedCached) {
-      const payload = {
-        segment: key,
-        description,
-        status: sharedCached.status,
-        text: sharedCached.body
-      };
-      setEventbriteCacheEntry(memoryKey, { status: sharedCached.status, text: sharedCached.body });
-      return payload;
-    }
-
-    const params = new URLSearchParams({
-      'location.latitude': String(latitude),
-      'location.longitude': String(longitude),
-      expand: 'venue',
-      sort_by: 'date',
-      'start_date.range_start': `${normalizedStart}T00:00:00Z`,
-      'start_date.range_end': `${endDate}T23:59:59Z`
-    });
-
-    if (Number.isFinite(radiusMiles)) {
-      params.set('location.within', `${Math.min(Math.max(radiusMiles, 1), 1000).toFixed(1)}mi`);
-    } else {
-      params.set('location.within', '100.0mi');
-    }
-
-    for (const [paramKey, value] of Object.entries(segmentParams)) {
-      params.set(paramKey, value);
-    }
-
-    const url = `https://www.eventbriteapi.com/v3/events/search/?${params.toString()}`;
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${effectiveToken}`
+  const utcIso = start.dateTime ? new Date(start.dateTime).toISOString() : null;
+  const distance = Number.isFinite(event.distance) ? Number(event.distance) : null;
+  return {
+    id,
+    name: { text: event.name || '' },
+    start: { local: localIso, utc: utcIso },
+    url: event.url || '',
+    venue: {
+      name: venue.name || '',
+      address: {
+        city,
+        region,
+        country
       }
-    });
-    const text = await response.text();
-    if (response.ok) {
-      setEventbriteCacheEntry(memoryKey, { status: response.status, text });
-      await safeWriteCachedResponse(
-        EVENTBRITE_CACHE_COLLECTION,
-        eventbriteCacheKeyParts({
-          token: scope === 'manual' ? queryToken : effectiveToken,
-          latitude,
-          longitude,
-          radiusMiles,
-          startDate: normalizedStart,
-          endDate,
-          segment: key
-        }),
-        {
-          status: response.status,
-          contentType: 'application/json',
-          body: text,
-          metadata: {
-            latitude,
-            longitude,
-            radiusMiles: Number.isFinite(radiusMiles) ? radiusMiles : null,
-            startDate: normalizedStart,
-            endDate,
-            segment: key,
-            segmentDescription: description,
-            usingDefaultToken: !queryToken
-          }
-        }
-      );
-      return { segment: key, description, status: response.status, text };
-    }
+    },
+    segment: segmentKey || null,
+    distance,
+    summary: event.info || event.pleaseNote || '',
+    source: 'ticketmaster'
+  };
+}
 
-    let errorMessage = `Eventbrite request failed (${response.status})`;
-    let parsedError = null;
-    try {
-      parsedError = text ? JSON.parse(text) : null;
-    } catch {
-      parsedError = null;
-    }
-    if (parsedError) {
-      const descriptionMessage =
-        parsedError.error_description ||
-        parsedError.error ||
-        parsedError.message;
-      if (typeof descriptionMessage === 'string' && descriptionMessage.trim()) {
-        errorMessage = descriptionMessage.trim();
-      }
-    } else if (text && text.trim()) {
-      const snippet = text.trim().slice(0, 200);
-      errorMessage = `${errorMessage}: ${snippet}`;
-    }
-    const err = new Error(errorMessage);
+async function fetchTicketmasterSegment({ latitude, longitude, radiusMiles, startDateTime, endDateTime, segment }) {
+  const params = new URLSearchParams({
+    apikey: TICKETMASTER_API_KEY,
+    latlong: `${latitude},${longitude}`,
+    radius: String(radiusMiles),
+    unit: 'miles',
+    size: String(TICKETMASTER_PAGE_SIZE),
+    sort: 'date,asc',
+    startDateTime,
+    endDateTime
+  });
+  Object.entries(segment.params || {}).forEach(([key, value]) => {
+    if (value != null) params.set(key, value);
+  });
+  const url = `${TICKETMASTER_API_URL}?${params.toString()}`;
+  const response = await fetch(url);
+  const text = await response.text();
+  if (!response.ok) {
+    const err = new Error(text || `Ticketmaster request failed: ${response.status}`);
     err.status = response.status;
-    err.details = parsedError || null;
+    err.requestUrl = url;
+    err.responseText = text;
     throw err;
   }
-
+  let data;
   try {
-    const segmentResponses = await Promise.all(
-      EVENTBRITE_SEGMENTS.map(segment =>
-        fetchSegment(segment).catch(err => ({ segment: segment.key, description: segment.description, error: err }))
-      )
-    );
-
-    const dedupedEvents = new Map();
-    const segmentSummaries = [];
-    let successfulSegment = false;
-
-    for (const result of segmentResponses) {
-      const { segment, description } = result;
-      if (result.error) {
-        console.error(
-          'Eventbrite segment fetch failed',
-          description || segment,
-          result.error
-        );
-        segmentSummaries.push({
-          key: segment,
-          description,
-          ok: false,
-          status: typeof result.error.status === 'number' ? result.error.status : null,
-          error: result.error.message || 'Unknown error'
-        });
-        continue;
-      }
-
-      if (result.status < 200 || result.status >= 300) {
-        segmentSummaries.push({
-          key: segment,
-          description,
-          ok: false,
-          status: result.status
-        });
-        continue;
-      }
-
-      successfulSegment = true;
-
-      let data;
-      try {
-        data = result.text ? JSON.parse(result.text) : null;
-      } catch (err) {
-        console.warn('Unable to parse Eventbrite segment response', segment, err);
-        segmentSummaries.push({
-          key: segment,
-          description,
-          ok: false,
-          error: 'Invalid JSON response'
-        });
-        continue;
-      }
-
-      const events = Array.isArray(data?.events) ? data.events : [];
-      for (const event of events) {
-        const eventId = event?.id || `${segment}::${JSON.stringify(event)}`;
-        if (!dedupedEvents.has(eventId)) {
-          dedupedEvents.set(eventId, event);
-        }
-      }
-
-      segmentSummaries.push({
-        key: segment,
-        description,
-        ok: true,
-        status: result.status,
-        total: events.length
-      });
+    data = text ? JSON.parse(text) : {};
+  } catch (parseErr) {
+    const err = new Error('Ticketmaster response was not valid JSON');
+    err.status = response.status;
+    err.requestUrl = url;
+    err.responseText = text;
+    throw err;
+  }
+  const events = Array.isArray(data?._embedded?.events) ? data._embedded.events : [];
+  const formatted = events.map(event => formatTicketmasterEvent(event, segment.key)).filter(Boolean);
+  return {
+    events: formatted,
+    summary: {
+      key: segment.key,
+      description: segment.description,
+      status: response.status,
+      total: formatted.length,
+      requestUrl: url,
+      rawTotal: typeof data?.page?.totalElements === 'number' ? data.page.totalElements : null
     }
+  };
+}
 
-    if (!successfulSegment) {
-      const curated = fallbackEventsFor({
+app.get('/api/shows', async (req, res) => {
+  const rawLat = req.query.lat ?? req.query.latitude;
+  const rawLon = req.query.lon ?? req.query.longitude;
+  const latitude = normalizeCoordinate(rawLat, 4);
+  const longitude = normalizeCoordinate(rawLon, 4);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return res.status(400).json({ error: 'missing_coordinates' });
+  }
+
+  if (!TICKETMASTER_API_KEY) {
+    return res.status(500).json({ error: 'ticketmaster_api_key_missing' });
+  }
+
+  const parsedRadius = parseNumberQuery(req.query.radius);
+  const radiusMiles = Number.isFinite(parsedRadius) && parsedRadius > 0
+    ? Math.min(Math.max(parsedRadius, 1), TICKETMASTER_MAX_RADIUS_MILES)
+    : TICKETMASTER_DEFAULT_RADIUS;
+
+  const lookaheadDays = clampDays(req.query.days) || TICKETMASTER_DEFAULT_DAYS;
+
+  const startDate = new Date();
+  const startDateTime = startDate.toISOString().split('.')[0] + 'Z';
+  const endDate = new Date(startDate);
+  endDate.setUTCDate(endDate.getUTCDate() + lookaheadDays);
+  const endDateTime = endDate.toISOString().split('.')[0] + 'Z';
+
+  const cacheKey = ticketmasterCacheKeyParts({
+    latitude,
+    longitude,
+    radiusMiles,
+    startDateTime,
+    endDateTime
+  });
+
+  const cached = await safeReadCachedResponse(
+    TICKETMASTER_CACHE_COLLECTION,
+    cacheKey,
+    TICKETMASTER_CACHE_TTL_MS
+  );
+  if (sendCachedResponse(res, cached)) {
+    return;
+  }
+
+  const segmentResults = await Promise.all(
+    TICKETMASTER_SEGMENTS.map(segment =>
+      fetchTicketmasterSegment({
         latitude,
         longitude,
         radiusMiles,
-        startDate: normalizedStart,
-        endDate
+        startDateTime,
+        endDateTime,
+        segment
+      }).catch(error => ({ error, segment }))
+    )
+  );
+
+  const combined = new Map();
+  const segmentSummaries = [];
+  let successful = false;
+
+  for (const result of segmentResults) {
+    if (result.error) {
+      const { error, segment } = result;
+      console.error('Ticketmaster segment fetch failed', segment.description || segment.key, error);
+      segmentSummaries.push({
+        key: segment.key,
+        description: segment.description,
+        ok: false,
+        status: typeof error.status === 'number' ? error.status : null,
+        error: error.message || 'Request failed',
+        requestUrl: error.requestUrl || null
       });
-
-      if (curated.length > 0) {
-        segmentSummaries.push({
-          key: 'curated',
-          description: 'Curated highlights',
-          ok: true,
-          fallback: true,
-          total: curated.length
-        });
-
-        res.status(200).json({
-          events: curated,
-          segments: segmentSummaries,
-          generatedAt: new Date().toISOString(),
-          fallback: {
-            source: 'curated-playlist',
-            total: curated.length
-          }
-        });
-        return;
-      }
-
-      res.status(502).json({ error: 'failed', segments: segmentSummaries });
-      return;
+      continue;
     }
 
-    const combinedEvents = Array.from(dedupedEvents.values()).sort((a, b) => extractEventStart(a) - extractEventStart(b));
-
-    res.status(200).json({
-      events: combinedEvents,
-      segments: segmentSummaries,
-      generatedAt: new Date().toISOString()
+    successful = true;
+    segmentSummaries.push({
+      key: result.summary.key,
+      description: result.summary.description,
+      ok: true,
+      status: result.summary.status,
+      total: result.summary.total,
+      requestUrl: result.summary.requestUrl,
+      rawTotal: result.summary.rawTotal
     });
-  } catch (err) {
-    console.error('Eventbrite fetch failed', err);
-    res.status(500).json({
-      error: err?.message || 'failed',
-      details: err?.details || null
+
+    for (const event of result.events) {
+      if (!event || event.id == null) continue;
+      const key = String(event.id);
+      if (!combined.has(key)) {
+        combined.set(key, event);
+      }
+    }
+  }
+
+  if (!successful) {
+    return res.status(502).json({
+      error: 'ticketmaster_fetch_failed',
+      segments: segmentSummaries
     });
   }
-});
 
+  const events = Array.from(combined.values()).sort((a, b) => {
+    const aTime = a.start && a.start.utc ? Date.parse(a.start.utc) : (a.start && a.start.local ? Date.parse(a.start.local) : Infinity);
+    const bTime = b.start && b.start.utc ? Date.parse(b.start.utc) : (b.start && b.start.local ? Date.parse(b.start.local) : Infinity);
+    if (Number.isFinite(aTime) && Number.isFinite(bTime)) {
+      if (aTime !== bTime) return aTime - bTime;
+    } else if (Number.isFinite(aTime)) {
+      return -1;
+    } else if (Number.isFinite(bTime)) {
+      return 1;
+    }
+    const aDistance = Number.isFinite(a.distance) ? a.distance : Infinity;
+    const bDistance = Number.isFinite(b.distance) ? b.distance : Infinity;
+    return aDistance - bDistance;
+  });
+
+  const payload = {
+    source: 'ticketmaster',
+    generatedAt: new Date().toISOString(),
+    cached: false,
+    radiusMiles,
+    lookaheadDays,
+    events,
+    segments: segmentSummaries
+  };
+
+  await safeWriteCachedResponse(TICKETMASTER_CACHE_COLLECTION, cacheKey, {
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(payload),
+    metadata: {
+      radiusMiles,
+      lookaheadDays,
+      cachedAt: new Date().toISOString(),
+      segments: segmentSummaries
+    }
+  });
+
+  res.json(payload);
+});
 // --- GeoLayers game endpoints ---
 const layerOrder = ['rivers','lakes','elevation','roads','outline','cities','label'];
 const countriesPath = path.join(__dirname, '../geolayers-game/public/countries.json');
@@ -1208,125 +1074,6 @@ LIMIT 10`;
   return { type: 'FeatureCollection', features };
 }
 
-function parseTimeParts(value) {
-  if (typeof value !== 'string') return null;
-  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
-  const hours = Math.min(Math.max(Number.parseInt(match[1], 10), 0), 23);
-  const minutes = Math.min(Math.max(Number.parseInt(match[2], 10), 0), 59);
-  return { hours, minutes };
-}
-
-function haversineMiles(lat1, lon1, lat2, lon2) {
-  if (
-    !Number.isFinite(lat1) ||
-    !Number.isFinite(lon1) ||
-    !Number.isFinite(lat2) ||
-    !Number.isFinite(lon2)
-  ) {
-    return Number.POSITIVE_INFINITY;
-  }
-  const R = 3958.8;
-  const dLat = toRadians(lat2 - lat1);
-  const dLon = toRadians(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRadians(lat1)) *
-      Math.cos(toRadians(lat2)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-function toRadians(value) {
-  return (Number(value) * Math.PI) / 180;
-}
-
-function buildFallbackStart(dateString, timeString) {
-  const parts = parseTimeParts(timeString);
-  const safeDate = typeof dateString === 'string' && dateString ? dateString : toDateString(new Date());
-  if (!parts) {
-    const fallbackLocal = `${safeDate}T19:00:00`;
-    return { local: fallbackLocal, utc: `${safeDate}T19:00:00Z` };
-  }
-  const hours = String(parts.hours).padStart(2, '0');
-  const minutes = String(parts.minutes).padStart(2, '0');
-  const local = `${safeDate}T${hours}:${minutes}:00`;
-  const parsed = new Date(local);
-  const utc = Number.isNaN(parsed.getTime()) ? `${safeDate}T${hours}:${minutes}:00Z` : parsed.toISOString();
-  return { local, utc };
-}
-
-function fallbackEventsFor({ latitude, longitude, radiusMiles, startDate, endDate }) {
-  if (!fallbackEventTemplates.length) {
-    return [];
-  }
-
-  const startBoundary = new Date(`${startDate}T00:00:00Z`);
-  const endBoundary = new Date(`${endDate}T23:59:59Z`);
-  if (Number.isNaN(startBoundary.getTime()) || Number.isNaN(endBoundary.getTime())) {
-    return [];
-  }
-
-  const effectiveRadius = Number.isFinite(radiusMiles) && radiusMiles > 0 ? Math.min(Math.max(radiusMiles, 25), 300) : 120;
-
-  const results = fallbackEventTemplates
-    .map(template => {
-      const offsetDays = Number.isFinite(template.offsetDays) ? Number(template.offsetDays) : 0;
-      const eventDateString = addDays(startDate, offsetDays) || startDate;
-      const eventDate = new Date(`${eventDateString}T00:00:00Z`);
-      if (Number.isNaN(eventDate.getTime())) {
-        return null;
-      }
-      if (eventDate < startBoundary || eventDate > endBoundary) {
-        return null;
-      }
-      const venue = template.venue || {};
-      const eventDistance = haversineMiles(
-        latitude,
-        longitude,
-        Number.parseFloat(venue.latitude),
-        Number.parseFloat(venue.longitude)
-      );
-      if (eventDistance > effectiveRadius + 15) {
-        return null;
-      }
-      const startInfo = buildFallbackStart(eventDateString, template.startTime);
-      const curatedNote = 'Curated highlight while Eventbrite is unavailable.';
-      const summary = template.summary
-        ? `${template.summary.trim()} ${curatedNote}`
-        : curatedNote;
-      return {
-        id: `fallback::${template.id || Math.random().toString(36).slice(2)}`,
-        name: { text: template.title || 'Live show' },
-        summary,
-        url: template.url || '',
-        start: startInfo,
-        venue: {
-          name: venue.name || '',
-          address: {
-            city: venue.city || '',
-            region: venue.region || ''
-          }
-        },
-        segment: template.segment || 'music',
-        __distance: eventDistance
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => {
-      const startDiff = new Date(a.start.utc).getTime() - new Date(b.start.utc).getTime();
-      if (startDiff !== 0) return startDiff;
-      return (a.__distance || Number.POSITIVE_INFINITY) - (b.__distance || Number.POSITIVE_INFINITY);
-    })
-    .map(event => {
-      delete event.__distance;
-      return event;
-    });
-
-  return results;
-}
 async function ensureCitiesForCountry(code) {
   const dir = path.join(__dirname, '../geolayers-game/public/data', code);
   const file = path.join(dir, 'cities.geojson');

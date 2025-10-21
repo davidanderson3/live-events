@@ -1032,12 +1032,13 @@ function buildTvStats() {
     pref => pref && SUPPRESSED_STATUSES.has(pref.status)
   ).length;
 
-  const unclassifiedShows = getFeedMovies(currentMovies);
-  let unclassifiedTotal = Number.isFinite(catalogTotal)
-    ? Math.max(0, catalogTotal - classifiedCount)
-    : 0;
-  if (unclassifiedShows.length > unclassifiedTotal) {
-    unclassifiedTotal = unclassifiedShows.length;
+  const unclassifiedShows = getAllUnclassifiedShowSummaries();
+  let unclassifiedTotal = unclassifiedShows.length;
+  if (Number.isFinite(catalogTotal)) {
+    const totalFromCatalog = Math.max(0, catalogTotal - classifiedCount);
+    if (totalFromCatalog > unclassifiedTotal) {
+      unclassifiedTotal = totalFromCatalog;
+    }
   }
 
   const ratingBuckets = buildRatingBucketCounts(unclassifiedShows, TV_RATING_BUCKETS);
@@ -2134,6 +2135,7 @@ async function setStatus(movie, status, options = {}) {
   }
   await loadPreferences();
   const id = String(movie.id);
+  restoredShowsById.delete(id);
   const next = { ...currentPrefs };
   const snapshot = summarizeMovie(movie);
   const entry = next[id] ? { ...next[id] } : {};
@@ -2226,6 +2228,7 @@ async function clearStatus(tvId) {
       : false;
     if (!exists) {
       const restored = { ...removed.movie };
+      storeRestoredShow(restored);
       currentMovies = [restored, ...(Array.isArray(currentMovies) ? currentMovies : [])];
       currentMovies = applyPriorityOrdering(currentMovies);
       feedExhausted = false;
@@ -2254,6 +2257,34 @@ function pruneSuppressedMovies() {
   if (!Array.isArray(currentMovies) || !currentMovies.length) return;
   currentMovies = currentMovies.filter(movie => !isMovieSuppressed(movie?.id));
   feedExhausted = false;
+}
+
+function getAllUnclassifiedShowSummaries() {
+  const suppressedIds = new Set(
+    Object.entries(currentPrefs || {})
+      .filter(([, pref]) => pref && SUPPRESSED_STATUSES.has(pref.status))
+      .map(([id]) => String(id))
+  );
+  const pool = new Map();
+  const addShow = show => {
+    if (!show) return;
+    const summary = captureRestoredShow(show) || (show.id != null ? show : null);
+    if (!summary || summary.id == null) return;
+    const key = String(summary.id);
+    if (suppressedIds.has(key)) return;
+    if (!pool.has(key)) {
+      pool.set(key, summary);
+    }
+  };
+
+  if (Array.isArray(currentMovies)) {
+    currentMovies.forEach(addShow);
+  }
+  restoredShowsById.forEach(show => {
+    addShow(show);
+  });
+
+  return Array.from(pool.values());
 }
 
 async function requestAdditionalMovies() {
@@ -3502,6 +3533,7 @@ async function loadMovies({ attemptStart } = {}) {
       genres = usingProxy ? await fetchGenreMapFromProxy() : await fetchGenreMapDirect(apiKey);
     }
     currentMovies = Array.isArray(movies) ? movies : [];
+    currentMovies.forEach(storeRestoredShow);
     genreMap = genres || {};
     if (catalogMetadata && typeof catalogMetadata === 'object') {
       lastCatalogMetadata = catalogMetadata;

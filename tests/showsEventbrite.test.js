@@ -21,17 +21,13 @@ global.localStorage = storage;
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
-describe('initShowsPanel (Eventbrite)', () => {
+describe('initShowsPanel (Ticketmaster)', () => {
   let initShowsPanel;
   let dom;
 
-  async function setup({ apiBaseUrl = 'http://localhost:3003', token } = {}) {
+  async function setup({ apiBaseUrl = 'http://localhost:3003' } = {}) {
     storage.clear();
     vi.resetModules();
-
-    if (token) {
-      localStorage.setItem('eventbriteTokenV1', token);
-    }
 
     if (apiBaseUrl === undefined || apiBaseUrl === null) {
       delete process.env.API_BASE_URL;
@@ -40,8 +36,6 @@ describe('initShowsPanel (Eventbrite)', () => {
     }
 
     dom = new JSDOM(`
-      <input id="eventbriteApiToken" />
-      <button id="eventbriteDiscoverBtn">Discover</button>
       <div id="eventbriteStatus"></div>
       <details id="eventbriteDebug" hidden>
         <summary>Latest API response</summary>
@@ -65,7 +59,7 @@ describe('initShowsPanel (Eventbrite)', () => {
 
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      text: async () => JSON.stringify({ events: [] })
+      text: async () => JSON.stringify({ events: [], segments: [] })
     });
 
     ({ initShowsPanel } = await import('../js/shows.js'));
@@ -78,19 +72,7 @@ describe('initShowsPanel (Eventbrite)', () => {
     }
   });
 
-  it('hydrates the Eventbrite token from storage and sets initial status', async () => {
-    await setup({ token: 'stored-token' });
-
-    await initShowsPanel();
-
-    const tokenInput = document.getElementById('eventbriteApiToken');
-    const status = document.getElementById('eventbriteStatus');
-
-    expect(tokenInput.value).toBe('stored-token');
-    expect(status.textContent).toContain('Enter your Eventbrite personal token');
-  });
-
-  it('fetches nearby events when Discover is clicked', async () => {
+  it('automatically fetches nearby events', async () => {
     await setup();
 
     fetch.mockResolvedValueOnce({
@@ -100,26 +82,33 @@ describe('initShowsPanel (Eventbrite)', () => {
           events: [
             {
               name: { text: 'Live Show' },
-              start: { local: '2024-01-01T20:00:00' },
-              url: 'https://eventbrite.test/events/1',
+              start: { local: '2024-01-01T20:00:00Z' },
+              url: 'https://ticketmaster.test/events/1',
               venue: { name: 'Club', address: { city: 'Austin', region: 'TX' } },
               summary: 'An evening performance.'
             }
-          ]
+          ],
+          segments: [
+            {
+              key: 'music',
+              description: 'Live music',
+              ok: true,
+              status: 200,
+              total: 1,
+              requestUrl: 'https://ticketmaster.test/api/music'
+            }
+          ],
+          cached: false
         })
     });
 
     await initShowsPanel();
-
-    const button = document.getElementById('eventbriteDiscoverBtn');
-    button.click();
-
     await flush();
     await flush();
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const requestedUrl = fetch.mock.calls[0][0];
-    expect(requestedUrl).toContain('/api/eventbrite');
+    expect(requestedUrl).toContain('/api/shows');
     expect(requestedUrl).toContain('lat=30.2672');
     expect(requestedUrl).toContain('lon=-97.7431');
     expect(requestedUrl).toContain('radius=100');
@@ -134,36 +123,30 @@ describe('initShowsPanel (Eventbrite)', () => {
     const debugContainer = document.getElementById('eventbriteDebug');
     const debugOutput = document.getElementById('eventbriteDebugOutput');
     expect(debugContainer.hidden).toBe(false);
-    expect(debugOutput.textContent).toContain('Request URL:');
-    expect(debugOutput.textContent).toContain('Live Show');
+    expect(debugOutput.textContent).toContain('Live music: OK');
   });
 
-  it('routes Eventbrite requests through the remote proxy when no API base override is provided', async () => {
+  it('routes requests through the remote proxy when no API base override is provided', async () => {
     await setup({ apiBaseUrl: null });
 
     await initShowsPanel();
-
-    const button = document.getElementById('eventbriteDiscoverBtn');
-    button.click();
 
     await flush();
     await flush();
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const requestedUrl = fetch.mock.calls[0][0];
-    expect(requestedUrl.startsWith('https://narrow-down.web.app/api/eventbrite')).toBe(true);
+    expect(requestedUrl.startsWith('https://narrow-down.web.app/api/shows')).toBe(true);
   });
 
   it('shows a helpful message when geolocation fails', async () => {
     await setup();
 
     navigator.geolocation.getCurrentPosition.mockImplementationOnce((success, error) => {
-      error({ code: 1, PERMISSION_DENIED: 1 });
+      error({ code: 1, PERMISSION_DENIED: 1, message: 'Location access was denied.' });
     });
 
     await initShowsPanel();
-
-    document.getElementById('eventbriteDiscoverBtn').click();
 
     await flush();
 

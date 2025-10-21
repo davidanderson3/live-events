@@ -37,7 +37,7 @@ const SUPPRESSED_STATUSES = new Set(['watched', 'notInterested', 'interested']);
 
 const FEED_FILTERS_KEY = 'movieFeedFilters';
 const DEFAULT_FEED_FILTER_STATE = Object.freeze({
-  minRating: '',
+  minRating: '8',
   minVotes: '',
   startYear: '',
   endYear: '',

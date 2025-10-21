@@ -1,28 +1,27 @@
 import { API_BASE_URL, DEFAULT_REMOTE_API_BASE } from './config.js';
 
-const DEFAULT_EVENTBRITE_ENDPOINT =
+const DEFAULT_SHOWS_ENDPOINT =
   (typeof process !== 'undefined' &&
     process.env &&
-    (process.env.EVENTBRITE_ENDPOINT || process.env.EVENTBRITE_PROXY_ENDPOINT)) ||
-  `${DEFAULT_REMOTE_API_BASE}/eventbrite`;
+    (process.env.SHOWS_ENDPOINT || process.env.SHOWS_PROXY_ENDPOINT)) ||
+  `${DEFAULT_REMOTE_API_BASE}/shows`;
 
-const EVENTBRITE_TOKEN_STORAGE_KEY = 'eventbriteTokenV1';
 const DEFAULT_RADIUS_MILES = 100;
 const DEFAULT_LOOKAHEAD_DAYS = 14;
 
 const elements = {
-  tokenInput: null,
-  discoverButton: null,
   status: null,
   list: null,
   debugContainer: null,
   debugOutput: null
 };
 
-let discoverLabel = 'Discover';
 let isDiscovering = false;
 let initialized = false;
 
+function normalizeEndpoint(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
 function normalizeEndpoint(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -37,18 +36,22 @@ function isRemoteEndpoint(endpoint) {
       const resolved = new URL(endpoint, window.location.origin);
       return resolved.origin !== window.location.origin;
     } catch (err) {
-      console.warn('Unable to resolve Eventbrite endpoint URL', err);
+      console.warn('Unable to resolve shows endpoint URL', err);
       return true;
     }
   }
   return /^https?:\/\//i.test(endpoint);
 }
 
-function resolveEventbriteEndpoint(baseUrl) {
+function resolveShowsEndpoint(baseUrl) {
   const override =
+    (typeof window !== 'undefined' && 'showsEndpoint' in window
+      ? normalizeEndpoint(window.showsEndpoint)
+      : '') ||
     (typeof window !== 'undefined' && 'eventbriteEndpoint' in window
       ? normalizeEndpoint(window.eventbriteEndpoint)
-      : '') || '';
+      : '') ||
+    '';
 
   if (override) {
     const trimmedOverride = override.replace(/\/$/, '');
@@ -91,17 +94,17 @@ function resolveEventbriteEndpoint(baseUrl) {
     trimmedBase === locationOrigin &&
     hasWindowPort
   ) {
-    const endpoint = `${trimmedBase}/api/eventbrite`;
+    const endpoint = `${trimmedBase}/api/shows`;
     return { endpoint, isRemote: isRemoteEndpoint(endpoint) };
   }
 
   if (!trimmedBase || (matchesWindowOrigin && !hasExplicitApiBaseOverride)) {
-    return { endpoint: DEFAULT_EVENTBRITE_ENDPOINT, isRemote: true };
+    return { endpoint: DEFAULT_SHOWS_ENDPOINT, isRemote: true };
   }
 
   if (
-    trimmedBase.endsWith('/api/eventbrite') ||
-    trimmedBase.endsWith('/eventbriteProxy')
+    trimmedBase.endsWith('/api/shows') ||
+    trimmedBase.endsWith('/showsProxy')
   ) {
     return {
       endpoint: trimmedBase,
@@ -110,16 +113,16 @@ function resolveEventbriteEndpoint(baseUrl) {
   }
 
   if (trimmedBase.endsWith('/api')) {
-    const endpoint = `${trimmedBase}/eventbrite`;
+    const endpoint = `${trimmedBase}/shows`;
     return { endpoint, isRemote: isRemoteEndpoint(endpoint) };
   }
 
   if (/cloudfunctions\.net/i.test(trimmedBase)) {
-    const endpoint = `${trimmedBase}/eventbriteProxy`;
+    const endpoint = `${trimmedBase}/showsProxy`;
     return { endpoint, isRemote: true };
   }
 
-  const endpoint = `${trimmedBase}/api/eventbrite`;
+  const endpoint = `${trimmedBase}/api/shows`;
   return { endpoint, isRemote: isRemoteEndpoint(endpoint) };
 }
 
@@ -130,45 +133,17 @@ function appendQuery(endpoint, params) {
 }
 
 function cacheElements() {
-  elements.tokenInput = document.getElementById('eventbriteApiToken');
-  elements.discoverButton = document.getElementById('eventbriteDiscoverBtn');
   elements.status = document.getElementById('eventbriteStatus');
   elements.list = document.getElementById('eventbriteList');
   elements.debugContainer = document.getElementById('eventbriteDebug');
   elements.debugOutput = document.getElementById('eventbriteDebugOutput');
-  if (elements.discoverButton) {
-    discoverLabel = elements.discoverButton.textContent || discoverLabel;
-  }
-}
-
-function loadStoredToken() {
-  if (typeof localStorage === 'undefined') return '';
-  try {
-    const value = localStorage.getItem(EVENTBRITE_TOKEN_STORAGE_KEY);
-    return typeof value === 'string' ? value : '';
-  } catch (err) {
-    console.warn('Unable to read Eventbrite token from storage', err);
-    return '';
-  }
-}
-
-function saveToken(token) {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    if (token) {
-      localStorage.setItem(EVENTBRITE_TOKEN_STORAGE_KEY, token);
-    } else {
-      localStorage.removeItem(EVENTBRITE_TOKEN_STORAGE_KEY);
-    }
-  } catch (err) {
-    console.warn('Unable to persist Eventbrite token', err);
-  }
 }
 
 function setStatus(message, tone = 'info') {
   if (!elements.status) return;
   elements.status.textContent = message || '';
   elements.status.dataset.tone = tone;
+  elements.status.removeAttribute('data-loading');
 }
 
 function setDebugInfo(info) {
@@ -183,82 +158,65 @@ function setDebugInfo(info) {
     return;
   }
 
-  const {
-    requestUrl,
-    response,
-    responseText,
-    error,
-    fallbackUrl,
-    primaryError,
-    fallbackInfo
-  } = info;
-  const hasRequest = typeof requestUrl === 'string' && requestUrl.length > 0;
-  const hasResponse =
-    response && typeof response === 'object' && Object.keys(response).length > 0;
-  const hasText = typeof responseText === 'string' && responseText.trim().length > 0;
+  const sections = [];
 
-  if (!hasRequest && !hasResponse && !hasText) {
+  if (info.requestUrl) {
+    sections.push(`Request URL:\n${info.requestUrl}`);
+  }
+
+  if (info.cached) {
+    sections.push('Served from cache');
+  }
+
+  if (Array.isArray(info.segments) && info.segments.length) {
+    sections.push(
+      info.segments
+        .map(segment => {
+          const details = [];
+          const name = segment.description || segment.key || 'Segment';
+          const status = segment.ok === false ? 'Error' : 'OK';
+          details.push(`${name}: ${status}`);
+          if (segment.status) {
+            details.push(`  Status: ${segment.status}`);
+          }
+          if (typeof segment.total === 'number') {
+            details.push(`  Events: ${segment.total}`);
+          }
+          if (segment.error) {
+            details.push(`  Error: ${segment.error}`);
+          }
+          if (segment.requestUrl) {
+            details.push(`  URL: ${segment.requestUrl}`);
+          }
+          return details.join('\n');
+        })
+        .join('\n\n')
+    );
+  }
+
+  if (info.error) {
+    sections.push(`Error: ${info.error}`);
+  }
+
+  if (!sections.length) {
     elements.debugContainer.hidden = true;
     elements.debugContainer.removeAttribute('data-state');
     elements.debugOutput.textContent = '';
     return;
   }
 
-  const sections = [];
-
-  if (hasRequest) {
-    sections.push(`Request URL:\n${requestUrl}`);
-  }
-
-  if (fallbackUrl && fallbackUrl !== requestUrl) {
-    sections.push(`Fallback URL:\n${fallbackUrl}`);
-  }
-
-  if (primaryError) {
-    const parts = [];
-    if (primaryError.requestUrl && primaryError.requestUrl !== requestUrl) {
-      parts.push(`URL: ${primaryError.requestUrl}`);
-    }
-    if (primaryError.message) {
-      parts.push(`Reason: ${primaryError.message}`);
-    }
-    if (primaryError.status) {
-      parts.push(`Status: ${primaryError.status}`);
-    }
-    sections.push(`Initial attempt failed:\n${parts.join('\n') || String(primaryError)}`);
-  }
-
-  if (error) {
-    sections.push(`Error:\n${error}`);
-  }
-
-  if (fallbackInfo) {
-    try {
-      sections.push(`Fallback details:\n${JSON.stringify(fallbackInfo, null, 2)}`);
-    } catch (err) {
-      sections.push('Fallback details: [unserializable]');
-    }
-  }
-
-  if (hasResponse) {
-    try {
-      sections.push(`Response JSON:\n${JSON.stringify(response, null, 2)}`);
-    } catch (err) {
-      sections.push('Response JSON: [unserializable]');
-    }
-  } else if (hasText) {
-    sections.push(`Response Body:\n${responseText}`);
-  }
-
   elements.debugOutput.textContent = sections.join('\n\n');
   elements.debugContainer.hidden = false;
-  elements.debugContainer.dataset.state = error ? 'error' : 'success';
+  elements.debugContainer.dataset.state = info.error ? 'error' : 'success';
 }
 
 function setLoading(isLoading) {
-  if (!elements.discoverButton) return;
-  elements.discoverButton.disabled = isLoading;
-  elements.discoverButton.textContent = isLoading ? 'Searching…' : discoverLabel;
+  if (!elements.status) return;
+  if (isLoading) {
+    elements.status.setAttribute('data-loading', 'true');
+  } else {
+    elements.status.removeAttribute('data-loading');
+  }
 }
 
 function clearList() {
@@ -280,7 +238,7 @@ function formatEventDate(start) {
       timeStyle: 'short'
     }).format(date);
   } catch (err) {
-    console.warn('Unable to format Eventbrite date', err);
+    console.warn('Unable to format event date', err);
     return date.toLocaleString();
   }
 }
@@ -362,7 +320,7 @@ function createEventCard(event) {
   } else {
     cta.setAttribute('aria-disabled', 'true');
   }
-  cta.textContent = 'View on Eventbrite';
+  cta.textContent = 'View on Ticketmaster';
   content.appendChild(cta);
 
   return card;
@@ -415,123 +373,77 @@ function requestLocation() {
   });
 }
 
-function interpretEventbriteError(error) {
+function interpretShowsError(error) {
   if (!error) {
-    return 'Unable to load Eventbrite events.';
+    return 'Unable to load live events.';
   }
 
-  const normalizedMessage = (error.message || '').toLowerCase();
+  const message = (error.message || '').toLowerCase();
   const status = typeof error.status === 'number' ? error.status : null;
 
-  if (
-    status === 401 ||
-    normalizedMessage.includes('unauthorized') ||
-    normalizedMessage.includes('invalid oauth token')
-  ) {
-    return 'Eventbrite rejected the token. Paste the personal OAuth token from Account Settings → Developer → Your personal token and try again.';
+  if (status === 500 && message.includes('ticketmaster_api_key_missing')) {
+    return 'The server is missing a Ticketmaster API key. Set TICKETMASTER_API_KEY on the backend.';
   }
 
-  if (
-    status === 404 ||
-    normalizedMessage.includes('not_found') ||
-    normalizedMessage.includes('not found')
-  ) {
-    if (error?.code === 'NOT_FOUND') {
-      return 'Eventbrite reported that the proxy path does not exist. Ensure your backend exposes the /api/eventbrite route locally or use window.apiBaseUrl to point to a deployed backend with /eventbriteProxy before trying Discover again.';
-    }
-    return 'The Live Music proxy could not be reached. Start the local server with “npm start” or set window.apiBaseUrl to your deployed backend before trying Discover again.';
+  if (status === 404 || message.includes('not found')) {
+    return 'The shows API endpoint could not be reached. Start the local server with “npm start” or set window.apiBaseUrl to your deployed backend.';
   }
 
-  if (
-    status === 500 &&
-    normalizedMessage.includes('missing eventbrite api token')
-  ) {
-    return 'The server is missing an Eventbrite token. Enter your personal OAuth token above or configure EVENTBRITE_API_TOKEN on the backend.';
+  if (status === 502) {
+    return 'Ticketmaster did not return results for this search. Try again later or adjust the radius.';
   }
 
-  if (normalizedMessage) {
+  if (error.message) {
     return error.message;
   }
 
-  return 'Unable to load Eventbrite events.';
+  return 'Unable to load live events.';
 }
 
-async function performEventbriteRequest(url) {
-  const response = await fetch(url, {
-    headers: { Accept: 'application/json' }
+async function fetchShows({ latitude, longitude, radiusMiles = DEFAULT_RADIUS_MILES, days = DEFAULT_LOOKAHEAD_DAYS }) {
+  const { endpoint, isRemote } = resolveShowsEndpoint(API_BASE_URL);
+  const params = new URLSearchParams({
+    lat: String(latitude),
+    lon: String(longitude),
+    radius: String(radiusMiles),
+    days: String(days)
   });
-  const text = await response.text();
-  let data;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch (err) {
-    console.warn('Unable to parse Eventbrite response', err);
-    const parseError = new Error('Received an invalid response from Eventbrite.');
-    parseError.requestUrl = url;
-    parseError.responseText = text;
-    throw parseError;
-  }
 
+  const url = appendQuery(endpoint, params);
+  const response = await fetch(url, { headers: { Accept: 'application/json' } });
+  const text = await response.text();
   if (!response.ok) {
-    const message =
-      typeof data?.error_description === 'string' && data.error_description.trim().length > 0
-        ? data.error_description
-        : typeof data?.error === 'string' && data.error.trim().length > 0
-          ? data.error
-          : `Eventbrite request failed (${response.status})`;
-    const error = new Error(message);
+    const error = new Error(text || `Request failed: ${response.status}`);
     error.status = response.status;
-    error.code = typeof data?.error === 'string' ? data.error : null;
     error.requestUrl = url;
     error.responseText = text;
     throw error;
   }
 
-  return {
-    events: Array.isArray(data?.events) ? data.events : [],
-    raw: data,
-    url,
-    responseText: text
-  };
-}
-
-async function fetchEventbriteEvents({ latitude, longitude, token }) {
-  const params = new URLSearchParams({
-    lat: latitude.toFixed(4),
-    lon: longitude.toFixed(4),
-    radius: String(DEFAULT_RADIUS_MILES),
-    days: String(DEFAULT_LOOKAHEAD_DAYS)
-  });
-
-  if (token) {
-    params.set('token', token);
-  }
-
-  const { endpoint, isRemote } = resolveEventbriteEndpoint(API_BASE_URL);
-  const url = appendQuery(endpoint, params);
-
+  let data;
   try {
-    return await performEventbriteRequest(url);
+    data = text ? JSON.parse(text) : {};
   } catch (err) {
-    const shouldAttemptFallback =
-      !isRemote &&
-      (!err || err.status === 404 || err.name === 'TypeError' || err.code === 'NOT_FOUND');
-
-    if (!shouldAttemptFallback) {
-      throw err;
-    }
-
-    console.warn(
-      'Primary Eventbrite endpoint failed, retrying with remote proxy',
-      err?.message || err
-    );
-
-    const fallbackUrl = appendQuery(DEFAULT_EVENTBRITE_ENDPOINT, params);
-    const result = await performEventbriteRequest(fallbackUrl);
-    result.fallbackUrl = fallbackUrl;
-    result.primaryError = err;
-    return result;
+    const error = new Error('Response was not valid JSON');
+    error.status = response.status;
+    error.requestUrl = url;
+    error.responseText = text;
+    throw error;
   }
+
+  const events = Array.isArray(data.events) ? data.events : [];
+  return {
+    events,
+    debug: {
+      requestUrl: url,
+      cached: Boolean(data.cached),
+      segments: Array.isArray(data.segments) ? data.segments : [],
+      source: data.source || null,
+      generatedAt: data.generatedAt || null
+    },
+    raw: data,
+    isRemote
+  };
 }
 
 async function discoverNearbyShows() {
@@ -552,55 +464,42 @@ async function discoverNearbyShows() {
       return;
     }
 
-    const token = elements.tokenInput?.value?.trim() || '';
-    saveToken(token);
-
-    setStatus('Searching Eventbrite for nearby music and comedy events…');
-    const result = await fetchEventbriteEvents({
+    setStatus('Searching Ticketmaster for nearby music and comedy events…');
+    const result = await fetchShows({
       latitude: location.latitude,
-      longitude: location.longitude,
-      token
+      longitude: location.longitude
     });
 
     renderEvents(result.events);
     setDebugInfo({
-      requestUrl: result.url,
-      response: result.raw,
-      responseText: result.responseText,
-      fallbackUrl: result.fallbackUrl,
-      primaryError: result.primaryError || null,
-      fallbackInfo: result.raw?.fallback || null
+      requestUrl: result.debug?.requestUrl,
+      segments: result.debug?.segments,
+      cached: result.debug?.cached,
+      source: result.debug?.source
     });
 
-    const fallbackMeta = result.raw?.fallback;
-    const usedCuratedFallback = Boolean(fallbackMeta && fallbackMeta.source === 'curated-playlist');
-
     if (result.events.length > 0) {
-      if (usedCuratedFallback) {
-        setStatus(
-          `Eventbrite is offline, so here are ${result.events.length} curated local highlight${
-            result.events.length === 1 ? '' : 's'
-          }.`,
-          'warning'
-        );
-      } else {
-        setStatus(`Found ${result.events.length} upcoming event${result.events.length === 1 ? '' : 's'}.`);
-      }
-    } else if (usedCuratedFallback) {
-      setStatus(
-        'Eventbrite is unavailable and we do not have curated shows near you yet. Try widening the radius and searching again soon.',
-        'warning'
-      );
+      setStatus(`Found ${result.events.length} upcoming event${result.events.length === 1 ? '' : 's'}.`);
     } else {
       setStatus('No music or comedy events found near you right now.', 'warning');
     }
   } catch (err) {
-    console.error('Unable to load Eventbrite events', err);
-    setStatus(interpretEventbriteError(err), 'error');
+    console.error('Unable to load live events', err);
+    setStatus(interpretShowsError(err), 'error');
+
+    let parsed = null;
+    if (err.responseText) {
+      try {
+        parsed = JSON.parse(err.responseText);
+      } catch (_) {
+        parsed = null;
+      }
+    }
+
     setDebugInfo({
       requestUrl: err.requestUrl,
-      responseText: err.responseText,
-      error: err.message
+      error: err.message,
+      segments: parsed && Array.isArray(parsed.segments) ? parsed.segments : []
     });
     clearList();
   } finally {
@@ -609,42 +508,13 @@ async function discoverNearbyShows() {
   }
 }
 
-function handleTokenInput() {
-  if (!elements.tokenInput) return;
-  const token = elements.tokenInput.value.trim();
-  saveToken(token);
-}
-
 export async function initShowsPanel() {
   if (initialized) {
     return;
   }
   initialized = true;
   cacheElements();
-
-  if (elements.tokenInput) {
-    elements.tokenInput.value = loadStoredToken();
-    elements.tokenInput.addEventListener('change', handleTokenInput);
-    elements.tokenInput.addEventListener('blur', handleTokenInput);
-    elements.tokenInput.addEventListener('keydown', event => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        handleTokenInput();
-        discoverNearbyShows();
-      }
-    });
-  }
-
-  if (elements.discoverButton) {
-    elements.discoverButton.addEventListener('click', () => {
-      handleTokenInput();
-      discoverNearbyShows();
-    });
-  }
-
-  if (elements.status) {
-    setStatus('Enter your Eventbrite personal token and select “Discover” to find nearby shows.');
-  }
+  discoverNearbyShows();
 }
 
 window.initShowsPanel = initShowsPanel;

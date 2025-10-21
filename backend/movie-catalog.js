@@ -59,7 +59,7 @@ const NEW_RELEASE_LOOKBACK_DAYS = Math.max(
 );
 const MAX_DISCOVER_PAGES = Math.max(
   1,
-  Number(process.env.MOVIE_CATALOG_MAX_PAGES) || 5
+  Number(process.env.MOVIE_CATALOG_MAX_PAGES) || 10
 );
 
 let state = {
@@ -457,7 +457,7 @@ async function fetchCatalogFromTmdb(credentials) {
     sort_by: 'vote_average.desc',
     vote_average: `gte:${MIN_SCORE}`,
     'vote_average.gte': String(MIN_SCORE),
-    'vote_count.gte': '200',
+    'vote_count.gte': '100',
     include_adult: 'false',
     include_video: 'false',
     language: 'en-US'
@@ -494,7 +494,7 @@ async function fetchRangeCatalog(range, credentials) {
     sort_by: 'vote_average.desc',
     vote_average: `gte:${MIN_SCORE}`,
     'vote_average.gte': String(MIN_SCORE),
-    'vote_count.gte': '200',
+    'vote_count.gte': '100',
     include_adult: 'false',
     include_video: 'false',
     language: 'en-US',
@@ -662,9 +662,11 @@ async function fetchCuratedCatalog() {
   }
 
   let fetchedThisRun = 0;
-  if (missingRanges.length) {
+  const fetchBudget = preparedRanges.length ? MOVIE_RANGE_FETCH_LIMIT : missingRanges.length;
+  const maxFetches = Math.min(missingRanges.length, fetchBudget);
+  if (missingRanges.length && maxFetches > 0) {
     for (const range of missingRanges) {
-      if (fetchedThisRun >= MOVIE_RANGE_FETCH_LIMIT) break;
+      if (fetchedThisRun >= maxFetches) break;
       try {
         // eslint-disable-next-line no-await-in-loop
         const result = await fetchRangeCatalog(range, credentials);

@@ -3092,6 +3092,67 @@ h2 {
   align-items: flex-end;
 }
 
+.media-filter-toolbar {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  border: 1px solid #1e293b;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: stretch;
+}
+
+.media-filter-toolbar__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1 1 8rem;
+}
+
+.media-filter-toolbar__item.movie-filter-genre {
+  flex: 1 1 100%;
+}
+
+.media-filter-toolbar label,
+.media-filter-toolbar .movie-filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #cbd5f5;
+}
+
+.media-filter-toolbar .movie-filter-field input,
+.media-filter-toolbar .movie-filter-field select {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #f8fafc;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.1);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.media-filter-toolbar .movie-filter-field input::placeholder,
+.media-filter-toolbar .movie-filter-field select::placeholder {
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.media-filter-toolbar .movie-filter-field input:focus,
+.media-filter-toolbar .movie-filter-field select:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 1px #38bdf8;
+  outline: none;
+}
+
+.media-filter-toolbar .genre-filter {
+  background: rgba(15, 23, 42, 0.35);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+}
+
 .movie-controls label {
   font-weight: 600;
 }
