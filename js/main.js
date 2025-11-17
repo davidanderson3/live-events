@@ -379,10 +379,7 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   const SIGNED_OUT_TABS = [
-    'moviesPanel',
-    'tvPanel',
-    'showsPanel',
-    'restaurantsPanel'
+    'showsPanel'
   ];
 
   function showOnlySignedOutTabs() {
@@ -398,6 +395,9 @@ window.addEventListener('DOMContentLoaded', () => {
         if (btn === active) active = null;
       } else {
         btn.style.display = '';
+        if (panel) {
+          panel.style.display = 'flex';
+        }
       }
     });
     if (!active) {

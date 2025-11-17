@@ -13,7 +13,6 @@ const express = require('express');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
 const cors = require('cors');
 const { readCachedResponse, writeCachedResponse } = require('../shared/cache');
-const movieCatalog = require('./movie-catalog');
 let nodemailer;
 try {
   nodemailer = require('nodemailer');
@@ -23,44 +22,16 @@ try {
 
 const app = express();
 
-movieCatalog
-  .init()
-  .catch(err => {
-    console.error('Initial movie catalog load failed', err);
-  });
 const PORT = Number(process.env.PORT) || 3003;
 const HOST = process.env.HOST || (process.env.VITEST ? '127.0.0.1' : '0.0.0.0');
-const FOURSQUARE_SEARCH_URL = 'https://api.foursquare.com/v3/places/search';
-const FOURSQUARE_PLACE_URL = 'https://api.foursquare.com/v3/places';
-const FOURSQUARE_CACHE_COLLECTION = 'foursquareCache';
-const FOURSQUARE_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
-const FOURSQUARE_MAX_LIMIT = 50;
-const FOURSQUARE_DETAILS_MAX = 15;
-const FOURSQUARE_DETAILS_CONCURRENCY = 4;
-const FOURSQUARE_CATEGORY_RESTAURANTS = '13065';
-const FOURSQUARE_SEARCH_FIELDS =
-  'fsq_id,name,location,geocodes,distance,link,website,tel,categories,price,rating,rating_signals';
-const FOURSQUARE_DETAIL_FIELDS =
-  'fsq_id,name,location,geocodes,distance,link,website,tel,categories,price,rating,rating_signals,photos,popularity,hours,social_media';
-const METERS_PER_MILE = 1609.34;
-const MOVIE_STATS_BUCKETS = [
-  { label: '9-10', min: 9, max: Infinity },
-  { label: '8-8.9', min: 8, max: 9 },
-  { label: '7-7.9', min: 7, max: 8 },
-  { label: '6-6.9', min: 6, max: 7 },
-  { label: '< 6', min: -Infinity, max: 6 }
-];
-const SPOONACULAR_CACHE_COLLECTION = 'recipeCache';
-const SPOONACULAR_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
-const DEFAULT_MOVIE_LIMIT = 20;
-const OMDB_BASE_URL = 'https://www.omdbapi.com/';
-const OMDB_API_KEY =
-  process.env.OMDB_API_KEY ||
-  process.env.OMDB_KEY ||
-  process.env.OMDB_TOKEN ||
+const YOUTUBE_SEARCH_BASE_URL = 'https://www.googleapis.com/youtube/v3/search';
+const YOUTUBE_API_KEY =
+  process.env.YOUTUBE_API_KEY ||
+  process.env.YOUTUBE_KEY ||
+  process.env.GOOGLE_API_KEY ||
   '';
-const OMDB_CACHE_COLLECTION = 'omdbRatings';
-const OMDB_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
+const YOUTUBE_SEARCH_CACHE_COLLECTION = 'youtubeSearchCache';
+const YOUTUBE_SEARCH_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 
 async function safeReadCachedResponse(collection, keyParts, ttlMs) {
   try {
@@ -79,37 +50,7 @@ async function safeWriteCachedResponse(collection, keyParts, payload) {
   }
 }
 
-function resolveTmdbApiKey() {
-  return (
-    process.env.TMDB_API_KEY ||
-    process.env.TMDB_KEY ||
-    process.env.TMDB_TOKEN ||
-    ''
-  );
-}
 
-function resolveTmdbProxyEndpoint() {
-  return process.env.TMDB_PROXY_ENDPOINT || '';
-}
-
-// Enable CORS for all routes so the frontend can reach the API
-app.use(cors());
-
-const CONTACT_EMAIL = Buffer.from('ZHZkbmRyc25AZ21haWwuY29t', 'base64').toString('utf8');
-const mailer = (() => {
-  if (!nodemailer || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) return null;
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS
-    }
-  });
-})();
-
-app.use(express.json());
 
 function sendCachedResponse(res, cached) {
   if (!cached || typeof cached.body !== 'string') return false;
@@ -159,6 +100,34 @@ function normalizePositiveInteger(value, { min = 1, max = Number.MAX_SAFE_INTEGE
   return clamped;
 }
 
+function normalizeYouTubeQuery(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeYouTubeThumbnails(thumbnails) {
+  if (!thumbnails || typeof thumbnails !== 'object') return undefined;
+  const normalized = {};
+  Object.entries(thumbnails).forEach(([key, value]) => {
+    if (!value || typeof value !== 'object') return;
+    const url = typeof value.url === 'string' ? value.url : null;
+    if (!url) return;
+    const width = Number.isFinite(value.width) ? Number(value.width) : null;
+    const height = Number.isFinite(value.height) ? Number(value.height) : null;
+    normalized[key] = {
+      url,
+      width: width === null ? undefined : width,
+      height: height === null ? undefined : height
+    };
+  });
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function youtubeSearchCacheKey(query) {
+  const normalized = normalizeYouTubeQuery(query).toLowerCase();
+  return ['youtubeSearch', normalized];
+}
+
 function parseOmdbPercent(value) {
   if (value === undefined || value === null) return null;
   const raw = String(value).trim();
@@ -167,6 +136,144 @@ function parseOmdbPercent(value) {
   const num = Number.parseFloat(normalized);
   if (!Number.isFinite(num)) return null;
   return Math.max(0, Math.min(100, Math.round(num)));
+}
+
+function extractYear(value) {
+  if (typeof value !== 'string') return null;
+  const match = value.trim().match(/^(\d{4})/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  return Number.isFinite(year) ? year : null;
+}
+
+function parseIdSet(raw) {
+  const set = new Set();
+  const addParts = value => {
+    if (!value && value !== 0) return;
+    String(value)
+      .split(/[,|\s]+/)
+      .map(part => part.trim())
+      .filter(Boolean)
+      .forEach(part => set.add(part));
+  };
+  if (Array.isArray(raw)) {
+    raw.forEach(addParts);
+  } else if (typeof raw === 'string') {
+    addParts(raw);
+  }
+  return set;
+}
+
+function buildTvDiscoverQuery({ minRating, minVotes, startYear, endYear }) {
+  const query = {
+    sort_by: 'vote_average.desc',
+    include_adult: 'false',
+    include_null_first_air_dates: 'false',
+    language: 'en-US'
+  };
+  if (Number.isFinite(minRating)) {
+    const clamped = Math.max(0, Math.min(10, minRating));
+    query['vote_average.gte'] = clamped;
+  }
+  if (Number.isFinite(minVotes)) {
+    const normalizedVotes = Math.max(0, Math.floor(minVotes));
+    query['vote_count.gte'] = normalizedVotes;
+  }
+  if (Number.isFinite(startYear)) {
+    query['first_air_date.gte'] = `${startYear}-01-01`;
+  }
+  if (Number.isFinite(endYear)) {
+    query['first_air_date.lte'] = `${endYear}-12-31`;
+  }
+  return query;
+}
+
+async function fetchTvGenresWithCache() {
+  if (
+    Array.isArray(cachedTvGenres) &&
+    cachedTvGenres.length &&
+    Date.now() - cachedTvGenresFetchedAt < TV_GENRE_CACHE_TTL_MS
+  ) {
+    return cachedTvGenres;
+  }
+  try {
+    const data = await requestTmdbData('tv_genres', { language: 'en-US' });
+    const genres = Array.isArray(data?.genres) ? data.genres : [];
+    cachedTvGenres = genres;
+    cachedTvGenresFetchedAt = Date.now();
+    return genres;
+  } catch (err) {
+    console.warn('Unable to refresh TV genre list', err?.message || err);
+    return Array.isArray(cachedTvGenres) ? cachedTvGenres : [];
+  }
+}
+
+async function discoverTvShows({
+  limit,
+  minRating,
+  minVotes,
+  startYear,
+  endYear,
+  excludeSet = new Set()
+}) {
+  const queryBase = buildTvDiscoverQuery({ minRating, minVotes, startYear, endYear });
+  const collected = [];
+  const seen = new Set();
+  let page = 1;
+  let totalPages = 1;
+  let totalResults = 0;
+
+  while (collected.length < limit && page <= TV_DISCOVER_MAX_PAGES) {
+    const pageData = await requestTmdbData('discover_tv', { ...queryBase, page });
+    const pageResults = Array.isArray(pageData?.results) ? pageData.results : [];
+    const pageTotalPages = Number(pageData?.total_pages);
+    const pageTotalResults = Number(pageData?.total_results);
+    if (Number.isFinite(pageTotalPages) && pageTotalPages > 0) {
+      totalPages = pageTotalPages;
+    }
+    if (Number.isFinite(pageTotalResults) && pageTotalResults >= 0) {
+      totalResults = pageTotalResults;
+    }
+    pageResults.forEach(show => {
+      if (!show || show.id == null) return;
+      const id = String(show.id);
+      if (excludeSet.has(id) || seen.has(id)) return;
+      const voteAverage = Number(show.vote_average);
+      if (Number.isFinite(minRating) && Number.isFinite(voteAverage) && voteAverage < minRating) {
+        return;
+      }
+      const voteCount = Number(show.vote_count);
+      if (Number.isFinite(minVotes) && Number.isFinite(voteCount) && voteCount < minVotes) {
+        return;
+      }
+      if (Number.isFinite(startYear) || Number.isFinite(endYear)) {
+        const releaseYear =
+          extractYear(show.first_air_date) ||
+          extractYear(show.release_date) ||
+          extractYear(show.last_air_date);
+        if (Number.isFinite(startYear) && Number.isFinite(releaseYear) && releaseYear < startYear) {
+          return;
+        }
+        if (Number.isFinite(endYear) && Number.isFinite(releaseYear) && releaseYear > endYear) {
+          return;
+        }
+      }
+      seen.add(id);
+      collected.push(show);
+    });
+
+    if (pageResults.length === 0 || page >= totalPages) {
+      break;
+    }
+    page += 1;
+  }
+
+  return {
+    results: collected.slice(0, limit),
+    totalPages,
+    totalResults,
+    pagesFetched: page
+  };
 }
 
 function parseOmdbScore(value) {
@@ -186,292 +293,6 @@ function parseOmdbImdbRating(value) {
   if (!Number.isFinite(num)) return null;
   const clamped = Math.max(0, Math.min(10, num));
   return Math.round(clamped * 10) / 10;
-}
-
-function sanitizeOmdbString(value) {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  return trimmed;
-}
-
-function buildOmdbCacheKeyParts({ imdbId, title, year, type }) {
-  const parts = ['omdb'];
-  const normalizedType = typeof type === 'string' && type ? type.toLowerCase() : 'any';
-  parts.push(`type:${normalizedType}`);
-  if (imdbId) {
-    parts.push(`imdb:${imdbId.toLowerCase()}`);
-  } else if (title) {
-    parts.push(`title:${title.toLowerCase()}`);
-  } else {
-    parts.push('title:');
-  }
-  if (year) {
-    parts.push(`year:${year}`);
-  } else {
-    parts.push('year:');
-  }
-  return parts;
-}
-
-function normalizeOmdbPayload(data, { type, requestedTitle, requestedYear }) {
-  if (!data || typeof data !== 'object') return null;
-  const ratingsArray = Array.isArray(data.Ratings) ? data.Ratings : [];
-  const ratingMap = new Map();
-  ratingsArray.forEach(entry => {
-    if (!entry || typeof entry.Source !== 'string') return;
-    const key = entry.Source.trim().toLowerCase();
-    if (!key) return;
-    ratingMap.set(key, entry.Value);
-  });
-
-  const rottenTomatoes = parseOmdbPercent(
-    ratingMap.get('rotten tomatoes') ?? ratingMap.get('rottentomatoes')
-  );
-  const metacritic = parseOmdbScore(data.Metascore ?? ratingMap.get('metacritic'));
-  const imdb = parseOmdbImdbRating(
-    data.imdbRating ?? ratingMap.get('internet movie database') ?? ratingMap.get('imdb')
-  );
-
-  const imdbId = sanitizeOmdbString(data.imdbID);
-  const title = sanitizeOmdbString(data.Title) || sanitizeOmdbString(requestedTitle);
-  const year = sanitizeOmdbString(data.Year) || sanitizeOmdbString(requestedYear);
-
-  const payload = {
-    source: 'omdb',
-    ratings: {
-      rottenTomatoes: rottenTomatoes ?? null,
-      metacritic: metacritic ?? null,
-      imdb: imdb ?? null
-    },
-    imdbId: imdbId || null,
-    title: title || null,
-    year: year || null,
-    type: typeof type === 'string' && type ? type : null,
-    fetchedAt: new Date().toISOString()
-  };
-
-  return payload;
-}
-
-function foursquareCacheKeyParts({ city, latitude, longitude, cuisine, limit, radiusMeters }) {
-  const normalizedCity = typeof city === 'string' ? city.trim().toLowerCase() : '';
-  const normalizedCuisine = typeof cuisine === 'string' ? cuisine.trim().toLowerCase() : '';
-  const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
-  const parts = ['foursquare', 'v1'];
-  if (hasCoords) {
-    const lat = Number(latitude);
-    const lon = Number(longitude);
-    parts.push(`coords:${lat.toFixed(4)},${lon.toFixed(4)}`);
-  } else {
-    parts.push('coords:none');
-  }
-  if (normalizedCity) {
-    parts.push(`city:${normalizedCity}`);
-  }
-  if (normalizedCuisine) {
-    parts.push(`cuisine:${normalizedCuisine}`);
-  }
-  if (Number.isFinite(limit) && limit > 0) {
-    const clampedLimit = Math.min(Math.max(1, Math.floor(limit)), FOURSQUARE_MAX_LIMIT);
-    parts.push(`limit:${clampedLimit}`);
-  } else {
-    parts.push('limit:default');
-  }
-  if (Number.isFinite(radiusMeters) && radiusMeters > 0) {
-    parts.push(`radius:${Math.round(radiusMeters)}`);
-  } else {
-    parts.push('radius:none');
-  }
-  return parts;
-}
-
-function formatFoursquarePrice(level) {
-  if (!Number.isFinite(level) || level <= 0) return '';
-  const clamped = Math.max(1, Math.min(4, Math.round(level)));
-  return '$'.repeat(clamped);
-}
-
-function buildFoursquareAddress(location) {
-  if (!location || typeof location !== 'object') return '';
-  if (typeof location.formatted_address === 'string' && location.formatted_address.trim()) {
-    return location.formatted_address.trim();
-  }
-  const locality =
-    [location.locality || location.city || '', location.region || location.state || '']
-      .filter(Boolean)
-      .join(', ');
-  const parts = [
-    location.address || location.address_line1 || '',
-    locality,
-    location.postcode || '',
-    location.country || ''
-  ]
-    .map(part => (typeof part === 'string' ? part.trim() : ''))
-    .filter(Boolean);
-  return parts.join(', ');
-}
-
-function extractBestPhotoUrl(detail) {
-  const photos = detail && Array.isArray(detail.photos) ? detail.photos : [];
-  if (!photos.length) return '';
-  const preferred =
-    photos.find(photo => photo && photo.prefix && photo.suffix && photo.width && photo.height) ||
-    photos.find(photo => photo && photo.prefix && photo.suffix);
-  if (!preferred || !preferred.prefix || !preferred.suffix) {
-    return '';
-  }
-  const size =
-    Number.isFinite(preferred.width) && Number.isFinite(preferred.height)
-      ? `${preferred.width}x${preferred.height}`
-      : 'original';
-  return `${preferred.prefix}${size}${preferred.suffix}`;
-}
-
-function simplifyFoursquareCategories(categories) {
-  if (!Array.isArray(categories)) return [];
-  return categories
-    .map(category => {
-      if (!category) return '';
-      if (typeof category === 'string') return category.trim();
-      if (typeof category.name === 'string' && category.name.trim()) return category.name.trim();
-      if (typeof category.short_name === 'string' && category.short_name.trim()) {
-        return category.short_name.trim();
-      }
-      return '';
-    })
-    .filter(Boolean);
-}
-
-async function fetchFoursquareSearch(params, apiKey) {
-  const url = `${FOURSQUARE_SEARCH_URL}?${params.toString()}`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: apiKey,
-      Accept: 'application/json'
-    }
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw Object.assign(
-      new Error(`Foursquare request failed: ${response.status} ${text.slice(0, 200)}`),
-      { status: response.status }
-    );
-  }
-  return response.json();
-}
-
-async function fetchFoursquareDetails(
-  places,
-  apiKey,
-  { limit = FOURSQUARE_DETAILS_MAX, concurrency = FOURSQUARE_DETAILS_CONCURRENCY } = {}
-) {
-  if (!Array.isArray(places) || !places.length) return new Map();
-  const ids = [];
-  const seen = new Set();
-  for (const place of places) {
-    const id = place?.fsq_id;
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    ids.push(id);
-    if (Number.isFinite(limit) && limit > 0 && ids.length >= limit) break;
-  }
-  if (!ids.length) return new Map();
-
-  const results = new Map();
-  const workerCount = Math.max(1, Math.min(concurrency || 1, ids.length));
-  let index = 0;
-
-  async function runWorker() {
-    while (index < ids.length) {
-      const currentIndex = index++;
-      const id = ids[currentIndex];
-      const detailUrl = `${FOURSQUARE_PLACE_URL}/${encodeURIComponent(
-        id
-      )}?fields=${encodeURIComponent(FOURSQUARE_DETAIL_FIELDS)}`;
-      try {
-        const response = await fetch(detailUrl, {
-          headers: {
-            Authorization: apiKey,
-            Accept: 'application/json'
-          }
-        });
-        if (!response.ok) {
-          continue;
-        }
-        const data = await response.json().catch(() => null);
-        if (data && typeof data === 'object') {
-          results.set(id, data);
-        }
-      } catch (err) {
-        console.error('Foursquare detail fetch failed', err);
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
-  return results;
-}
-
-function simplifyFoursquarePlace(place, detail) {
-  if (!place || typeof place !== 'object') return null;
-  const location = detail?.location || place.location || {};
-  const geocodes = detail?.geocodes || place.geocodes || {};
-  const mainGeo = geocodes.main || geocodes.roof || geocodes.display || {};
-  const latitude = Number.isFinite(mainGeo.latitude) ? mainGeo.latitude : null;
-  const longitude = Number.isFinite(mainGeo.longitude) ? mainGeo.longitude : null;
-
-  const rawRating =
-    Number.isFinite(detail?.rating) && detail.rating > 0
-      ? detail.rating
-      : Number.isFinite(place.rating) && place.rating > 0
-      ? place.rating
-      : null;
-  const normalizedRating =
-    Number.isFinite(rawRating) && rawRating > 0 ? Math.round((rawRating / 2) * 10) / 10 : null;
-
-  const ratingSignals =
-    Number.isFinite(detail?.rating_signals) && detail.rating_signals >= 0
-      ? detail.rating_signals
-      : Number.isFinite(place.rating_signals) && place.rating_signals >= 0
-      ? place.rating_signals
-      : null;
-
-  const priceLevel =
-    Number.isFinite(detail?.price) && detail.price > 0
-      ? detail.price
-      : Number.isFinite(place.price) && place.price > 0
-      ? place.price
-      : null;
-
-  const address = buildFoursquareAddress(location);
-  const categories = simplifyFoursquareCategories(detail?.categories || place.categories);
-  const phone = detail?.tel || place.tel || '';
-  const website = detail?.website || place.website || '';
-  const link = detail?.link || place.link || '';
-  const url = website || link || (place.fsq_id ? `https://foursquare.com/v/${place.fsq_id}` : '');
-  const distance = Number.isFinite(place.distance) ? place.distance : null;
-  const imageUrl = extractBestPhotoUrl(detail);
-
-  return {
-    id: place.fsq_id || detail?.fsq_id || null,
-    name: detail?.name || place.name || 'Unnamed Venue',
-    address,
-    city: location.locality || location.city || '',
-    state: location.region || location.state || '',
-    zip: location.postcode || '',
-    country: location.country || '',
-    phone,
-    rating: normalizedRating,
-    reviewCount: Number.isFinite(ratingSignals) ? ratingSignals : null,
-    price: formatFoursquarePrice(priceLevel),
-    categories,
-    latitude,
-    longitude,
-    url,
-    website: website || undefined,
-    imageUrl: imageUrl || undefined,
-    distance
-  };
 }
 
 const plaidClient = (() => {
@@ -557,38 +378,6 @@ app.post('/api/description', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// --- Saved movies persistence ---
-const savedFile = path.join(__dirname, 'saved-movies.json');
-
-function readSavedMovies() {
-  try {
-    const txt = fs.readFileSync(savedFile, 'utf8');
-    return JSON.parse(txt);
-  } catch {
-    return [];
-  }
-}
-
-function writeSavedMovies(data) {
-  fs.writeFileSync(savedFile, JSON.stringify(data, null, 2));
-}
-
-app.get('/api/saved-movies', (req, res) => {
-  res.json(readSavedMovies());
-});
-
-app.post('/api/saved-movies', (req, res) => {
-  const movie = req.body || {};
-  if (!movie || !movie.id) {
-    return res.status(400).json({ error: 'invalid' });
-  }
-  const data = readSavedMovies();
-  if (!data.some(m => String(m.id) === String(movie.id))) {
-    data.push(movie);
-    writeSavedMovies(data);
-  }
-  res.json({ status: 'ok' });
-});
 
 // --- Spotify client ID ---
 app.get('/api/spotify-client-id', (req, res) => {
@@ -604,156 +393,7 @@ app.get('/api/spotify-client-id', (req, res) => {
   res.json({ clientId, hasEventbriteToken });
 });
 
-app.get('/api/tmdb-config', (req, res) => {
-  const apiKey = resolveTmdbApiKey();
-  const proxyEndpoint = resolveTmdbProxyEndpoint();
 
-  if (!apiKey && !proxyEndpoint) {
-    return res.status(404).json({ error: 'tmdb_config_unavailable' });
-  }
-
-  const payload = {
-    hasKey: Boolean(apiKey),
-    hasProxy: Boolean(proxyEndpoint)
-  };
-
-  if (apiKey) {
-    payload.apiKey = apiKey;
-  }
-  if (proxyEndpoint) {
-    payload.proxyEndpoint = proxyEndpoint;
-  }
-
-  res.json(payload);
-});
-
-app.get('/api/restaurants', async (req, res) => {
-  const { city, cuisine = '' } = req.query || {};
-  const latitude = Number.parseFloat(req.query?.latitude);
-  const longitude = Number.parseFloat(req.query?.longitude);
-  const foursquareKey =
-    req.get('x-api-key') || req.query.apiKey || process.env.FOURSQUARE_API_KEY;
-  if (!foursquareKey) {
-    return res.status(500).json({ error: 'missing foursquare api key' });
-  }
-  const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
-  if (!hasCoords && !city) {
-    return res.status(400).json({ error: 'missing location' });
-  }
-
-  const rawLimitParam = req.query?.limit ?? req.query?.maxResults;
-  const requestedLimit = normalizePositiveInteger(rawLimitParam, {
-    min: 1,
-    max: FOURSQUARE_MAX_LIMIT
-  });
-  const limit = requestedLimit || FOURSQUARE_MAX_LIMIT;
-
-  const parsedRadius = parseNumberQuery(req.query?.radius);
-  const radiusMiles =
-    Number.isFinite(parsedRadius) && parsedRadius > 0 ? Math.min(parsedRadius, 25) : null;
-  const radiusMeters =
-    Number.isFinite(radiusMiles) && radiusMiles > 0 ? Math.round(radiusMiles * METERS_PER_MILE) : null;
-
-  const cacheKeyParts = foursquareCacheKeyParts({
-    city,
-    latitude,
-    longitude,
-    cuisine,
-    limit,
-    radiusMeters
-  });
-
-  const cached = await safeReadCachedResponse(
-    FOURSQUARE_CACHE_COLLECTION,
-    cacheKeyParts,
-    FOURSQUARE_CACHE_TTL_MS
-  );
-  if (sendCachedResponse(res, cached)) {
-    return;
-  }
-
-  try {
-    const searchLimit = Math.min(
-      FOURSQUARE_MAX_LIMIT,
-      Math.max(limit, FOURSQUARE_DETAILS_MAX)
-    );
-    const params = new URLSearchParams();
-    params.set('limit', String(searchLimit));
-    params.set('categories', FOURSQUARE_CATEGORY_RESTAURANTS);
-    params.set('fields', FOURSQUARE_SEARCH_FIELDS);
-    if (hasCoords) {
-      params.set('ll', `${latitude},${longitude}`);
-      if (Number.isFinite(radiusMeters) && radiusMeters > 0) {
-        params.set('radius', String(radiusMeters));
-      }
-      params.set('sort', 'DISTANCE');
-    } else if (city) {
-      params.set('near', String(city));
-      params.set('sort', 'RELEVANCE');
-    }
-    if (cuisine) {
-      params.set('query', String(cuisine));
-    }
-
-    const data = await fetchFoursquareSearch(params, foursquareKey);
-    const results = Array.isArray(data?.results) ? data.results : [];
-    if (!results.length) {
-      const emptyPayload = JSON.stringify([]);
-      await safeWriteCachedResponse(FOURSQUARE_CACHE_COLLECTION, cacheKeyParts, {
-        status: 200,
-        contentType: 'application/json',
-        body: emptyPayload,
-        metadata: {
-          city: typeof city === 'string' ? city : '',
-          hasCoords,
-          latitude: hasCoords ? latitude : null,
-          longitude: hasCoords ? longitude : null,
-          cuisine: typeof cuisine === 'string' ? cuisine : '',
-          limit,
-          returned: 0,
-          totalResults: Array.isArray(data?.results) ? data.results.length : 0,
-          radiusMeters: Number.isFinite(radiusMeters) ? radiusMeters : null
-        }
-      });
-      res.type('application/json').send(emptyPayload);
-      return;
-    }
-
-    const details = await fetchFoursquareDetails(results, foursquareKey);
-    const simplified = results
-      .slice(0, limit)
-      .map(place => simplifyFoursquarePlace(place, details.get(place.fsq_id)))
-      .filter(Boolean);
-
-    const payload = JSON.stringify(simplified);
-
-    await safeWriteCachedResponse(FOURSQUARE_CACHE_COLLECTION, cacheKeyParts, {
-      status: 200,
-      contentType: 'application/json',
-      body: payload,
-      metadata: {
-        city: typeof city === 'string' ? city : '',
-        hasCoords,
-        latitude: hasCoords ? latitude : null,
-        longitude: hasCoords ? longitude : null,
-        cuisine: typeof cuisine === 'string' ? cuisine : '',
-        limit,
-        returned: simplified.length,
-        totalResults: Array.isArray(data?.results) ? data.results.length : null,
-        radiusMeters: Number.isFinite(radiusMeters) ? radiusMeters : null
-      }
-    });
-
-    res.type('application/json').send(payload);
-  } catch (err) {
-    console.error('Foursquare restaurant search failed', err);
-    const status =
-      err && typeof err.status === 'number' && err.status >= 400 ? err.status : 500;
-    const message =
-      err && typeof err.message === 'string' && err.message ? err.message : 'failed';
-    res.status(status).json({ error: message });
-  }
-});
 
 // --- Ticketmaster shows proxy ---
 const TICKETMASTER_API_KEY =
@@ -1117,6 +757,109 @@ app.get('/api/shows', async (req, res) => {
 
   res.json(payload);
 });
+
+app.get('/api/youtube/search', async (req, res) => {
+  const rawQuery =
+    req.query.q ?? req.query.query ?? req.query.term ?? req.query.artist ?? req.query.name ?? '';
+  const query = normalizeYouTubeQuery(rawQuery);
+
+  if (!query) {
+    return res.status(400).json({ error: 'missing_query' });
+  }
+
+  if (!YOUTUBE_API_KEY) {
+    return res.status(501).json({ error: 'youtube_api_key_missing' });
+  }
+
+  const cacheKey = youtubeSearchCacheKey(query);
+  const cached = await safeReadCachedResponse(
+    YOUTUBE_SEARCH_CACHE_COLLECTION,
+    cacheKey,
+    YOUTUBE_SEARCH_CACHE_TTL_MS
+  );
+  if (sendCachedResponse(res, cached)) {
+    return;
+  }
+
+  const params = new URLSearchParams({
+    key: YOUTUBE_API_KEY,
+    part: 'snippet',
+    type: 'video',
+    maxResults: '1',
+    videoEmbeddable: 'true',
+    videoSyndicated: 'true',
+    safeSearch: 'moderate',
+    q: query
+  });
+
+  const url = `${YOUTUBE_SEARCH_BASE_URL}?${params.toString()}`;
+
+  let response;
+  let text;
+
+  try {
+    response = await fetch(url);
+    text = await response.text();
+  } catch (err) {
+    console.error('YouTube search request failed', { query, err });
+    return res.status(502).json({ error: 'youtube_search_failed' });
+  }
+
+  if (!response.ok) {
+    console.error(
+      'YouTube search responded with error',
+      response.status,
+      text ? text.slice(0, 200) : ''
+    );
+    return res.status(response.status).json({ error: 'youtube_search_error' });
+  }
+
+  let data;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (err) {
+    console.error('Failed to parse YouTube search response as JSON', err);
+    return res.status(502).json({ error: 'youtube_response_invalid' });
+  }
+
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const bestItem = items.find(item => item?.id?.videoId);
+
+  const snippet = bestItem?.snippet && typeof bestItem.snippet === 'object' ? bestItem.snippet : {};
+  const videoId = typeof bestItem?.id?.videoId === 'string' ? bestItem.id.videoId.trim() : '';
+
+  const payload = {
+    query,
+    video: videoId
+      ? {
+          id: videoId,
+          title: typeof snippet.title === 'string' ? snippet.title : '',
+          description: typeof snippet.description === 'string' ? snippet.description : '',
+          channel: {
+            id: typeof snippet.channelId === 'string' ? snippet.channelId : '',
+            title: typeof snippet.channelTitle === 'string' ? snippet.channelTitle : ''
+          },
+          publishedAt: typeof snippet.publishedAt === 'string' ? snippet.publishedAt : '',
+          thumbnails: normalizeYouTubeThumbnails(snippet.thumbnails),
+          url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+          embedUrl: `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`
+        }
+      : null
+  };
+
+  const body = JSON.stringify(payload);
+
+  await safeWriteCachedResponse(YOUTUBE_SEARCH_CACHE_COLLECTION, cacheKey, {
+    status: 200,
+    contentType: 'application/json',
+    body,
+    metadata: { query, fetchedAt: new Date().toISOString() }
+  });
+
+  res.set('Cache-Control', 'public, max-age=1800');
+  res.type('application/json').send(body);
+});
+
 // --- GeoLayers game endpoints ---
 const layerOrder = ['rivers','lakes','elevation','roads','outline','cities','label'];
 const countriesPath = path.join(__dirname, '../geolayers-game/public/countries.json');
@@ -1250,282 +993,6 @@ app.post('/score', (req, res) => {
 
 app.get('/leaderboard', (req, res) => {
   res.json(leaderboard.slice(0, 10));
-});
-
-app.get('/api/movies', async (req, res) => {
-  try {
-    const query = typeof req.query.q === 'string' ? req.query.q : '';
-    const limit = parseNumberQuery(req.query.limit) ?? DEFAULT_MOVIE_LIMIT;
-    const freshLimit = parseNumberQuery(req.query.freshLimit);
-    const minScore = parseNumberQuery(req.query.minScore);
-    const includeFresh = parseBooleanQuery(
-      req.query.includeFresh ?? req.query.fresh ?? req.query.includeNew
-    );
-    const freshOnly =
-      parseBooleanQuery(req.query.freshOnly ?? req.query.onlyFresh ?? req.query.newOnly) ||
-      (typeof req.query.scope === 'string' && req.query.scope.toLowerCase() === 'new');
-    const forceRefresh = parseBooleanQuery(req.query.refresh);
-
-    const curatedLimit = Math.max(1, Number(limit) || 20);
-    const fallbackFreshLimit = Math.max(1, Math.min(curatedLimit, 10));
-    const effectiveFreshLimit = Math.max(1, Number(freshLimit) || fallbackFreshLimit);
-
-    const catalogState = await movieCatalog.ensureCatalog({ forceRefresh });
-    const hasCredentials = movieCatalog.hasTmdbCredentials();
-    const curatedSearch = movieCatalog.searchCatalogWithStats(query, {
-      limit: curatedLimit,
-      minScore: minScore == null ? undefined : minScore
-    });
-    const curatedResults = freshOnly ? [] : curatedSearch.results;
-    const curatedTotalMatches = Math.max(
-      0,
-      Number.isFinite(curatedSearch?.totalMatches)
-        ? Number(curatedSearch.totalMatches)
-        : Array.isArray(curatedSearch?.results)
-        ? curatedSearch.results.length
-        : 0
-    );
-    const curatedReturnedCount = freshOnly
-      ? 0
-      : Array.isArray(curatedResults)
-      ? curatedResults.length
-      : 0;
-
-    let freshResults = [];
-    let freshError = null;
-    const shouldFetchFresh =
-      freshOnly ||
-      includeFresh ||
-      (!curatedResults.length && Boolean(query));
-
-    if (shouldFetchFresh) {
-      if (hasCredentials) {
-        try {
-          freshResults = await movieCatalog.fetchNewReleases({
-            query,
-            limit: freshOnly ? curatedLimit : effectiveFreshLimit,
-            excludeIds: curatedResults.map(movie => movie.id)
-          });
-        } catch (err) {
-          console.error('Failed to fetch new release movies', err);
-          freshError = 'failed';
-        }
-      } else {
-        freshError = 'credentials missing';
-      }
-    }
-
-    const response = {
-      results: freshOnly ? freshResults : curatedResults,
-      curated: curatedResults,
-      fresh: freshResults,
-      metadata: {
-        query: query || null,
-        curatedCount: curatedTotalMatches,
-        curatedReturnedCount,
-        freshCount: freshResults.length,
-        totalCatalogSize:
-          catalogState?.metadata?.total ?? catalogState?.movies?.length ?? 0,
-        catalogUpdatedAt:
-          catalogState?.metadata?.updatedAt ||
-          (catalogState?.updatedAt
-            ? new Date(catalogState.updatedAt).toISOString()
-            : null),
-        minScore: minScore == null ? movieCatalog.MIN_SCORE : minScore,
-        includeFresh: Boolean(shouldFetchFresh && hasCredentials),
-        freshOnly: Boolean(freshOnly),
-        curatedLimit,
-        source: catalogState?.metadata?.source || null,
-        freshRequested: Boolean(shouldFetchFresh)
-      }
-    };
-
-    if (freshOnly) {
-      response.curated = curatedResults;
-      response.metadata.curatedCount = curatedResults.length;
-    }
-
-    if (freshError) {
-      response.metadata.freshError = freshError;
-    }
-
-    res.json(response);
-  } catch (err) {
-    console.error('Failed to fetch movies', err);
-    res.status(500).json({ error: 'Failed to fetch movies' });
-  }
-});
-
-app.get('/api/movies/stats', async (req, res) => {
-  try {
-    const catalogState = await movieCatalog.ensureCatalog();
-    const movies = Array.isArray(catalogState?.movies) ? catalogState.movies : [];
-    const excludeRaw = req.query.excludeIds;
-    const excludeSet = new Set();
-
-    const addExclusions = value => {
-      if (!value) return;
-      const parts = String(value)
-        .split(/[,|\s]+/)
-        .map(part => part.trim())
-        .filter(Boolean);
-      parts.forEach(part => excludeSet.add(part));
-    };
-
-    if (Array.isArray(excludeRaw)) {
-      excludeRaw.forEach(addExclusions);
-    } else if (typeof excludeRaw === 'string') {
-      addExclusions(excludeRaw);
-    }
-
-    const bucketStats = MOVIE_STATS_BUCKETS.map(bucket => ({
-      label: bucket.label,
-      min: bucket.min,
-      max: bucket.max,
-      count: 0
-    }));
-
-    let total = 0;
-    movies.forEach(movie => {
-      if (!movie || movie.id == null) return;
-      const id = String(movie.id);
-      if (excludeSet.has(id)) return;
-      total += 1;
-      const score = Number(movie.score);
-      if (!Number.isFinite(score)) return;
-      for (const bucket of bucketStats) {
-        const meetsMin = bucket.min === -Infinity ? true : score >= bucket.min;
-        const belowMax = bucket.max === Infinity ? true : score < bucket.max;
-        if (meetsMin && belowMax) {
-          bucket.count += 1;
-          break;
-        }
-      }
-    });
-
-    res.json({
-      total,
-      catalogTotal: movies.length,
-      catalogUpdatedAt:
-        catalogState?.metadata?.updatedAt ||
-        (catalogState?.updatedAt
-          ? new Date(catalogState.updatedAt).toISOString()
-          : null),
-      buckets: bucketStats.map(({ label, count }) => ({ label, count }))
-    });
-  } catch (err) {
-    console.error('Failed to compute movie stats', err);
-    res.status(500).json({ error: 'failed_to_compute_movie_stats' });
-  }
-});
-
-app.get('/api/movie-ratings', async (req, res) => {
-  const imdbId = sanitizeOmdbString(req.query.imdbId || req.query.imdbID);
-  const title = sanitizeOmdbString(req.query.title);
-  const year = sanitizeOmdbString(req.query.year);
-  const typeParam = sanitizeOmdbString(req.query.type).toLowerCase();
-  const allowedTypes = new Set(['movie', 'series', 'episode']);
-  const type = allowedTypes.has(typeParam) ? typeParam : '';
-  const forceRefresh = parseBooleanQuery(req.query.refresh);
-  const queryApiKey = sanitizeOmdbString(req.query.apiKey);
-  const apiKey = queryApiKey || OMDB_API_KEY;
-
-  if (!apiKey) {
-    return res.status(400).json({
-      error: 'omdb_key_missing',
-      message: 'OMDb API key is not configured on the server.'
-    });
-  }
-
-  if (!imdbId && !title) {
-    return res.status(400).json({
-      error: 'missing_lookup',
-      message: 'Provide an imdbId or title to look up critic scores.'
-    });
-  }
-
-  const cacheParts = buildOmdbCacheKeyParts({
-    imdbId,
-    title,
-    year,
-    type: type || 'any'
-  });
-
-  if (!forceRefresh) {
-    const cached = await safeReadCachedResponse(
-      OMDB_CACHE_COLLECTION,
-      cacheParts,
-      OMDB_CACHE_TTL_MS
-    );
-    if (sendCachedResponse(res, cached)) {
-      return;
-    }
-  }
-
-  const params = new URLSearchParams();
-  params.set('apikey', apiKey);
-  if (imdbId) {
-    params.set('i', imdbId);
-  } else if (title) {
-    params.set('t', title);
-  }
-  if (year) params.set('y', year);
-  if (type) params.set('type', type);
-  params.set('plot', 'short');
-  params.set('r', 'json');
-
-  try {
-    const response = await fetch(`${OMDB_BASE_URL}?${params.toString()}`);
-    if (!response.ok) {
-      const status = response.status || 502;
-      return res.status(status).json({
-        error: 'omdb_request_failed',
-        message: `OMDb request failed with status ${status}`
-      });
-    }
-
-    const data = await response.json();
-    if (!data || data.Response === 'False') {
-      const message = typeof data?.Error === 'string' ? data.Error : 'OMDb returned no results';
-      const normalized = message.toLowerCase();
-      if (normalized.includes('api key')) {
-        return res.status(401).json({ error: 'omdb_invalid_key', message });
-      }
-      return res.status(404).json({ error: 'omdb_not_found', message });
-    }
-
-    const payload = normalizeOmdbPayload(data, {
-      type: type || null,
-      requestedTitle: title,
-      requestedYear: year
-    });
-
-    if (!payload) {
-      return res.status(404).json({
-        error: 'omdb_not_found',
-        message: 'OMDb did not return critic scores for this title.'
-      });
-    }
-
-    const body = JSON.stringify(payload);
-    await safeWriteCachedResponse(OMDB_CACHE_COLLECTION, cacheParts, {
-      body,
-      metadata: {
-        imdbId: payload.imdbId || imdbId || null,
-        title: payload.title || title || null,
-        year: payload.year || year || null,
-        type: payload.type || type || null
-      }
-    });
-
-    res.json(payload);
-  } catch (err) {
-    console.error('Failed to fetch critic scores from OMDb', err);
-    res.status(500).json({
-      error: 'omdb_request_failed',
-      message: 'Failed to fetch critic scores.'
-    });
-  }
 });
 
 app.get('/api/transactions', async (req, res) => {

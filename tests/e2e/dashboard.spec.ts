@@ -48,7 +48,7 @@ async function stubExternal(page) {
   });
 }
 
-test('can switch between media tabs', async ({ page }) => {
+test('shows tab renders when ready', async ({ page }) => {
   await stubExternal(page);
   await page.goto('http://localhost:3002');
   await page.evaluate(() => {
@@ -56,14 +56,8 @@ test('can switch between media tabs', async ({ page }) => {
     if (tabs) tabs.style.visibility = 'visible';
   });
 
-  await page.waitForSelector('button[data-target="moviesPanel"]', { state: 'visible' });
-  await expect(page.locator('#moviesPanel')).toBeVisible();
-
-  await page.click('button[data-target="showsPanel"]');
+  await page.waitForSelector('button[data-target="showsPanel"]', { state: 'visible' });
   await expect(page.locator('#showsPanel')).toBeVisible();
-  await expect(page.locator('#moviesPanel')).toBeHidden();
-
-  await page.click('button[data-target="restaurantsPanel"]');
-  await expect(page.locator('#restaurantsPanel')).toBeVisible();
-  await expect(page.locator('#showsPanel')).toBeHidden();
+  const tabCount = await page.locator('#tabsContainer .tab-button').count();
+  expect(tabCount).toBe(1);
 });

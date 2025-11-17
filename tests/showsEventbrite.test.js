@@ -20,6 +20,15 @@ const storage = (() => {
 global.localStorage = storage;
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+const createFetchResponse = (payload = { events: [], segments: [] }) => ({
+  ok: true,
+  text: async () => JSON.stringify(payload),
+  json: async () => payload
+});
+const getFutureIso = (daysAhead = 1) => {
+  const target = new Date(Date.now() + Number(daysAhead) * 24 * 60 * 60 * 1000);
+  return target.toISOString();
+};
 
 describe('initShowsPanel (Ticketmaster)', () => {
   let initShowsPanel;
@@ -36,12 +45,38 @@ describe('initShowsPanel (Ticketmaster)', () => {
     }
 
     dom = new JSDOM(`
-      <div id="eventbriteStatus"></div>
-      <details id="eventbriteDebug" hidden>
-        <summary>Latest API response</summary>
-        <pre id="eventbriteDebugOutput"></pre>
-      </details>
-      <div id="eventbriteList"></div>
+      <div class="shows-toolbar">
+        <div class="shows-tab-buttons" role="tablist" aria-label="Live music view">
+          <button type="button" id="showsTabAll" class="shows-tab-btn is-active" data-view="all" aria-selected="true">All</button>
+          <button type="button" id="showsTabSaved" class="shows-tab-btn" data-view="saved" aria-selected="false">Saved</button>
+        </div>
+        <div class="shows-toolbar__actions">
+          <div class="shows-toolbar__control shows-toolbar__control--distance">
+            <label for="showsDistanceSelect">Distance</label>
+            <select id="showsDistanceSelect">
+              <option value="10">10 mi</option>
+              <option value="25">25 mi</option>
+              <option value="50">50 mi</option>
+              <option value="75">75 mi</option>
+              <option value="100">100 mi</option>
+              <option value="125">125 mi</option>
+              <option value="150">150 mi</option>
+            </select>
+          </div>
+          <div class="shows-toolbar__control shows-toolbar__control--date">
+            <label for="showsDateInput">Through</label>
+            <div class="shows-date-picker">
+              <input type="date" id="showsDateInput" />
+            </div>
+          </div>
+          <div class="shows-toolbar__shortcut-group" role="group" aria-label="Quick action links">
+            <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="0">Today</a>
+            <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="7">Next 7 days</a>
+            <a href="#" id="eventbriteRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
+          </div>
+        </div>
+      </div>
+      <div id="eventbriteList" class="decision-container"></div>
     `, { url: 'http://localhost/' });
 
     global.window = dom.window;
@@ -57,10 +92,8 @@ describe('initShowsPanel (Ticketmaster)', () => {
       }
     };
 
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      text: async () => JSON.stringify({ events: [], segments: [] })
-    });
+    global.fetch = vi.fn().mockResolvedValue(createFetchResponse());
+    dom.window.fetch = global.fetch;
 
     ({ initShowsPanel } = await import('../js/shows.js'));
   }
@@ -75,55 +108,61 @@ describe('initShowsPanel (Ticketmaster)', () => {
   it('automatically fetches nearby events', async () => {
     await setup();
 
-    fetch.mockResolvedValueOnce({
-      ok: true,
-      text: async () =>
-        JSON.stringify({
-          events: [
-            {
-              name: { text: 'Live Show' },
-              start: { local: '2024-01-01T20:00:00Z' },
-              url: 'https://ticketmaster.test/events/1',
-              venue: { name: 'Club', address: { city: 'Austin', region: 'TX' } },
-              summary: 'An evening performance.'
-            }
-          ],
-          segments: [
-            {
-              key: 'music',
-              description: 'Live music',
-              ok: true,
-              status: 200,
-              total: 1,
-              requestUrl: 'https://ticketmaster.test/api/music'
-            }
-          ],
-          cached: false
-        })
-    });
+    const liveShowResponse = {
+      events: [
+      {
+        name: { text: 'Live Show' },
+        start: { local: getFutureIso(3) },
+          url: 'https://ticketmaster.test/events/1',
+          venue: { name: 'Club', address: { city: 'Austin', region: 'TX' } },
+          summary: 'An evening performance.'
+        }
+      ],
+      segments: [
+        {
+          key: 'music',
+          description: 'Live music',
+          ok: true,
+          status: 200,
+          total: 1,
+          requestUrl: 'https://ticketmaster.test/api/music'
+        }
+      ],
+      cached: false
+    };
+
+    fetch.mockResolvedValueOnce(createFetchResponse(liveShowResponse));
 
     await initShowsPanel();
     await flush();
     await flush();
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    const requestedUrl = fetch.mock.calls[0][0];
-    expect(requestedUrl).toContain('/api/shows');
-    expect(requestedUrl).toContain('lat=30.2672');
-    expect(requestedUrl).toContain('lon=-97.7431');
-    expect(requestedUrl).toContain('radius=100');
+    const [showsRequest] = fetch.mock.calls[0];
+    expect(showsRequest).toContain('/api/shows');
+    expect(showsRequest).toContain('lat=30.2672');
+    expect(showsRequest).toContain('lon=-97.7431');
+    expect(showsRequest).toContain('radius=100');
 
     const cards = document.querySelectorAll('.show-card');
     expect(cards.length).toBe(1);
     expect(cards[0].textContent).toContain('Live Show');
 
-    const status = document.getElementById('eventbriteStatus');
-    expect(status.textContent).toContain('Found 1 upcoming event');
+    const mediaLinks = document.querySelectorAll('.show-card__external-link');
+    expect(mediaLinks.length).toBe(2);
+    expect(mediaLinks[0].href).toContain('youtube.com');
+    expect(mediaLinks[1].href).toContain('spotify.com');
+
+    const summary = document.querySelector('.shows-list-summary');
+    expect(summary).not.toBeNull();
+    expect(summary?.textContent).toContain('Distance:');
+    expect(summary?.textContent).toContain('Through');
+    expect(summary?.textContent).toContain('Showing 1 upcoming event');
 
     const debugContainer = document.getElementById('eventbriteDebug');
     const debugOutput = document.getElementById('eventbriteDebugOutput');
-    expect(debugContainer.hidden).toBe(false);
-    expect(debugOutput.textContent).toContain('Live music: OK');
+    expect(debugContainer).toBeNull();
+    expect(debugOutput).toBeNull();
   });
 
   it('routes requests through the remote proxy when no API base override is provided', async () => {
@@ -135,8 +174,8 @@ describe('initShowsPanel (Ticketmaster)', () => {
     await flush();
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    const requestedUrl = fetch.mock.calls[0][0];
-    expect(requestedUrl.startsWith('https://narrow-down.web.app/api/shows')).toBe(true);
+    const [showsRequest] = fetch.mock.calls[0];
+    expect(showsRequest.startsWith('https://narrow-down.web.app/api/shows')).toBe(true);
   });
 
   it('shows a helpful message when geolocation fails', async () => {
@@ -151,7 +190,135 @@ describe('initShowsPanel (Ticketmaster)', () => {
     await flush();
 
     expect(fetch).not.toHaveBeenCalled();
-    expect(document.getElementById('eventbriteStatus').textContent).toContain('Location access was denied');
-    expect(document.getElementById('eventbriteDebug').hidden).toBe(true);
+    expect(document.getElementById('eventbriteStatus')).toBeNull();
+    expect(document.getElementById('eventbriteDebug')).toBeNull();
+  });
+
+  it('renders genre checkboxes with bulk actions and persistent hide control', async () => {
+    await setup();
+
+    fetch.mockResolvedValueOnce(
+      createFetchResponse({
+        events: [
+          {
+            name: { text: 'Genre Show' },
+            start: { local: getFutureIso(5) },
+            venue: { name: 'Side Stage', address: { city: 'Austin', region: 'TX' } },
+            genres: ['Rock', 'Indie Rock']
+          }
+        ],
+        segments: [],
+        cached: false
+      })
+    );
+
+    await initShowsPanel();
+    await flush();
+    await flush();
+
+    const filtersPanel = document.querySelector('.shows-results__filters');
+    expect(filtersPanel).not.toBeNull();
+
+    const checkboxes = filtersPanel.querySelectorAll('.show-genre-checkbox input[type="checkbox"]');
+    expect(checkboxes.length).toBeGreaterThan(0);
+
+    const actionLinks = Array.from(filtersPanel.querySelectorAll('.show-genre-action-link'));
+    const checkAllLink = actionLinks.find(link => /check all/i.test(link.textContent));
+    const checkNoneLink = actionLinks.find(link => /check none/i.test(link.textContent));
+    expect(checkAllLink).toBeTruthy();
+    expect(checkNoneLink).toBeTruthy();
+    const tagHideButtons = filtersPanel.querySelectorAll('.show-genre-hide-btn');
+    expect(tagHideButtons.length).toBeGreaterThan(0);
+
+    checkNoneLink?.dispatchEvent(
+      new dom.window.MouseEvent('click', { bubbles: true, cancelable: true })
+    );
+    await flush();
+
+    const emptyState = document.querySelector('.shows-empty');
+    expect(emptyState).not.toBeNull();
+    expect(emptyState.textContent).toContain('Select at least one tag');
+
+    checkAllLink?.dispatchEvent(
+      new dom.window.MouseEvent('click', { bubbles: true, cancelable: true })
+    );
+    await flush();
+
+    const refreshedCheckboxes = document.querySelectorAll('.show-genre-checkbox input[type="checkbox"]');
+    expect(Array.from(refreshedCheckboxes).every(box => box.checked)).toBe(true);
+
+    const hiddenGenreName = tagHideButtons[0].closest('.show-genre-checkbox')?.dataset.genre || '';
+    tagHideButtons[0].click();
+    await flush();
+
+    const filtersAfterHide = document.querySelector('.shows-results__filters');
+    expect(filtersAfterHide).not.toBeNull();
+    const remainingTags = filtersAfterHide.querySelectorAll('.show-genre-checkbox');
+    expect(remainingTags.length).toBeLessThan(checkboxes.length);
+    const hiddenGenresSaved = JSON.parse(localStorage.getItem('shows.hiddenGenres') || '[]');
+    if (hiddenGenreName) {
+      expect(hiddenGenresSaved).toContain(hiddenGenreName.toLowerCase());
+    }
+  });
+
+  it('shows cached events without fetching until refreshed', async () => {
+    await setup();
+
+    localStorage.setItem(
+      'shows.cachedEvents',
+      JSON.stringify({
+        events: [
+          {
+            name: { text: 'Cached Show' },
+            start: { local: getFutureIso(7) },
+            venue: { name: 'Cached Venue', address: { city: 'Austin', region: 'TX' } },
+            summary: 'Previously fetched event.'
+          }
+        ],
+        fetchedAt: 1700000000000
+      })
+    );
+
+    await initShowsPanel();
+    await flush();
+
+    const showCallsAfterInit = fetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/api/shows')
+    );
+    expect(showCallsAfterInit.length).toBe(0);
+    const cards = document.querySelectorAll('.show-card');
+    expect(cards.length).toBe(1);
+    expect(cards[0].textContent).toContain('Cached Show');
+
+    const summary = document.querySelector('.shows-list-summary');
+    expect(summary).not.toBeNull();
+    expect(summary?.textContent).toContain('Distance:');
+    expect(summary?.textContent).toContain('Showing 1 cached event');
+
+    fetch.mockClear();
+    fetch.mockImplementation(url => {
+      if (typeof url === 'string' && url.includes('/api/shows')) {
+        return Promise.resolve(
+          createFetchResponse({
+            events: [],
+            segments: [],
+            cached: false
+          })
+        );
+      }
+      return Promise.resolve(createFetchResponse());
+    });
+
+    const refreshBtn = document.getElementById('eventbriteRefreshBtn');
+    refreshBtn.click();
+
+    await flush();
+    await flush();
+    await flush();
+
+    const showCallsAfterRefresh = fetch.mock.calls.filter(([url]) => {
+      return typeof url === 'string' && url.includes('/api/shows');
+    });
+    expect(showCallsAfterRefresh.length).toBeGreaterThanOrEqual(1);
   });
 });
