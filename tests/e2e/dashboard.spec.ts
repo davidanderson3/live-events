@@ -7,7 +7,7 @@ let server: ReturnType<typeof spawn>;
 // Start the static server before the suite and stop afterwards
 // The server simply serves the project at http://localhost:3002
 
-const serverPath = path.join(__dirname, '../../backend/server.js');
+const serverPath = path.join(__dirname, '../../functions/backend/server.js');
 
 test.beforeAll(async () => {
   server = spawn('node', [serverPath], { stdio: 'inherit' });

@@ -310,6 +310,14 @@ function normalizeEndpoint(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function buildShowsEndpointFromBase(base) {
+  if (!base) return '';
+  const trimmed = normalizeEndpoint(base).replace(/\/$/, '');
+  if (!trimmed) return '';
+  const withoutApiSuffix = trimmed.replace(/\/api$/i, '');
+  return `${withoutApiSuffix}/api/shows`;
+}
+
 function isRemoteEndpoint(endpoint) {
   if (!endpoint) return false;
   if (/cloudfunctions\.net/i.test(endpoint)) {
@@ -331,9 +339,6 @@ function resolveShowsEndpoint(baseUrl) {
   const override =
     (typeof window !== 'undefined' && 'showsEndpoint' in window
       ? normalizeEndpoint(window.showsEndpoint)
-      : '') ||
-    (typeof window !== 'undefined' && 'eventbriteEndpoint' in window
-      ? normalizeEndpoint(window.eventbriteEndpoint)
       : '') ||
     '';
 
@@ -378,7 +383,7 @@ function resolveShowsEndpoint(baseUrl) {
     trimmedBase === locationOrigin &&
     hasWindowPort
   ) {
-    const endpoint = `${trimmedBase}/api/shows`;
+    const endpoint = buildShowsEndpointFromBase(trimmedBase);
     return { endpoint, isRemote: isRemoteEndpoint(endpoint) };
   }
 
@@ -406,7 +411,7 @@ function resolveShowsEndpoint(baseUrl) {
     return { endpoint, isRemote: true };
   }
 
-  const endpoint = `${trimmedBase}/api/shows`;
+  const endpoint = buildShowsEndpointFromBase(trimmedBase);
   return { endpoint, isRemote: isRemoteEndpoint(endpoint) };
 }
 
@@ -417,9 +422,9 @@ function appendQuery(endpoint, params) {
 }
 
 function cacheElements() {
-  elements.status = document.getElementById('eventbriteStatus');
-  elements.list = document.getElementById('eventbriteList');
-  elements.refreshBtn = document.getElementById('eventbriteRefreshBtn');
+  elements.status = document.getElementById('showsStatus');
+  elements.list = document.getElementById('showsList');
+  elements.refreshBtn = document.getElementById('showsRefreshBtn');
   elements.tabAll = document.getElementById('showsTabAll');
   elements.tabSaved = document.getElementById('showsTabSaved');
   elements.distanceSelect = document.getElementById('showsDistanceSelect');

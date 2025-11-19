@@ -22,6 +22,8 @@ try {
 
 const app = express();
 
+app.use(cors());
+
 const PORT = Number(process.env.PORT) || 3003;
 const HOST = process.env.HOST || (process.env.VITEST ? '127.0.0.1' : '0.0.0.0');
 const YOUTUBE_SEARCH_BASE_URL = 'https://www.googleapis.com/youtube/v3/search';
@@ -313,12 +315,12 @@ const plaidClient = (() => {
 })();
 
 // Serve static files (like index.html, style.css, script.js)
-// Allow API routes (like /api/eventbrite) to continue past the static middleware
+// Allow API routes (like `/api/shows`) to continue past the static middleware
 // when no matching asset is found. Express 5 changes the default `fallthrough`
 // behavior, so we explicitly enable it to avoid returning a 404 before our API
 // handlers get a chance to run.
 app.use(
-  express.static(path.resolve(__dirname, '../'), {
+  express.static(path.resolve(__dirname, '../../'), {
     fallthrough: true
   })
 );
@@ -385,12 +387,7 @@ app.get('/api/spotify-client-id', (req, res) => {
   if (!clientId) {
     return res.status(500).json({ error: 'missing' });
   }
-  const hasEventbriteToken = Boolean(
-    process.env.EVENTBRITE_TOKEN ||
-    process.env.EVENTBRITE_API_TOKEN ||
-    process.env.EVENTBRITE_OAUTH_TOKEN
-  );
-  res.json({ clientId, hasEventbriteToken });
+  res.json({ clientId });
 });
 
 
@@ -862,7 +859,7 @@ app.get('/api/youtube/search', async (req, res) => {
 
 // --- GeoLayers game endpoints ---
 const layerOrder = ['rivers','lakes','elevation','roads','outline','cities','label'];
-const countriesPath = path.join(__dirname, '../geolayers-game/public/countries.json');
+const countriesPath = path.join(__dirname, '../../geolayers-game/public/countries.json');
 let countryData = [];
 try {
   countryData = JSON.parse(fs.readFileSync(countriesPath, 'utf8'));
@@ -916,7 +913,7 @@ LIMIT 10`;
 }
 
 async function ensureCitiesForCountry(code) {
-  const dir = path.join(__dirname, '../geolayers-game/public/data', code);
+  const dir = path.join(__dirname, '../../geolayers-game/public/data', code);
   const file = path.join(dir, 'cities.geojson');
   if (!fs.existsSync(file)) {
     const geo = await fetchCitiesForCountry(code);
@@ -966,7 +963,7 @@ app.get('/countries', (req, res) => {
 
 app.get('/layer/:loc/:name', async (req, res) => {
   const { loc, name } = req.params;
-  const file = path.join(__dirname, '../geolayers-game/public/data', loc, `${name}.geojson`);
+  const file = path.join(__dirname, '../../geolayers-game/public/data', loc, `${name}.geojson`);
   if (name === 'cities' && !fs.existsSync(file)) {
     try {
       await ensureCitiesForCountry(loc);

@@ -314,7 +314,7 @@ button {
   border-radius: 6px;
   font-weight: 600;
   cursor: pointer;
-  margin-top: 10px;
+  margin-top: 0px;
   transition: background 0.2s ease;
 }
 
@@ -574,7 +574,7 @@ button:hover {
   position: relative;
 }
 
-#eventbriteList {
+#showsList {
   width: 100%;
 }
 
@@ -1046,7 +1046,7 @@ button:hover {
 .show-genre-checkboxes {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.01rem;
 }
 
 .show-genre-checkbox {
@@ -1054,7 +1054,7 @@ button:hover {
   grid-template-columns: min-content 1fr auto min-content;
   align-items: center;
   column-gap: 0.4rem;
-  padding: 0.25rem 0.4rem;
+  padding: 0.08rem 0.35rem;
   border-radius: 12px;
   border: 1px solid transparent;
   transition: background 0.2s ease, border-color 0.2s ease;
@@ -1071,6 +1071,7 @@ button:hover {
   height: 1rem;
   accent-color: #2f7f70;
   margin: 0;
+  align-self: center;
 }
 
 .show-genre-checkbox__label {
@@ -1103,6 +1104,9 @@ button:hover {
   font-size: 0.95rem;
   transition: color 0.2s ease;
   justify-self: end;
+  align-self: center;
+  transform: translateY(-0.08rem);
+  margin-top: 0;
 }
 
 .show-genre-hide-btn:hover {
@@ -1262,6 +1266,7 @@ button:hover {
   overflow: hidden;
   border: 1px solid #e1ebe4;
   background: #f3f8f4;
+  margin: 0.2rem 0;
 }
 
 .show-card__gallery-item img {
@@ -1334,7 +1339,7 @@ button:hover {
   background: linear-gradient(135deg, #2f7f70, #3fa284);
   color: #ffffff;
   transition: filter 0.2s ease, transform 0.2s ease;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   text-decoration: none;

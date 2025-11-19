@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import appOrServer from '../backend/server.js';
+import appOrServer from '../functions/backend/server.js';
 
 describe('sample descriptions', () => {
   it('loads and saves via Firestore', async () => {

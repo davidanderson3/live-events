@@ -54,12 +54,12 @@
             <div class="shows-toolbar__shortcut-group" role="group" aria-label="Quick action links">
               <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="0">Today</a>
               <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="7">Next 7 days</a>
-              <a href="#" id="eventbriteRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
+              <a href="#" id="showsRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
             </div>
           </div>
-          </div>
-          <div id="eventbriteList" class="decision-container"></div>
         </div>
+        <div id="showsList" class="decision-container"></div>
+      </div>
       </div>
   </section>
 
@@ -102,9 +102,22 @@
   </div>
   <script src="https://apis.google.com/js/api.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="text/javascript">
+    (() => {
+      if (typeof window === 'undefined' || typeof window.location === 'undefined') return;
+      const { protocol, host, origin } = window.location;
+      if (!protocol || !host) return;
+      const scheme = String(protocol).toLowerCase();
+      if (!scheme.startsWith('http')) return;
+      const normalizedOrigin = origin || `${scheme}//${host}`;
+      if (!normalizedOrigin) return;
+      const base = normalizedOrigin.replace(/\/$/, '');
+      window.apiBaseUrl = base;
+      window.showsEndpoint = `${base}/api/shows`;
+    })();
+  </script>
   <script type="module" src="js/main.js"></script>
   <script type="module" src="js/shows.js"></script>
-  <script type="module" src="js/weather.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </body>
 </html>

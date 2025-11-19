@@ -1,4 +1,4 @@
-const DEFAULT_REMOTE_API_BASE = 'https://narrow-down.web.app/api';
+const DEFAULT_REMOTE_API_BASE = 'https://live-events-6f3e5.web.app/api';
 
 function isLocalHost(hostname) {
   if (!hostname) return false;
@@ -31,11 +31,15 @@ function resolveDefaultApiBase() {
     return origin || '';
   }
 
+  if (!origin) {
+    return DEFAULT_REMOTE_API_BASE;
+  }
+
   if (!hostname) {
     return DEFAULT_REMOTE_API_BASE;
   }
 
-  return DEFAULT_REMOTE_API_BASE;
+  return `${origin}/api`;
 }
 
 export const API_BASE_URL =

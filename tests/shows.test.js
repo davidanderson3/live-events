@@ -72,11 +72,11 @@ describe('initShowsPanel (Ticketmaster)', () => {
           <div class="shows-toolbar__shortcut-group" role="group" aria-label="Quick action links">
             <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="0">Today</a>
             <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="7">Next 7 days</a>
-            <a href="#" id="eventbriteRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
+            <a href="#" id="showsRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
           </div>
         </div>
       </div>
-      <div id="eventbriteList" class="decision-container"></div>
+      <div id="showsList" class="decision-container"></div>
     `, { url: 'http://localhost/' });
 
     global.window = dom.window;
@@ -159,10 +159,6 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(summary?.textContent).toContain('Through');
     expect(summary?.textContent).toContain('Showing 1 upcoming event');
 
-    const debugContainer = document.getElementById('eventbriteDebug');
-    const debugOutput = document.getElementById('eventbriteDebugOutput');
-    expect(debugContainer).toBeNull();
-    expect(debugOutput).toBeNull();
   });
 
   it('routes requests through the remote proxy when no API base override is provided', async () => {
@@ -175,7 +171,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const [showsRequest] = fetch.mock.calls[0];
-    expect(showsRequest.startsWith('https://narrow-down.web.app/api/shows')).toBe(true);
+    expect(showsRequest.startsWith('https://live-events-6f3e5.web.app/api/shows')).toBe(true);
   });
 
   it('shows a helpful message when geolocation fails', async () => {
@@ -190,8 +186,6 @@ describe('initShowsPanel (Ticketmaster)', () => {
     await flush();
 
     expect(fetch).not.toHaveBeenCalled();
-    expect(document.getElementById('eventbriteStatus')).toBeNull();
-    expect(document.getElementById('eventbriteDebug')).toBeNull();
   });
 
   it('renders genre checkboxes with bulk actions and persistent hide control', async () => {
@@ -309,7 +303,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
       return Promise.resolve(createFetchResponse());
     });
 
-    const refreshBtn = document.getElementById('eventbriteRefreshBtn');
+    const refreshBtn = document.getElementById('showsRefreshBtn');
     refreshBtn.click();
 
     await flush();
