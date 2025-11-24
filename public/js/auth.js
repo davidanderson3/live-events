@@ -12,13 +12,13 @@ import { clearDecisionsCache, clearGoalOrderCache } from './cache.js';
 export let currentUser = null;
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBbet_bmwm8h8G5CqvmzrdAnc3AO-0IKa8",
-  authDomain: "decision-maker-4e1d3.firebaseapp.com",
-  projectId: "decision-maker-4e1d3",
-  storageBucket: "decision-maker-4e1d3.firebasestorage.app",
-  messagingSenderId: "727689864651",
-  appId: "1:727689864651:web:0100c3894790b8c188c24e",
-  measurementId: "G-7EJVQN0WT3"
+  apiKey: "AIzaSyCbQs7xqrq-iFwwn_p65MyQ5etMODVSTh4",
+  authDomain: "live-events-6f3e5.firebaseapp.com",
+  projectId: "live-events-6f3e5",
+  storageBucket: "live-events-6f3e5.firebasestorage.app",
+  messagingSenderId: "143474582542",
+  appId: "1:143474582542:web:592df709f9d9bdafbb085f",
+  measurementId: "G-YF3ZV2LL6X"
 };
 
 firebase.initializeApp(firebaseConfig);
@@ -123,4 +123,3 @@ export function initAuth({ loginBtn, logoutBtn, userEmail, bottomLoginBtn, botto
     onLogin(user);
   });
 }
-

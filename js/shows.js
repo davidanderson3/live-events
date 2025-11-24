@@ -29,6 +29,7 @@ const elements = {
   refreshBtn: null,
   tabAll: null,
   tabSaved: null,
+  toolbarFilters: null,
   distanceSelect: null,
   dateInput: null,
   dateShortcuts: null
@@ -42,7 +43,7 @@ let hiddenGenres = new Set();
 let hiddenEventIds = new Set();
 let savedEvents = new Map();
 let currentView = 'all';
-const IGNORED_GENRE_NAMES = new Set(['undefined', 'music']);
+const IGNORED_GENRE_NAMES = new Set(['undefined', 'music', 'event style']);
 let warnedAuthUnavailable = false;
 let searchPrefs = {
   radius: DEFAULT_RADIUS_MILES,
@@ -427,12 +428,21 @@ function cacheElements() {
   elements.refreshBtn = document.getElementById('showsRefreshBtn');
   elements.tabAll = document.getElementById('showsTabAll');
   elements.tabSaved = document.getElementById('showsTabSaved');
+  elements.toolbarFilters = document.querySelector('.shows-toolbar__actions');
   elements.distanceSelect = document.getElementById('showsDistanceSelect');
   elements.dateInput = document.getElementById('showsDateInput');
   elements.dateShortcuts = document.querySelectorAll('.shows-date-chip');
   if (elements.refreshBtn && !elements.refreshBtn.dataset.defaultLabel) {
     elements.refreshBtn.dataset.defaultLabel =
       elements.refreshBtn.textContent || 'Check for new events';
+  }
+}
+
+function updateFilterVisibility(view) {
+  const hideFilters = view === 'saved';
+  if (elements.toolbarFilters) {
+    elements.toolbarFilters.style.display = hideFilters ? 'none' : '';
+    elements.toolbarFilters.setAttribute('aria-hidden', hideFilters ? 'true' : 'false');
   }
 }
 
@@ -1012,7 +1022,7 @@ function createEventCard(event, options = {}) {
   const hideBtn = document.createElement('button');
   hideBtn.type = 'button';
   hideBtn.className = 'show-card__button show-card__button--secondary show-card__button--danger';
-  hideBtn.textContent = 'Hide forever';
+  hideBtn.textContent = 'Hide';
   hideBtn.addEventListener('click', () => {
     hiddenEventIds.add(eventId);
     persistHiddenEventIds();
@@ -1256,6 +1266,7 @@ function renderEvents(events, options = {}) {
   lastEventsSource = source;
   renderOptions.source = source;
   updateViewTabs(view);
+  updateFilterVisibility(view);
 
   clearList();
   setLoading(true);
@@ -1285,7 +1296,7 @@ function renderEvents(events, options = {}) {
       const emptyState = document.createElement('div');
       emptyState.className = 'shows-empty';
       emptyState.textContent =
-        'You have not saved any shows yet. Tap Save on a card to keep it here.';
+        'You have not saved any shows yet. Tap Save on an event to save it here.';
       elements.list.appendChild(emptyState);
     } else {
       setStatus('No events found.');
@@ -1312,18 +1323,21 @@ function renderEvents(events, options = {}) {
   listColumn.className = 'shows-results__list';
   layout.appendChild(listColumn);
 
-  const filtersPanel = renderGenreFilters(visibleEvents, renderOptions);
+  const shouldRenderFilters = view !== 'saved';
+  const filtersPanel = shouldRenderFilters ? renderGenreFilters(visibleEvents, renderOptions) : null;
   if (filtersPanel) {
     layout.appendChild(filtersPanel);
   }
 
-  const filteredEvents = visibleEvents.filter(event => {
-    if (activeGenreFilters === null) return true;
-    if (activeGenreFilters.size === 0) return false;
-    const eventGenres = getEventGenres(event);
-    if (!eventGenres.length) return false;
-    return eventGenres.some(genre => activeGenreFilters.has(genre));
-  });
+  const filteredEvents = shouldRenderFilters
+    ? visibleEvents.filter(event => {
+        if (activeGenreFilters === null) return true;
+        if (activeGenreFilters.size === 0) return false;
+        const eventGenres = getEventGenres(event);
+        if (!eventGenres.length) return false;
+        return eventGenres.some(genre => activeGenreFilters.has(genre));
+      })
+    : visibleEvents;
 
   setLoading(false);
 

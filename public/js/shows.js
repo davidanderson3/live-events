@@ -42,7 +42,7 @@ let hiddenGenres = new Set();
 let hiddenEventIds = new Set();
 let savedEvents = new Map();
 let currentView = 'all';
-const IGNORED_GENRE_NAMES = new Set(['undefined', 'music']);
+const IGNORED_GENRE_NAMES = new Set(['undefined', 'music', 'event style']);
 let warnedAuthUnavailable = false;
 let searchPrefs = {
   radius: DEFAULT_RADIUS_MILES,
@@ -1012,7 +1012,7 @@ function createEventCard(event, options = {}) {
   const hideBtn = document.createElement('button');
   hideBtn.type = 'button';
   hideBtn.className = 'show-card__button show-card__button--secondary show-card__button--danger';
-  hideBtn.textContent = 'Hide forever';
+  hideBtn.textContent = 'Hide';
   hideBtn.addEventListener('click', () => {
     hiddenEventIds.add(eventId);
     persistHiddenEventIds();
@@ -1285,7 +1285,7 @@ function renderEvents(events, options = {}) {
       const emptyState = document.createElement('div');
       emptyState.className = 'shows-empty';
       emptyState.textContent =
-        'You have not saved any shows yet. Tap Save on a card to keep it here.';
+        'You have not saved any shows yet. Tap Save on an event to save it here.';
       elements.list.appendChild(emptyState);
     } else {
       setStatus('No events found.');
