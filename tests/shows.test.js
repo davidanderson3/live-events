@@ -25,6 +25,25 @@ const createFetchResponse = (payload = { events: [], segments: [] }) => ({
   text: async () => JSON.stringify(payload),
   json: async () => payload
 });
+const isShowsRequest = url => typeof url === 'string' && url.includes('/api/shows');
+const isReverseGeocodeRequest = url =>
+  typeof url === 'string' && url.includes('nominatim.openstreetmap.org');
+const createReverseGeocodeResponse = () =>
+  createFetchResponse({
+    address: { city: 'Austin', state: 'TX' },
+    display_name: 'Austin, TX'
+  });
+const mockFetchForShows = showsPayload => {
+  fetch.mockImplementation(url => {
+    if (isShowsRequest(url)) {
+      return Promise.resolve(createFetchResponse(showsPayload));
+    }
+    if (isReverseGeocodeRequest(url)) {
+      return Promise.resolve(createReverseGeocodeResponse());
+    }
+    return Promise.resolve(createFetchResponse());
+  });
+};
 const getFutureIso = (daysAhead = 1) => {
   const target = new Date(Date.now() + Number(daysAhead) * 24 * 60 * 60 * 1000);
   return target.toISOString();
@@ -139,14 +158,15 @@ describe('initShowsPanel (Ticketmaster)', () => {
       cached: false
     };
 
-    fetch.mockResolvedValueOnce(createFetchResponse(liveShowResponse));
+    mockFetchForShows(liveShowResponse);
 
     await initShowsPanel();
     await flush();
     await flush();
 
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const [showsRequest] = fetch.mock.calls[0];
+    const showCalls = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
+    expect(showCalls.length).toBe(1);
+    const [showsRequest] = showCalls[0];
     expect(showsRequest).toContain('/api/shows');
     expect(showsRequest).toContain('lat=30.2672');
     expect(showsRequest).toContain('lon=-97.7431');
@@ -172,47 +192,49 @@ describe('initShowsPanel (Ticketmaster)', () => {
   it('routes requests through the remote proxy when no API base override is provided', async () => {
     await setup({ apiBaseUrl: null });
 
+    mockFetchForShows({ events: [], segments: [], cached: false });
+
     await initShowsPanel();
 
     await flush();
     await flush();
 
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const [showsRequest] = fetch.mock.calls[0];
+    const showCalls = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
+    expect(showCalls.length).toBe(1);
+    const [showsRequest] = showCalls[0];
     expect(showsRequest.startsWith('https://live-events-6f3e5.web.app/api/shows')).toBe(true);
   });
 
   it('shows a helpful message when geolocation fails', async () => {
     await setup();
 
-    navigator.geolocation.getCurrentPosition.mockImplementationOnce((success, error) => {
+    navigator.geolocation.getCurrentPosition.mockImplementation((success, error) => {
       error({ code: 1, PERMISSION_DENIED: 1, message: 'Location access was denied.' });
     });
 
-    await initShowsPanel();
+    await expect(initShowsPanel()).rejects.toThrow(
+      'Location access was denied. Enable location sharing and try again.'
+    );
 
-    await flush();
-
-    expect(fetch).not.toHaveBeenCalled();
+    const showCalls = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
+    expect(showCalls.length).toBe(0);
   });
 
   it('renders genre checkboxes with bulk actions and persistent hide control', async () => {
     await setup();
 
-    fetch.mockResolvedValueOnce(
-      createFetchResponse({
-        events: [
-          {
-            name: { text: 'Genre Show' },
-            start: { local: getFutureIso(5) },
-            venue: { name: 'Side Stage', address: { city: 'Austin', region: 'TX' } },
-            genres: ['Rock', 'Indie Rock']
-          }
-        ],
-        segments: [],
-        cached: false
-      })
-    );
+    mockFetchForShows({
+      events: [
+        {
+          name: { text: 'Genre Show' },
+          start: { local: getFutureIso(5) },
+          venue: { name: 'Side Stage', address: { city: 'Austin', region: 'TX' } },
+          genres: ['Rock', 'Indie Rock']
+        }
+      ],
+      segments: [],
+      cached: false
+    });
 
     await initShowsPanel();
     await flush();
@@ -239,7 +261,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
 
     const emptyState = document.querySelector('.shows-empty');
     expect(emptyState).not.toBeNull();
-    expect(emptyState.textContent).toContain('Select at least one tag');
+    expect(emptyState.textContent).toContain('There are no new events that meet your criteria.');
 
     checkAllLink?.dispatchEvent(
       new dom.window.MouseEvent('click', { bubbles: true, cancelable: true })
@@ -263,7 +285,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
     }
   });
 
-  it('shows cached events without fetching until refreshed', async () => {
+  it('shows cached events while refreshing on load', async () => {
     await setup();
 
     localStorage.setItem(
@@ -281,13 +303,30 @@ describe('initShowsPanel (Ticketmaster)', () => {
       })
     );
 
-    await initShowsPanel();
-    await flush();
+    const pending = [];
+    let showsCallResolve;
+    const showsCallPromise = new Promise(resolve => {
+      showsCallResolve = resolve;
+    });
+    fetch.mockImplementation(url => {
+      if (isShowsRequest(url)) {
+        if (showsCallResolve) {
+          showsCallResolve();
+          showsCallResolve = null;
+        }
+        return new Promise(resolve => pending.push(resolve));
+      }
+      if (isReverseGeocodeRequest(url)) {
+        return Promise.resolve(createReverseGeocodeResponse());
+      }
+      return Promise.resolve(createFetchResponse());
+    });
 
-    const showCallsAfterInit = fetch.mock.calls.filter(
-      ([url]) => typeof url === 'string' && url.includes('/api/shows')
-    );
-    expect(showCallsAfterInit.length).toBe(0);
+    const initPromise = initShowsPanel();
+    await showsCallPromise;
+
+    const showCallsAfterInit = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
+    expect(showCallsAfterInit.length).toBe(1);
     const cards = document.querySelectorAll('.show-card');
     expect(cards.length).toBe(1);
     expect(cards[0].textContent).toContain('Cached Show');
@@ -297,30 +336,39 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(summary?.textContent).toContain('Distance:');
     expect(summary?.textContent).toContain('Showing 1 cached event');
 
-    fetch.mockClear();
-    fetch.mockImplementation(url => {
-      if (typeof url === 'string' && url.includes('/api/shows')) {
-        return Promise.resolve(
-          createFetchResponse({
-            events: [],
-            segments: [],
-            cached: false
-          })
-        );
-      }
-      return Promise.resolve(createFetchResponse());
-    });
+    pending.shift()?.(
+      createFetchResponse({
+        events: [],
+        segments: [],
+        cached: false
+      })
+    );
+    await initPromise;
+    await flush();
 
     const refreshBtn = document.getElementById('showsRefreshBtn');
     refreshBtn.click();
 
-    await flush();
-    await flush();
-    await flush();
+    const sawRefreshCall = await (async () => {
+      for (let i = 0; i < 5; i += 1) {
+      const count = fetch.mock.calls.filter(([url]) => isShowsRequest(url)).length;
+        if (count >= 2) {
+          return true;
+        }
+        await flush();
+      }
+      return false;
+    })();
 
-    const showCallsAfterRefresh = fetch.mock.calls.filter(([url]) => {
-      return typeof url === 'string' && url.includes('/api/shows');
-    });
-    expect(showCallsAfterRefresh.length).toBeGreaterThanOrEqual(1);
+    const showCallsAfterRefresh = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
+    expect(sawRefreshCall).toBe(true);
+    expect(showCallsAfterRefresh.length).toBeGreaterThanOrEqual(2);
+    pending.shift()?.(
+      createFetchResponse({
+        events: [],
+        segments: [],
+        cached: false
+      })
+    );
   });
 });
