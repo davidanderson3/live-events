@@ -33,17 +33,49 @@
             <button type="button" id="showsTabSaved" class="shows-tab-btn" data-view="saved" aria-selected="false">Saved</button>
           </div>
           <div class="shows-toolbar__actions">
-            <div class="shows-toolbar__control shows-toolbar__control--distance">
-              <label for="showsDistanceSelect">Distance</label>
-              <select id="showsDistanceSelect">
-                <option value="10">10 mi</option>
-                <option value="25">25 mi</option>
-                <option value="50">50 mi</option>
-                <option value="75">75 mi</option>
-                <option value="100">100 mi</option>
-                <option value="125">125 mi</option>
-                <option value="150">150 mi</option>
-              </select>
+            <div class="shows-toolbar__control shows-toolbar__control--distance-location">
+              <div class="shows-distance-group">
+                <select id="showsDistanceSelect">
+                  <option value="10">10 mi</option>
+                  <option value="25">25 mi</option>
+                  <option value="50">50 mi</option>
+                  <option value="75">75 mi</option>
+                  <option value="100">100 mi</option>
+                  <option value="125">125 mi</option>
+                  <option value="150">150 mi</option>
+                </select>
+                <div class="shows-location-inline">
+                  <span id="showsLocationText" class="shows-location-text">&nbsp;</span>
+                  <input
+                    type="search"
+                    id="showsLocationInput"
+                    class="shows-location-input"
+                    placeholder="City, address, or landmark"
+                    autocomplete="off"
+                    hidden
+                  />
+                  <button
+                    type="button"
+                    id="showsLocationEditButton"
+                    class="shows-location-edit-btn"
+                    aria-label="Edit location"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 17.25V21h3.75l11.06-11.06-3.75-3.75L5 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    id="showsLocationButton"
+                    class="shows-location-btn"
+                    aria-label="Use my current location"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 112.5-2.5A2.5 2.5 0 0112 11.5z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="shows-toolbar__control shows-toolbar__control--date">
               <label for="showsDateInput">Through</label>
@@ -56,6 +88,19 @@
               <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="7">Next 7 days</a>
               <a href="#" id="showsRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
             </div>
+          </div>
+        </div>
+        <div
+          id="showsStatus"
+          class="shows-status"
+          role="status"
+          aria-live="polite"
+          hidden
+        >
+          <div class="shows-status__live-bars" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
           </div>
         </div>
         <div id="showsList" class="decision-container"></div>

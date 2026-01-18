@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Cache Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body class="cache-admin-page">
+  <main class="cache-admin">
+    <header class="cache-admin__header">
+      <div>
+        <p class="cache-admin__eyebrow">Local admin</p>
+        <h1>Cache overview</h1>
+        <p class="cache-admin__intro">
+          Inspect Cache Storage and application-level persistence so you can see what is stored,
+          how fresh it is, and the policies that control trimming.
+        </p>
+      </div>
+      <div class="cache-admin__actions">
+        <button type="button" id="cacheRefreshBtn">Refresh stats</button>
+      </div>
+    </header>
+
+    <div id="cacheStatus" class="cache-admin__status" aria-live="polite">Loading cache stats…</div>
+
+    <section class="cache-admin__section">
+      <div class="cache-admin__section-header">
+        <div>
+          <h2>Cache Storage</h2>
+          <p>Service worker caches created during install and runtime.</p>
+        </div>
+        <div class="cache-admin__section-meta">
+          <span>Service Worker</span>
+          <span data-max-entries>Network first · Dynamic limit 60 entries</span>
+        </div>
+      </div>
+      <div id="cacheSummary" class="cache-admin__summary-grid"></div>
+      <div id="cacheList" class="cache-admin__cache-list"></div>
+    </section>
+
+    <section class="cache-admin__section">
+      <div class="cache-admin__section-header">
+        <div>
+          <h2>App Persistence</h2>
+          <p>LocalStorage keys used by the shows view.</p>
+        </div>
+        <div class="cache-admin__section-meta">
+          <span>LocalStorage</span>
+          <span>TTL ~6 hours for the shows cache</span>
+        </div>
+      </div>
+      <div id="localCacheStats" class="cache-admin__local-grid"></div>
+    </section>
+
+    <section class="cache-admin__section cache-admin__section--note">
+      <h3>How caching works</h3>
+      <ul>
+        <li>
+          <strong>Static cache:</strong> assets listed in the service worker install step are
+          pre-fetched and served with a network-first strategy on navigation so you always see the
+          latest UI bundle.
+        </li>
+        <li>
+          <strong>Dynamic cache:</strong> every non-precache GET request also uses
+          network-first and is trimmed back to 60 entries so it stays bounded.
+        </li>
+        <li>
+          <strong>Shows cache:</strong> the latest events response is stored in LocalStorage under
+          <code>shows.cachedEvents</code> and only used while it is under 6 hours old.
+        </li>
+        <li>
+          Other LocalStorage keys remember saved events, hidden genres, edits, and search prefs.
+        </li>
+      </ul>
+    </section>
+  </main>
+
+  <script type="module" src="js/cacheAdmin.js"></script>
+</body>
+
+</html>

@@ -4,3 +4,4 @@ firebase-debug.log
 functions/node_modules
 .runtimeconfig.json
 .runtimeconfig.json
+.DS_Store

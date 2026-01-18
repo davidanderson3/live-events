@@ -13,6 +13,7 @@ const SHOWS_HIDDEN_GENRES_KEY = 'shows.hiddenGenres';
 const SHOWS_SAVED_EVENTS_KEY = 'shows.savedEvents';
 const SHOWS_HIDDEN_EVENTS_KEY = 'shows.hiddenEventIds';
 const SHOWS_SEARCH_PREFS_KEY = 'shows.searchPrefs';
+const SHOWS_LOCATION_KEY = 'shows.location';
 const TARGET_IMAGE_RATIO = '4_3';
 const TARGET_IMAGE_WIDTH = 305;
 const TARGET_IMAGE_HEIGHT = 225;
@@ -22,7 +23,7 @@ const MAX_LOOKAHEAD_DAYS = 60;
 const MIN_LOOKAHEAD_DAYS = 0;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const AVAILABLE_RADIUS_OPTIONS = [10, 25, 50, 75, 100, 125, 150];
-const CACHE_TTL_MS = 8 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const IS_TEST = typeof process !== 'undefined' && (process.env?.VITEST || process.env?.NODE_ENV === 'test');
 
 const elements = {
@@ -34,7 +35,11 @@ const elements = {
   toolbarFilters: null,
   distanceSelect: null,
   dateInput: null,
-  dateShortcuts: null
+  dateShortcuts: null,
+  locationInput: null,
+  locationButton: null,
+  locationText: null,
+  locationEditButton: null
 };
 
 let isDiscovering = false;
@@ -54,8 +59,16 @@ let searchPrefs = {
   radius: DEFAULT_RADIUS_MILES,
   days: DEFAULT_LOOKAHEAD_DAYS
 };
+let hasPersistedSearchPrefs = false;
+let preferredLocation = null;
+let isEditingLocation = false;
 let lastEventsSource = 'remote';
 let savedCalendarFilter = null;
+let hasAttemptedInitialLocation = false;
+let pendingEmptyStream = false;
+let pendingEmptyStreamRenderers = [];
+let flashEmptyStreamOnNextShow = false;
+const EMPTY_STREAM_MESSAGE = 'There are no new events that meet your criteria.';
 
 function cloneEvent(event) {
   try {
@@ -305,18 +318,13 @@ function initDatePickerControl() {
       syncDatePickerValue(searchPrefs.days);
       return;
     }
-    const isExpandingWindow = nextDays > searchPrefs.days;
     if (nextDays === searchPrefs.days) {
       syncDatePickerValue(searchPrefs.days);
       return;
     }
     searchPrefs.days = nextDays;
     persistSearchPrefs();
-    if (isExpandingWindow) {
-      discoverNewEvents({ radius: searchPrefs.radius, days: searchPrefs.days, forceRefresh: true });
-    } else {
-      renderWithPrefsAndMaybeRefresh();
-    }
+    renderWithPrefsAndMaybeRefresh();
   });
 
   if (elements.dateShortcuts) {
@@ -328,15 +336,13 @@ function initDatePickerControl() {
           return;
         }
         const nextDays = clampDays(shortcutDays);
-        const isExpandingWindow = nextDays > searchPrefs.days;
+        if (nextDays === searchPrefs.days) {
+          return;
+        }
         searchPrefs.days = nextDays;
         persistSearchPrefs();
         syncDatePickerValue(searchPrefs.days);
-        if (isExpandingWindow) {
-          discoverNewEvents({ radius: searchPrefs.radius, days: searchPrefs.days, forceRefresh: true });
-        } else {
-          renderWithPrefsAndMaybeRefresh();
-        }
+        renderWithPrefsAndMaybeRefresh();
       });
     });
   }
@@ -345,21 +351,34 @@ function initDatePickerControl() {
 function loadSearchPrefs() {
   const storage = getStorage();
   if (!storage) {
-    return { radius: DEFAULT_RADIUS_MILES, days: DEFAULT_LOOKAHEAD_DAYS };
+    return {
+      radius: DEFAULT_RADIUS_MILES,
+      days: DEFAULT_LOOKAHEAD_DAYS,
+      persisted: false
+    };
   }
   try {
     const raw = storage.getItem(SHOWS_SEARCH_PREFS_KEY);
     if (!raw) {
-      return { radius: DEFAULT_RADIUS_MILES, days: DEFAULT_LOOKAHEAD_DAYS };
+      return {
+        radius: DEFAULT_RADIUS_MILES,
+        days: DEFAULT_LOOKAHEAD_DAYS,
+        persisted: false
+      };
     }
     const parsed = JSON.parse(raw);
     return {
       radius: clampRadius(parsed?.radius),
-      days: clampDays(parsed?.days)
+      days: clampDays(parsed?.days),
+      persisted: true
     };
   } catch (err) {
     console.warn('Unable to load shows search preferences', err);
-    return { radius: DEFAULT_RADIUS_MILES, days: DEFAULT_LOOKAHEAD_DAYS };
+    return {
+      radius: DEFAULT_RADIUS_MILES,
+      days: DEFAULT_LOOKAHEAD_DAYS,
+      persisted: false
+    };
   }
 }
 
@@ -374,6 +393,8 @@ function persistSearchPrefs() {
         days: clampDays(searchPrefs.days)
       })
     );
+    updateUrlWithPrefs(searchPrefs);
+    hasPersistedSearchPrefs = true;
   } catch (err) {
     console.warn('Unable to store shows search preferences', err);
   }
@@ -523,6 +544,10 @@ function cacheElements() {
   elements.distanceSelect = document.getElementById('showsDistanceSelect');
   elements.dateInput = document.getElementById('showsDateInput');
   elements.dateShortcuts = document.querySelectorAll('.shows-date-chip');
+  elements.locationInput = document.getElementById('showsLocationInput');
+  elements.locationButton = document.getElementById('showsLocationButton');
+  elements.locationText = document.getElementById('showsLocationText');
+  elements.locationEditButton = document.getElementById('showsLocationEditButton');
   if (elements.refreshBtn && !elements.refreshBtn.dataset.defaultLabel) {
     elements.refreshBtn.dataset.defaultLabel =
       elements.refreshBtn.textContent || 'Check for new events';
@@ -537,11 +562,23 @@ function updateFilterVisibility(view) {
   }
 }
 
+function updateStatusVisibility() {
+  if (!elements.status) return;
+  const isLoading = elements.status.hasAttribute('data-loading');
+  const shouldShow = isLoading && currentView === 'all';
+  elements.status.hidden = !shouldShow;
+  if (shouldShow) {
+    elements.status.style.removeProperty('display');
+  } else {
+    elements.status.style.display = 'none';
+  }
+}
+
 function setStatus(message, tone = 'info') {
   if (!elements.status) return;
   elements.status.textContent = message || '';
   elements.status.dataset.tone = tone;
-  elements.status.removeAttribute('data-loading');
+  updateStatusVisibility();
 }
 
 function setLoading(isLoading) {
@@ -551,6 +588,55 @@ function setLoading(isLoading) {
   } else {
     elements.status.removeAttribute('data-loading');
   }
+  updateStatusVisibility();
+}
+
+function showEmptyStreamMessage() {
+  if (!elements.list) return;
+  elements.list.setAttribute('data-empty-message', 'No new events meet your criteria.');
+}
+
+function hideEmptyStreamMessage() {
+  if (!elements.list) return;
+  elements.list.removeAttribute('data-empty-message');
+  elements.list.classList.remove('shows-empty-flash');
+}
+
+function resetPendingEmptyStream() {
+  pendingEmptyStream = false;
+  pendingEmptyStreamRenderers = [];
+}
+
+function queueEmptyStream(renderer) {
+  if (typeof renderer === 'function') {
+    pendingEmptyStreamRenderers.push(renderer);
+  }
+  pendingEmptyStream = true;
+  flushEmptyStream();
+}
+
+function flushEmptyStream(force = false) {
+  if (!pendingEmptyStream) return;
+  pendingEmptyStream = false;
+  pendingEmptyStreamRenderers.forEach(cb => {
+    try {
+      cb();
+    } catch (err) {
+      console.warn('Unable to render empty state', err);
+    }
+  });
+  pendingEmptyStreamRenderers = [];
+  if (flashEmptyStreamOnNextShow && elements.list) {
+    elements.list.classList.add('shows-empty-flash');
+    setTimeout(() => {
+      elements.list?.classList.remove('shows-empty-flash');
+    }, 1200);
+  } else if (elements.list) {
+    elements.list.classList.remove('shows-empty-flash');
+  }
+  showEmptyStreamMessage();
+  setStatus(EMPTY_STREAM_MESSAGE);
+  flashEmptyStreamOnNextShow = false;
 }
 
 function setRefreshLoading(isLoading) {
@@ -634,6 +720,7 @@ function renderWithPrefsAndMaybeRefresh() {
   }
   const workingEvents =
     (latestEvents && latestEvents.length ? latestEvents : cacheFresh ? cached.events : []) || [];
+  flashEmptyStreamOnNextShow = cacheFresh && cacheCoversPrefs && !workingEvents.length;
   const sourceLabel = cacheFresh || cached ? 'cache' : 'remote';
   renderEvents(workingEvents, {
     view: currentView,
@@ -831,30 +918,397 @@ function showSavedToast() {
   setTimeout(() => toast.classList.remove('is-visible'), 1200);
 }
 
-function ensureDistanceOriginLabel() {
-  if (!elements.distanceSelect) return;
-  if (elements.distanceSelect.nextElementSibling?.classList?.contains('shows-distance-origin')) {
-    elements.distanceOrigin = elements.distanceSelect.nextElementSibling;
-    return;
+function normalizeLocationCandidate(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
   }
-  const span = document.createElement('span');
-  span.className = 'shows-distance-origin';
-  elements.distanceSelect.insertAdjacentElement('afterend', span);
-  elements.distanceOrigin = span;
+  const latitude = Number.parseFloat(value.latitude);
+  const longitude = Number.parseFloat(value.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+  const label = typeof value.label === 'string' ? value.label.trim() : '';
+  return { latitude, longitude, label };
 }
 
-function updateDistanceOriginLabel(events) {
-  if (!elements.distanceOrigin) return;
-  let city = '';
-  for (const event of events || []) {
-    const c = event?.venue?.address?.city;
-    const region = event?.venue?.address?.region;
-    if (c) {
-      city = region ? `${c}, ${region}` : c;
-      break;
-    }
+function loadPreferredLocation() {
+  const storage = getStorage();
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(SHOWS_LOCATION_KEY);
+    if (!raw) return null;
+    return normalizeLocationCandidate(JSON.parse(raw));
+  } catch (err) {
+    console.warn('Unable to load preferred location', err);
+    return null;
   }
-  elements.distanceOrigin.textContent = city ? `from ${city}` : '';
+}
+
+function persistPreferredLocation(location) {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    if (!location) {
+      storage.removeItem(SHOWS_LOCATION_KEY);
+      return;
+    }
+    const payload = {
+      latitude: Number(location.latitude),
+      longitude: Number(location.longitude),
+      label: typeof location.label === 'string' ? location.label.trim() : ''
+    };
+    storage.setItem(SHOWS_LOCATION_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn('Unable to store preferred location', err);
+  }
+}
+
+function isSameLocation(a, b) {
+  const normalizedA = normalizeLocationCandidate(a);
+  const normalizedB = normalizeLocationCandidate(b);
+  if (!normalizedA || !normalizedB) {
+    return false;
+  }
+  const latDiff = Math.abs(normalizedA.latitude - normalizedB.latitude);
+  const lonDiff = Math.abs(normalizedA.longitude - normalizedB.longitude);
+  return latDiff < 0.0005 && lonDiff < 0.0005;
+}
+
+function clearPreferredLocation() {
+  preferredLocation = null;
+  persistPreferredLocation(null);
+}
+
+async function geocodeLocationQuery(query) {
+  if (!query) {
+    return null;
+  }
+  const trimmed = query.trim();
+  if (!trimmed || typeof fetch !== 'function') {
+    return null;
+  }
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('q', trimmed);
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('addressdetails', '0');
+  url.searchParams.set('accept-language', (typeof navigator !== 'undefined' && navigator.language) || 'en-US');
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 5000) : null;
+  try {
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      signal: controller?.signal
+    });
+    if (timer) clearTimeout(timer);
+    if (!response.ok) {
+      return null;
+    }
+    const data = await response.json();
+    if (!Array.isArray(data) || !data.length) {
+      return null;
+    }
+    const [result] = data;
+    return normalizeLocationCandidate({
+      latitude: result.lat,
+      longitude: result.lon,
+      label: result.display_name || trimmed
+    });
+  } catch (err) {
+    if (timer) clearTimeout(timer);
+    console.warn('Location lookup failed', err);
+    return null;
+  }
+}
+
+function formatReverseGeocodeLabel(data) {
+  if (!data || typeof data !== 'object') return '';
+  const addr = data.address || {};
+  const city =
+    addr.city ||
+    addr.town ||
+    addr.village ||
+    addr.hamlet ||
+    addr.municipality ||
+    addr.county;
+  const region = addr.state || addr.region;
+  const parts = [];
+  if (city) parts.push(city);
+  if (region) parts.push(region);
+  return parts.filter(Boolean).join(', ');
+}
+
+async function reverseGeocodeLocation(location) {
+  const normalized = normalizeLocationCandidate(location);
+  if (!normalized || typeof fetch !== 'function') {
+    return '';
+  }
+  const url = new URL('https://nominatim.openstreetmap.org/reverse');
+  url.searchParams.set('lat', String(normalized.latitude));
+  url.searchParams.set('lon', String(normalized.longitude));
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('zoom', '10');
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('accept-language', (typeof navigator !== 'undefined' && navigator.language) || 'en-US');
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 5000) : null;
+  try {
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      signal: controller?.signal
+    });
+    if (timer) clearTimeout(timer);
+    if (!response.ok) {
+      return '';
+    }
+    const data = await response.json();
+    const formatted = formatReverseGeocodeLabel(data);
+    if (formatted) {
+      return formatted;
+    }
+    if (typeof data?.display_name === 'string') {
+      return data.display_name;
+    }
+    return '';
+  } catch (err) {
+    if (timer) clearTimeout(timer);
+    console.warn('Location reverse lookup failed', err);
+    return '';
+  }
+}
+
+async function handleLocationSearch(query) {
+  const trimmed = typeof query === 'string' ? query.trim() : '';
+  if (!trimmed || isDiscovering) {
+    return;
+  }
+  setStatus(`Looking up ${trimmed}...`);
+  const location = await geocodeLocationQuery(trimmed);
+  if (!location) {
+    setStatus('Unable to find that location.');
+    return;
+  }
+  preferredLocation = location;
+  persistPreferredLocation(preferredLocation);
+  if (elements.locationInput) {
+    elements.locationInput.value = preferredLocation.label || trimmed;
+  }
+  updateLocationDisplayLabel();
+  await discoverNewEvents({
+    radius: searchPrefs.radius,
+    days: searchPrefs.days,
+    location: preferredLocation,
+    forceRefresh: true
+  });
+}
+
+async function handleUseMyLocation() {
+  if (isDiscovering) {
+    return;
+  }
+  finishLocationEdit({ commit: false });
+  clearPreferredLocation();
+  if (elements.locationInput) {
+    elements.locationInput.value = '';
+  }
+  updateLocationDisplayLabel('Locating…');
+  setStatus('Using your current location...');
+  let location;
+  try {
+    location = await requestLocation();
+  } catch (err) {
+    const message = err?.message || 'Unable to access your location.';
+    setStatus(message, 'error');
+    return;
+  }
+  const candidate = normalizeLocationCandidate({
+    latitude: location.latitude,
+    longitude: location.longitude,
+    label: ''
+  });
+  if (!candidate) {
+    setStatus('Unable to determine your location.', 'error');
+    return;
+  }
+  const resolvedLabel = await reverseGeocodeLocation(candidate);
+  if (resolvedLabel) {
+    candidate.label = resolvedLabel;
+    updateLocationDisplayLabel(resolvedLabel);
+  } else {
+    updateLocationDisplayLabel('');
+  }
+  preferredLocation = candidate;
+  persistPreferredLocation(preferredLocation);
+  await discoverNewEvents({
+    radius: searchPrefs.radius,
+    days: searchPrefs.days,
+    forceRefresh: true,
+    location: candidate
+  });
+}
+
+function getLocationDisplayLabel() {
+  return preferredLocation?.label || '';
+}
+
+function updateLocationDisplayLabel(fallbackLabel) {
+  if (!elements.locationText) return;
+  const candidate =
+    typeof fallbackLabel === 'string' && fallbackLabel.trim()
+      ? fallbackLabel.trim()
+      : getLocationDisplayLabel();
+  elements.locationText.textContent = candidate;
+}
+
+function getEffectiveLocationLabel() {
+  const inlineLabel = elements.locationText?.textContent?.trim();
+  if (inlineLabel) {
+    return inlineLabel;
+  }
+  const storedLabel = preferredLocation?.label?.trim();
+  if (storedLabel) {
+    return storedLabel;
+  }
+  return 'your area';
+}
+
+function formatSavedSectionHeading(options = {}) {
+  const normalizedRadius = clampRadius(
+    Number.isFinite(options.radius) ? options.radius : searchPrefs.radius
+  );
+  const normalizedDays = clampDays(Number.isFinite(options.days) ? options.days : searchPrefs.days);
+  const endDate = new Date(Date.now() + normalizedDays * MS_PER_DAY);
+  let formattedDate = '';
+  try {
+    formattedDate = new Intl.DateTimeFormat(undefined, {
+      month: '2-digit',
+      day: '2-digit',
+      year: 'numeric'
+    }).format(endDate);
+  } catch {
+    formattedDate = endDate.toLocaleDateString();
+  }
+  const locationLabel = getEffectiveLocationLabel();
+  return `Saved events through ${formattedDate} within ${normalizedRadius} miles of ${locationLabel}`;
+}
+
+function enterLocationEditMode() {
+  if (!elements.locationInput || !elements.locationText || isEditingLocation) return;
+  isEditingLocation = true;
+  elements.locationText.hidden = true;
+  elements.locationInput.hidden = false;
+  const pendingValue =
+    elements.locationInput.value && typeof elements.locationInput.value === 'string'
+      ? elements.locationInput.value.trim()
+      : '';
+  const prefill = pendingValue || preferredLocation?.label || '';
+  elements.locationInput.value = prefill;
+  const focusInput = () => {
+    if (!elements.locationInput) return;
+    elements.locationInput.focus();
+    elements.locationInput.select();
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(focusInput);
+  } else {
+    setTimeout(focusInput, 0);
+  }
+}
+
+function finishLocationEdit({ commit = false } = {}) {
+  if (!isEditingLocation || !elements.locationInput || !elements.locationText) {
+    return null;
+  }
+  const trimmed = elements.locationInput.value.trim();
+  isEditingLocation = false;
+  elements.locationInput.hidden = true;
+  elements.locationText.hidden = false;
+  elements.locationInput.value = trimmed;
+  updateLocationDisplayLabel(trimmed);
+  if (commit && trimmed) {
+    return trimmed;
+  }
+  return null;
+}
+
+function initLocationControls() {
+  updateLocationDisplayLabel();
+  if (elements.locationInput) {
+    if (!elements.locationInput.value && preferredLocation?.label) {
+      elements.locationInput.value = preferredLocation.label;
+    }
+    elements.locationInput.hidden = true;
+    elements.locationInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const query = finishLocationEdit({ commit: true });
+        if (query) {
+          handleLocationSearch(query);
+        }
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finishLocationEdit({ commit: false });
+      }
+    });
+    elements.locationInput.addEventListener('blur', () => {
+      const query = finishLocationEdit({ commit: true });
+      if (query) {
+        handleLocationSearch(query);
+      }
+    });
+  }
+  if (elements.locationButton) {
+    elements.locationButton.addEventListener('click', event => {
+      event.preventDefault();
+      handleUseMyLocation();
+    });
+  }
+  if (elements.locationEditButton) {
+    elements.locationEditButton.addEventListener('click', event => {
+      event.preventDefault();
+      enterLocationEditMode();
+    });
+  }
+}
+
+async function ensureInitialLocation() {
+  if (hasAttemptedInitialLocation) {
+    if (preferredLocation) {
+      updateLocationDisplayLabel();
+    }
+    return;
+  }
+  hasAttemptedInitialLocation = true;
+  if (preferredLocation) {
+    updateLocationDisplayLabel();
+    return;
+  }
+  updateLocationDisplayLabel('Locating…');
+  try {
+    const location = await requestLocation();
+    const candidate = normalizeLocationCandidate({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      label: ''
+    });
+    if (!candidate) {
+      updateLocationDisplayLabel('');
+      return;
+    }
+    const resolvedLabel = await reverseGeocodeLocation(candidate);
+    if (resolvedLabel) {
+      candidate.label = resolvedLabel;
+      updateLocationDisplayLabel(resolvedLabel);
+    } else {
+      updateLocationDisplayLabel('');
+    }
+    preferredLocation = candidate;
+    persistPreferredLocation(preferredLocation);
+  } catch (err) {
+    console.warn('Initial location lookup failed', err);
+    updateLocationDisplayLabel('');
+  }
 }
 
 function formatEventDate(start) {
@@ -1020,6 +1474,85 @@ function renderEventImages(event) {
   return gallery;
 }
 
+function buildSearchQuery(event) {
+  const parts = [];
+  const name = typeof event?.name?.text === 'string' ? event.name.text.trim() : '';
+  if (name) parts.push(name);
+  const venueName = typeof event?.venue?.name === 'string' ? event.venue.name.trim() : '';
+  if (venueName) parts.push(venueName);
+  const city = typeof event?.venue?.address?.city === 'string' ? event.venue.address.city.trim() : '';
+  const region =
+    typeof event?.venue?.address?.region === 'string' ? event.venue.address.region.trim() : '';
+  const cityRegion = [city, region].filter(Boolean).join(', ');
+  if (cityRegion) parts.push(cityRegion);
+  const dateText = formatEventDate(event?.start);
+  if (dateText) parts.push(dateText);
+  return parts.filter(Boolean).join(' ');
+}
+
+function buildGoogleSearchUrl(event) {
+  const query = buildSearchQuery(event);
+  return query ? `https://www.google.com/search?q=${encodeURIComponent(query)}` : '';
+}
+
+async function isUrlReachable(url) {
+  if (typeof fetch !== 'function' || !url) return false;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 2000) : null;
+  try {
+    const res = await fetch(url, { method: 'HEAD', mode: 'cors', signal: controller?.signal });
+    if (timer) clearTimeout(timer);
+    return res.ok;
+  } catch {
+    if (timer) clearTimeout(timer);
+    return false;
+  }
+}
+
+function getTicketUrl(event) {
+  if (!event || typeof event !== 'object') {
+    return '';
+  }
+
+  const normalize = value => {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    // Ticketmaster occasionally returns protocol-relative links
+    if (trimmed.startsWith('//')) return `https:${trimmed}`;
+    return '';
+  };
+
+  const candidates = [];
+
+  const ticketmasterUrl =
+    typeof event.ticketmaster?.url === 'string' ? event.ticketmaster.url.trim() : '';
+
+  const productUrl = Array.isArray(event.ticketmaster?.products)
+    ? event.ticketmaster.products
+        .map(product => normalize(product?.url))
+        .find(Boolean)
+    : '';
+  candidates.push(productUrl);
+
+  const outletUrl = Array.isArray(event.ticketmaster?.outlets)
+    ? event.ticketmaster.outlets
+        .map(outlet => normalize(outlet?.url))
+        .find(Boolean)
+    : '';
+  candidates.push(outletUrl);
+
+  candidates.push(normalize(ticketmasterUrl));
+  candidates.push(normalize(event.url));
+
+  const rawUrl =
+    typeof event.ticketmaster?.raw?.url === 'string' ? event.ticketmaster.raw.url.trim() : '';
+  candidates.push(normalize(rawUrl));
+
+  return candidates.find(Boolean) || '';
+}
+
 function normalizeGenreLabel(name) {
   if (typeof name !== 'string') return '';
   return name.trim();
@@ -1073,13 +1606,40 @@ function createArtistLinkRow(event) {
   const searchQuery = primaryName;
   const youtubeUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
   const spotifyUrl = `https://open.spotify.com/search/${encodeURIComponent(primaryName)}`;
+  const spotifyDeepLink = `spotify:search:${encodeURIComponent(primaryName)}`;
+
+  const isMobile =
+    typeof navigator !== 'undefined' &&
+    /iphone|ipad|ipod|android|mobile/i.test(navigator.userAgent || '');
 
   const openPopup = (href, name) => {
     if (typeof window === 'undefined' || typeof window.open !== 'function') {
       return;
     }
-    const features =
-      'width=620,height=420,menubar=0,location=0,resizable=1,scrollbars=1,status=0';
+    const docEl = typeof document !== 'undefined' ? document.documentElement : null;
+    const screenWidth =
+      (typeof window.screen !== 'undefined' && window.screen?.availWidth) || window.innerWidth || 0;
+    const screenHeight =
+      (typeof window.screen !== 'undefined' && window.screen?.availHeight) || window.innerHeight || 0;
+    const viewportWidth = Math.max(
+      screenWidth,
+      window.innerWidth || 0,
+      docEl?.clientWidth || 0,
+      docEl?.scrollWidth || 0
+    );
+    const viewportHeight = Math.max(
+      screenHeight,
+      window.innerHeight || 0,
+      docEl?.clientHeight || 0,
+      docEl?.scrollHeight || 0
+    );
+    const shouldUseFullWidth = isMobile || viewportWidth <= 768;
+    const popupWidth = shouldUseFullWidth
+      ? viewportWidth || window.innerWidth || 0
+      : Math.max(320, Math.floor(viewportWidth / 3));
+    const popupHeight = Math.max(240, viewportHeight || 600);
+    const left = shouldUseFullWidth ? 0 : viewportWidth ? Math.max(0, viewportWidth - popupWidth) : 0;
+    const features = `width=${popupWidth},height=${popupHeight},left=${left},top=0,menubar=0,location=0,resizable=1,scrollbars=1,status=0`;
     const popup = window.open(href, name, features);
     if (popup && typeof popup.focus === 'function') {
       popup.focus();
@@ -1098,9 +1658,10 @@ function createArtistLinkRow(event) {
     {
       label: 'Search on Spotify',
       url: `${spotifyUrl}?autoplay=true`,
-      name: 'shows-spotify-search'
+      name: 'shows-spotify-search',
+      deepLink: spotifyDeepLink
     }
-  ].forEach(({ label, url, name }, index) => {
+  ].forEach(({ label, url, name, deepLink }, index) => {
     const link = document.createElement('a');
     link.className = 'show-card__external-link';
     link.href = url;
@@ -1108,6 +1669,17 @@ function createArtistLinkRow(event) {
     link.textContent = label;
     link.addEventListener('click', event => {
       event.preventDefault();
+      if (name === 'shows-spotify-search' && isMobile && deepLink) {
+        try {
+          window.location.href = deepLink;
+          setTimeout(() => {
+            window.location.href = url;
+          }, 1200);
+        } catch {
+          window.location.href = url;
+        }
+        return;
+      }
       openPopup(url, name);
     });
     wrapper.appendChild(link);
@@ -1270,15 +1842,43 @@ function createEventCard(event, options = {}) {
 
   const cta = document.createElement('a');
   cta.className = 'show-card__button show-card__button--link';
-  if (event?.url) {
-    cta.href = event.url;
+  const ticketUrl = getTicketUrl(event);
+  const searchUrl = buildGoogleSearchUrl(event);
+  if (ticketUrl) {
+    cta.href = ticketUrl;
+    cta.target = '_blank';
+    cta.rel = 'noopener noreferrer';
+  } else if (searchUrl) {
+    cta.href = searchUrl;
     cta.target = '_blank';
     cta.rel = 'noopener noreferrer';
   } else {
     cta.setAttribute('aria-disabled', 'true');
     cta.classList.add('show-card__button--disabled');
   }
-  cta.textContent = 'Purchase Tickets';
+  cta.textContent = 'Tickets';
+  cta.addEventListener('click', async e => {
+    e.preventDefault();
+    const primary = ticketUrl;
+    const fallback = searchUrl;
+    const open = url => {
+      if (!url) return;
+      const win = window.open(url, '_blank', 'noopener');
+      if (win && typeof win.focus === 'function') {
+        win.focus();
+      }
+    };
+    if (!primary) {
+      open(fallback);
+      return;
+    }
+    const reachable = await isUrlReachable(primary);
+    if (reachable) {
+      open(primary);
+    } else {
+      open(fallback || primary);
+    }
+  });
 
   actionsRow.append(saveBtn, hideBtn, cta);
   [saveBtn, hideBtn, cta].forEach(el => {
@@ -1622,6 +2222,9 @@ function createSavedCalendars(events) {
 }
 
 function renderEvents(events, options = {}) {
+  hideEmptyStreamMessage();
+  resetPendingEmptyStream();
+  resetPendingEmptyStream();
   if (!elements.list) return;
   const view = options.view || currentView || 'all';
   currentView = view;
@@ -1638,6 +2241,7 @@ function renderEvents(events, options = {}) {
   renderOptions.source = source;
   updateViewTabs(view);
   updateFilterVisibility(view);
+  updateStatusVisibility();
 
   clearList();
   setLoading(true);
@@ -1690,8 +2294,6 @@ function renderEvents(events, options = {}) {
       })
     ];
   }
-  updateDistanceOriginLabel(visibleEvents);
-
   if (!visibleEvents.length) {
     setLoading(false);
     if (view === 'saved') {
@@ -1702,25 +2304,19 @@ function renderEvents(events, options = {}) {
         'You have not saved any shows yet. Tap Save on an event to save it here.';
       elements.list.appendChild(emptyState);
     } else {
-      setStatus('No events found.');
       const emptyState = document.createElement('div');
       emptyState.className = 'shows-empty shows-empty--no-events';
-      emptyState.textContent =
-        'No upcoming shows were returned for the selected location.';
-      elements.list.appendChild(emptyState);
+      emptyState.textContent = EMPTY_STREAM_MESSAGE;
+      queueEmptyStream(() => {
+        elements.list.appendChild(emptyState);
+      });
     }
     return;
   }
 
-  if (view === 'saved') {
-    const plural = visibleEvents.length === 1 ? '' : 's';
-    setStatus(`Showing ${visibleEvents.length} saved event${plural}.`);
-  } else {
-    setStatus('');
-  }
-
   const layout = document.createElement('div');
   layout.className = 'shows-results';
+  const savedSectionHeading = formatSavedSectionHeading(renderOptions);
 
   const listColumn = document.createElement('div');
   listColumn.className = 'shows-results__list';
@@ -1744,12 +2340,59 @@ function renderEvents(events, options = {}) {
 
   setLoading(false);
 
+  const appendSavedSection = (target, eventsToRender, { isFallback = false } = {}) => {
+    if (!eventsToRender.length) return;
+    const savedSection = document.createElement('div');
+    savedSection.className = 'shows-section-saved';
+    if (isFallback) {
+      savedSection.classList.add('shows-section-saved--fallback');
+    }
+    const heading = document.createElement('h3');
+    heading.textContent = savedSectionHeading;
+    savedSection.appendChild(heading);
+    eventsToRender.forEach(event =>
+      savedSection.appendChild(createEventCard(event, { ...renderOptions, saved: true }))
+    );
+    target.appendChild(savedSection);
+  };
+
   if (!filteredEvents.length) {
+    if (view === 'saved') {
+      setStatus('No saved events yet.');
+      const emptyState = document.createElement('div');
+      emptyState.className = 'shows-empty';
+      emptyState.textContent =
+        'You have not saved any shows yet. Tap Save on an event to save it here.';
+      listColumn.appendChild(emptyState);
+      elements.list.appendChild(layout);
+      return;
+    }
+
+    const fallbackSavedEvents = getSavedEventsList().filter(
+      event => event && isEventInFuture(event) && !hiddenEventIds.has(getEventId(event))
+    );
+
+    if (fallbackSavedEvents.length) {
+      appendSavedSection(listColumn, fallbackSavedEvents, { isFallback: true });
+      const emptyState = document.createElement('div');
+      emptyState.className = 'shows-empty shows-empty--no-events';
+      emptyState.textContent =
+        'There are no new events that meet your criteria. Here are your saved events.';
+      queueEmptyStream(() => {
+        listColumn.appendChild(emptyState);
+      });
+      elements.list.appendChild(layout);
+      return;
+    }
+
     const emptyState = document.createElement('div');
-    emptyState.className = 'shows-empty';
-    emptyState.textContent = 'Select at least one tag to see matching shows.';
-    listColumn.appendChild(emptyState);
-    elements.list.appendChild(layout);
+    emptyState.className = 'shows-empty shows-empty--no-events';
+    emptyState.textContent =
+      'There are no new events that meet your criteria.';
+    queueEmptyStream(() => {
+      listColumn.appendChild(emptyState);
+      elements.list.appendChild(layout);
+    });
     return;
   }
 
@@ -1772,6 +2415,15 @@ function renderEvents(events, options = {}) {
     }
   });
 
+  if (view === 'saved') {
+    const plural = visibleEvents.length === 1 ? '' : 's';
+    setStatus(`Showing ${visibleEvents.length} saved event${plural}.`);
+  } else if (!unsavedList.length) {
+    queueEmptyStream();
+  } else if (!isDiscovering) {
+    setStatus('');
+  }
+
   const appendCards = (eventsToRender, opts = {}) => {
     eventsToRender.forEach(event =>
       listColumn.appendChild(
@@ -1784,17 +2436,7 @@ function renderEvents(events, options = {}) {
     appendCards(filteredEvents, { saved: true });
   } else {
     appendCards(unsavedList, { saved: false });
-    if (savedList.length) {
-      const savedSection = document.createElement('div');
-      savedSection.className = 'shows-section-saved';
-      const heading = document.createElement('h3');
-      heading.textContent = 'Saved events';
-      savedSection.appendChild(heading);
-      savedList.forEach(event =>
-        savedSection.appendChild(createEventCard(event, { ...renderOptions, saved: true }))
-      );
-      layout.appendChild(savedSection);
-    }
+    appendSavedSection(listColumn, savedList);
   }
 
   if (view === 'saved') {
@@ -1835,7 +2477,8 @@ function requestLocation() {
       position => {
         resolve({
           latitude: position.coords.latitude,
-          longitude: position.coords.longitude
+          longitude: position.coords.longitude,
+          label: ''
         });
       },
       error => {
@@ -1871,6 +2514,9 @@ async function discoverNewEvents(options = {}) {
   }
   isDiscovering = true;
   setRefreshLoading(true);
+  setLoading(true);
+  hideEmptyStreamMessage();
+  resetPendingEmptyStream();
   setStatus('Checking for new shows in your area...');
 
   const desiredRadius = clampRadius(
@@ -1886,7 +2532,39 @@ async function discoverNewEvents(options = {}) {
   syncDatePickerValue(desiredDays);
 
   const cached = loadCachedEvents();
-  if (!options.forceRefresh && cached && isCacheFresh(cached) && Array.isArray(cached.events) && cached.events.length) {
+  const normalizedOverride = normalizeLocationCandidate(options.location);
+  let location = normalizedOverride || preferredLocation;
+  if (!location) {
+    location = await requestLocation();
+  }
+  if (!location) {
+    setStatus('Unable to access your location.');
+    clearList();
+    setRefreshLoading(false);
+    setLoading(false);
+    isDiscovering = false;
+    return;
+  }
+  if (normalizedOverride) {
+    preferredLocation = normalizedOverride;
+    if (options.persistLocation !== false) {
+      persistPreferredLocation(preferredLocation);
+    }
+  }
+  const statusMessage = location.label
+    ? `Checking for shows near ${location.label}...`
+    : 'Checking for shows in your area...';
+  setStatus(statusMessage);
+
+  const cacheLocationMatches = isSameLocation(cached?.location, location);
+  if (
+    !options.forceRefresh &&
+    cached &&
+    cacheLocationMatches &&
+    isCacheFresh(cached) &&
+    Array.isArray(cached.events) &&
+    cached.events.length
+  ) {
     latestEvents = cached.events;
     activeGenreFilters = null;
     renderEvents(cached.events, {
@@ -1901,13 +2579,6 @@ async function discoverNewEvents(options = {}) {
   }
 
   try {
-    const location = await requestLocation();
-    if (!location) {
-      setStatus('Unable to access your location.');
-      clearList();
-      return;
-    }
-
     const { endpoint, isRemote } = resolveShowsEndpoint(API_BASE_URL);
     const params = new URLSearchParams({
       lat: String(location.latitude),
@@ -1989,7 +2660,9 @@ async function discoverNewEvents(options = {}) {
     clearList();
   } finally {
     setRefreshLoading(false);
+    setLoading(false);
     isDiscovering = false;
+    flushEmptyStream(true);
   }
 }
 
@@ -2002,12 +2675,15 @@ export async function initShowsPanel(options = {}) {
   savedEvents = loadSavedEvents();
   hiddenEventIds = loadHiddenEventIds();
   await syncShowsStateFromDb();
-  searchPrefs = loadSearchPrefs();
+  preferredLocation = loadPreferredLocation();
+  const loadedPrefs = loadSearchPrefs();
+  searchPrefs = {
+    radius: loadedPrefs.radius,
+    days: loadedPrefs.days
+  };
+  hasPersistedSearchPrefs = Boolean(loadedPrefs.persisted);
 
   cacheElements();
-  ensureDistanceOriginLabel();
-  setLoading(true);
-  setStatus('Checking for shows in your area...');
   hiddenGenres = loadHiddenGenres();
   updateViewTabs(currentView);
 
@@ -2020,20 +2696,17 @@ export async function initShowsPanel(options = {}) {
   if (elements.distanceSelect) {
     elements.distanceSelect.value = String(clampRadius(searchPrefs.radius));
     elements.distanceSelect.addEventListener('change', () => {
-      const nextRadius = clampRadius(elements.distanceSelect.value);
-      if (nextRadius === searchPrefs.radius) return;
-      const isExpanding = nextRadius > searchPrefs.radius;
-      searchPrefs.radius = nextRadius;
-      persistSearchPrefs();
-      if (isExpanding) {
-        discoverNewEvents({ radius: searchPrefs.radius, days: searchPrefs.days, forceRefresh: true });
-      } else {
-        renderWithPrefsAndMaybeRefresh();
-      }
-    });
-  }
+    const nextRadius = clampRadius(elements.distanceSelect.value);
+    if (nextRadius === searchPrefs.radius) return;
+    searchPrefs.radius = nextRadius;
+    persistSearchPrefs();
+    renderWithPrefsAndMaybeRefresh();
+  });
+}
 
   initDatePickerControl();
+  initLocationControls();
+  await ensureInitialLocation();
 
   if (elements.tabAll) {
     elements.tabAll.addEventListener('click', () => {
@@ -2067,15 +2740,18 @@ export async function initShowsPanel(options = {}) {
   const cacheFresh =
     cached &&
     (isCacheFresh(cached) || (IS_TEST && Array.isArray(cached.events) && cached.events.length));
+  let didInitialFetch = false;
   if (cached && Array.isArray(cached.events) && cached.events.length) {
     latestEvents = cached.events;
-    if (cached.radiusMiles) {
-      searchPrefs.radius = clampRadius(cached.radiusMiles);
+    if (!hasPersistedSearchPrefs) {
+      if (cached.radiusMiles) {
+        searchPrefs.radius = clampRadius(cached.radiusMiles);
+      }
+      if (cached.days) {
+        searchPrefs.days = clampDays(cached.days);
+      }
+      persistSearchPrefs();
     }
-    if (cached.days) {
-      searchPrefs.days = clampDays(cached.days);
-    }
-    persistSearchPrefs();
     if (elements.distanceSelect) {
       elements.distanceSelect.value = String(searchPrefs.radius);
     }
@@ -2091,6 +2767,15 @@ export async function initShowsPanel(options = {}) {
   }
   if (!cacheFresh || !cached || !Array.isArray(cached.events) || !cached.events.length) {
     await discoverNewEvents({ radius: searchPrefs.radius, days: searchPrefs.days, ...options });
+    didInitialFetch = true;
+  }
+  if (!didInitialFetch) {
+    await discoverNewEvents({
+      radius: searchPrefs.radius,
+      days: searchPrefs.days,
+      ...options,
+      forceRefresh: true
+    });
   }
 
   if (elements.refreshBtn) {
