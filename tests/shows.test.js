@@ -168,18 +168,17 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(showCalls.length).toBe(1);
     const [showsRequest] = showCalls[0];
     expect(showsRequest).toContain('/api/shows');
-    expect(showsRequest).toContain('lat=30.2672');
-    expect(showsRequest).toContain('lon=-97.7431');
-    expect(showsRequest).toContain('radius=100');
+    expect(showsRequest).toContain('lat=38.9055');
+    expect(showsRequest).toContain('lon=-77.0422');
+    expect(showsRequest).toContain('radius=50');
 
     const cards = document.querySelectorAll('.show-card');
     expect(cards.length).toBe(1);
     expect(cards[0].textContent).toContain('Live Show');
 
     const mediaLinks = document.querySelectorAll('.show-card__external-link');
-    expect(mediaLinks.length).toBe(2);
-    expect(mediaLinks[0].href).toContain('youtube.com');
-    expect(mediaLinks[1].href).toContain('spotify.com');
+    expect(mediaLinks.length).toBe(1);
+    expect(mediaLinks[0].href).toContain('ticketmaster.test/events/1');
 
     const summary = document.querySelector('.shows-list-summary');
     expect(summary).toBeNull();
@@ -202,19 +201,17 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(showsRequest.startsWith('https://live-events-6f3e5.web.app/api/shows')).toBe(true);
   });
 
-  it('shows a helpful message when geolocation fails', async () => {
+  it('does not require geolocation to fetch shows', async () => {
     await setup();
 
     navigator.geolocation.getCurrentPosition.mockImplementation((success, error) => {
       error({ code: 1, PERMISSION_DENIED: 1, message: 'Location access was denied.' });
     });
 
-    await expect(initShowsPanel()).rejects.toThrow(
-      'Location access was denied. Enable location sharing and try again.'
-    );
+    await expect(initShowsPanel()).resolves.toBeUndefined();
 
     const showCalls = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
-    expect(showCalls.length).toBe(0);
+    expect(showCalls.length).toBe(1);
   });
 
   it('renders genre checkboxes with bulk actions and persistent hide control', async () => {
