@@ -182,10 +182,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(mediaLinks[1].href).toContain('spotify.com');
 
     const summary = document.querySelector('.shows-list-summary');
-    expect(summary).not.toBeNull();
-    expect(summary?.textContent).toContain('Distance:');
-    expect(summary?.textContent).toContain('Through');
-    expect(summary?.textContent).toContain('Showing 1 upcoming event');
+    expect(summary).toBeNull();
 
   });
 
@@ -332,9 +329,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(cards[0].textContent).toContain('Cached Show');
 
     const summary = document.querySelector('.shows-list-summary');
-    expect(summary).not.toBeNull();
-    expect(summary?.textContent).toContain('Distance:');
-    expect(summary?.textContent).toContain('Showing 1 cached event');
+    expect(summary).toBeNull();
 
     pending.shift()?.(
       createFetchResponse({

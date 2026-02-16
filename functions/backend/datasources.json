@@ -1,0 +1,102 @@
+{
+  "sources": [
+    {
+      "id": "ticketmaster",
+      "name": "Ticketmaster",
+      "type": "ticketmaster",
+      "enabled": true,
+      "description": "Ticketmaster Discovery API",
+      "order": 0,
+      "config": {
+        "segments": [
+          {
+            "key": "music",
+            "description": "Live music",
+            "params": {
+              "classificationName": "Music"
+            }
+          },
+          {
+            "key": "comedy",
+            "description": "Comedy",
+            "params": {
+              "classificationName": "Comedy"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "dcimprov",
+      "name": "DC Improv",
+      "type": "dcimprov",
+      "enabled": true,
+      "description": "DC Improv shows page",
+      "order": 1,
+      "config": {
+        "url": "https://www.dcimprov.com/index.php/shows"
+      }
+    },
+    {
+      "id": "smithsonian",
+      "name": "Smithsonian",
+      "type": "rss",
+      "enabled": true,
+      "description": "Smithsonian events (Trumba RSS)",
+      "order": 2,
+      "config": {
+        "feedUrl": "https://www.trumba.com/calendars/smithsonian-events.rss",
+        "fetchImageFromLink": true,
+        "imageFetchLimit": 25,
+        "venue": {
+          "address": {
+            "city": "Washington",
+            "region": "DC",
+            "country": "US"
+          }
+        }
+      }
+    },
+    {
+      "id": "blackcat",
+      "name": "Black Cat",
+      "type": "blackcat",
+      "enabled": true,
+      "description": "Black Cat schedule page",
+      "order": 3,
+      "config": {
+        "url": "https://www.blackcatdc.com/schedule.html"
+      }
+    },
+    {
+      "id": "sixthandi",
+      "name": "Sixth & I",
+      "type": "ical",
+      "enabled": true,
+      "description": "Sixth & I events (iCal)",
+      "order": 4,
+      "config": {
+        "feedUrl": "https://www.sixthandi.org/events/?ical=1",
+        "fetchImageFromLink": true,
+        "imageFetchLimit": 25,
+        "includeGenres": [
+          "Talks & Entertainment"
+        ],
+        "excludeGenres": [
+          "Jewish Life"
+        ],
+        "timeZone": "America/New_York",
+        "venue": {
+          "name": "Sixth & I",
+          "address": {
+            "line1": "600 I St NW",
+            "city": "Washington",
+            "region": "DC",
+            "postalCode": "20001",
+            "country": "US"
+          }
+        }
+      }
+    }
+  ]
+}

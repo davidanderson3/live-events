@@ -14,7 +14,7 @@
     "generate:geoscore": "node scripts/generateGeoscoreQuestions.js",
     "update:cities": "node scripts/populateCities.js",
     "prepare": "husky install",
-    "start": "YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-$(gcloud secrets versions access latest --secret=YOUTUBE_API_KEY 2>/dev/null | tr -d '\\n')} PORT=3004 node functions/backend/server.js",
+    "start": "HOST=localhost YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-$(gcloud secrets versions access latest --secret=YOUTUBE_API_KEY 2>/dev/null | tr -d '\\n')} PORT=3004 node functions/backend/server.js",
     "sync:public": "node scripts/syncPublic.js"
   },
   "keywords": [],
@@ -30,7 +30,8 @@
     "firebase-admin": "^13.4.0",
     "nodemailer": "^6.9.8",
     "plaid": "^37.0.0",
-    "twilio": "^4.21.0"
+    "twilio": "^4.21.0",
+    "playwright": "^1.54.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.1",

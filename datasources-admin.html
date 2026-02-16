@@ -1,0 +1,81 @@
+n<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Datasource Feed Preview</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap"
+    rel="stylesheet"
+  />
+</head>
+<body class="datasources-admin-page">
+  <main class="datasources-admin datasources-admin--readonly">
+    <header class="datasources-admin__header">
+      <div>
+        <p class="datasources-admin__eyebrow">Read-only</p>
+        <h1>Datasource feed preview</h1>
+        <p class="datasources-admin__intro">
+          Hardcoded sources list. Load the existing feed, then click a source to highlight the
+          events that belong to it.
+        </p>
+      </div>
+      <div class="datasources-admin__actions">
+        <button type="button" id="feedLoadBtn">Load feed</button>
+        <button type="button" id="cacheClearBtn" class="secondary">Reset all caches</button>
+      </div>
+    </header>
+
+    <section class="datasources-admin__panel datasources-admin__panel--controls">
+      <div class="preview-controls">
+        <div class="preview-control">
+          <label for="previewDays">Lookahead (days)</label>
+          <input id="previewDays" type="number" min="1" max="31" value="14" />
+        </div>
+      </div>
+      <div id="sourcesStatus" class="datasources-admin__status" aria-live="polite">
+        Feed uses Washington, DC within 50 miles. Load the feed to list sources.
+      </div>
+    </section>
+
+    <section class="datasources-admin__grid">
+      <div class="datasources-admin__panel">
+        <div class="datasources-admin__panel-header">
+          <div>
+            <h2>Sources</h2>
+            <p>Read-only list of sources with live counts. Add keywords to hide matching event titles.</p>
+          </div>
+        </div>
+        <div id="sourcesList" class="datasources-admin__list"></div>
+      </div>
+
+      <div class="datasources-admin__panel">
+        <div class="datasources-admin__panel-header">
+          <div>
+            <h2>Feed preview</h2>
+            <p id="previewLabel">Load the feed to see events.</p>
+          </div>
+        </div>
+        <div id="previewStatus" class="datasources-admin__status" aria-live="polite"></div>
+        <div id="previewOutput" class="preview-output"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function applyLocalApiOverride() {
+      if (window.showsEndpoint || window.apiBaseUrl) return;
+      var host = (window.location && window.location.hostname) || '';
+      var isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+      if (window.location.protocol === 'file:' || isLocalHost) {
+        window.apiBaseUrl = 'http://localhost:3004';
+        window.showsEndpoint = 'http://localhost:3004/api/shows';
+      }
+    })();
+  </script>
+  <script type="module" src="js/datasourcesAdmin.js"></script>
+</body>
+</html>

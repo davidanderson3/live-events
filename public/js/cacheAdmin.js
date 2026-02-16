@@ -1,5 +1,5 @@
-const STATIC_CACHE_NAME = 'dashboard-static-v6';
-const DYNAMIC_CACHE_NAME = 'dashboard-dynamic-v2';
+const STATIC_CACHE_NAME = 'dashboard-static-v7';
+const DYNAMIC_CACHE_NAME = 'dashboard-dynamic-v3';
 const MAX_DYNAMIC_ENTRIES = 60;
 const SHOWS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_RADIUS_MILES = 100;

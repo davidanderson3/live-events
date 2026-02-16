@@ -1,5 +1,5 @@
-const STATIC_CACHE = 'dashboard-static-v6';
-const DYNAMIC_CACHE = 'dashboard-dynamic-v2';
+const STATIC_CACHE = 'dashboard-static-v7';
+const DYNAMIC_CACHE = 'dashboard-dynamic-v3';
 const MAX_DYNAMIC_ENTRIES = 60;
 
 const PRECACHE_URLS = [

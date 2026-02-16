@@ -1,6 +1,7 @@
 const { getFirestore, serverTimestamp } = require('./firestore');
 
 const MAX_IN_MEMORY_CACHE_ENTRIES = 500;
+const MAX_FIRESTORE_BODY_BYTES = 950000;
 const inMemoryCache = new Map();
 
 function serializePart(part) {
@@ -73,6 +74,10 @@ function readInMemoryCache(docId, ttlMs) {
   };
 }
 
+function clearInMemoryCache() {
+  inMemoryCache.clear();
+}
+
 async function readCachedResponse(collection, parts, ttlMs) {
   const db = getFirestore();
   const docId = buildCacheId(parts);
@@ -129,6 +134,13 @@ async function writeCachedResponse(collection, parts, payload = {}) {
   rememberInMemory(docId, normalizedPayload);
   const db = getFirestore();
   if (!db) return;
+  const bodyBytes = Buffer.byteLength(normalizedPayload.body, 'utf8');
+  if (bodyBytes > MAX_FIRESTORE_BODY_BYTES) {
+    console.warn(
+      `Skipping Firestore cache write ${collection}/${docId}: body is ${bodyBytes} bytes (limit ${MAX_FIRESTORE_BODY_BYTES})`
+    );
+    return;
+  }
   try {
     await db
       .collection(collection)
@@ -151,4 +163,6 @@ module.exports = {
   readCachedResponse,
   writeCachedResponse,
   serializePart
+  ,
+  clearInMemoryCache
 };

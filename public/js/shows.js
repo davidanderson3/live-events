@@ -6,12 +6,18 @@ const DEFAULT_SHOWS_ENDPOINT =
     (process.env.SHOWS_ENDPOINT || process.env.SHOWS_PROXY_ENDPOINT)) ||
   `${DEFAULT_REMOTE_API_BASE}/shows`;
 
-const DEFAULT_RADIUS_MILES = 100;
+const DEFAULT_RADIUS_MILES = 50;
+const DEFAULT_LOCATION = {
+  latitude: 38.9055,
+  longitude: -77.0422,
+  label: 'Washington, DC'
+};
 const DEFAULT_LOOKAHEAD_DAYS = 30;
 const SHOWS_CACHE_KEY = 'shows.cachedEvents';
 const SHOWS_HIDDEN_GENRES_KEY = 'shows.hiddenGenres';
 const SHOWS_SAVED_EVENTS_KEY = 'shows.savedEvents';
 const SHOWS_HIDDEN_EVENTS_KEY = 'shows.hiddenEventIds';
+const SHOWS_HIDDEN_EVENT_TITLES_KEY = 'shows.hiddenEventTitles';
 const SHOWS_SEARCH_PREFS_KEY = 'shows.searchPrefs';
 const SHOWS_LOCATION_KEY = 'shows.location';
 const TARGET_IMAGE_RATIO = '4_3';
@@ -48,6 +54,7 @@ let latestEvents = [];
 let activeGenreFilters = null;
 let hiddenGenres = new Set();
 let hiddenEventIds = new Set();
+let hiddenEventTitles = new Set();
 let savedEvents = new Map();
 let currentView = 'all';
 if (typeof window !== 'undefined') {
@@ -64,12 +71,12 @@ let preferredLocation = null;
 let isEditingLocation = false;
 let lastEventsSource = 'remote';
 let savedCalendarFilter = null;
-let currentLocationLabel = '';
 let hasAttemptedInitialLocation = false;
 let pendingEmptyStream = false;
 let pendingEmptyStreamRenderers = [];
 let flashEmptyStreamOnNextShow = false;
-const EMPTY_STREAM_MESSAGE = 'There are no new events that meet your criteria.';
+let mediaSearchPopup = null;
+const EMPTY_STREAM_MESSAGE = 'There are no new DMV events that meet your criteria.';
 
 function cloneEvent(event) {
   try {
@@ -90,6 +97,36 @@ function getEventId(event) {
     (typeof event?.start?.utc === 'string' && event.start.utc) ||
     '';
   return url || `${name}::${start}`;
+}
+
+function getEventTitle(event) {
+  if (!event || typeof event !== 'object') return '';
+  if (typeof event?.name?.text === 'string' && event.name.text.trim()) {
+    return event.name.text.trim();
+  }
+  if (typeof event?.name === 'string' && event.name.trim()) {
+    return event.name.trim();
+  }
+  return '';
+}
+
+function normalizeEventTitle(value) {
+  if (!value) return '';
+  return String(value).trim().toLowerCase();
+}
+
+function isEventTitleHidden(event) {
+  const title = getEventTitle(event);
+  if (!title) return false;
+  return hiddenEventTitles.has(normalizeEventTitle(title));
+}
+
+function isEventHidden(event) {
+  const eventId = getEventId(event);
+  if (eventId && hiddenEventIds.has(eventId)) {
+    return true;
+  }
+  return isEventTitleHidden(event);
 }
 
 function loadSavedEvents() {
@@ -173,6 +210,47 @@ function persistHiddenEventIds() {
   }
 }
 
+function loadHiddenEventTitles() {
+  const storage = getStorage();
+  if (!storage) return new Set();
+  try {
+    const raw = storage.getItem(SHOWS_HIDDEN_EVENT_TITLES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed
+        .map(item => normalizeEventTitle(item))
+        .filter(entry => entry.length > 0)
+    );
+  } catch (err) {
+    console.warn('Unable to read hidden event titles', err);
+    return new Set();
+  }
+}
+
+function persistHiddenEventTitles() {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(
+      SHOWS_HIDDEN_EVENT_TITLES_KEY,
+      JSON.stringify(Array.from(hiddenEventTitles))
+    );
+  } catch (err) {
+    console.warn('Unable to store hidden event titles', err);
+  }
+}
+
+function addHiddenEventTitle(event) {
+  const title = getEventTitle(event);
+  const normalized = normalizeEventTitle(title);
+  if (!normalized) return false;
+  if (hiddenEventTitles.has(normalized)) return false;
+  hiddenEventTitles.add(normalized);
+  return true;
+}
+
 async function getShowsPrefsDoc() {
   // Skip auth/DB integration during tests or non-browser environments
   if (typeof window === 'undefined' || typeof document === 'undefined' || IS_TEST) {
@@ -193,27 +271,23 @@ async function getShowsPrefsDoc() {
   }
 }
 
-async function persistShowsStateToDb(state = {}) {
+async function persistShowsStateToDb() {
   const docRef = await getShowsPrefsDoc();
-  if (!docRef || typeof firebase === 'undefined' || !firebase.firestore) return false;
-  const savedMap = state.saved instanceof Map ? state.saved : savedEvents;
-  const hiddenSet = state.hidden instanceof Set ? state.hidden : hiddenEventIds;
-  if (!savedMap || !hiddenSet) return false;
+  if (!docRef || typeof firebase === 'undefined' || !firebase.firestore) return;
   try {
     const payload = {
-      savedEvents: Array.from(savedMap.entries()).map(([id, entry]) => ({
+      savedEvents: Array.from(savedEvents.entries()).map(([id, entry]) => ({
         id,
         event: entry.event,
         savedAt: entry.savedAt
       })),
-      hiddenEventIds: Array.from(hiddenSet),
+      hiddenEventIds: Array.from(hiddenEventIds),
+      hiddenEventTitles: Array.from(hiddenEventTitles),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
     await docRef.set(payload, { merge: true });
-    return true;
   } catch (err) {
     console.warn('Unable to persist shows state to Firestore', err);
-    return false;
   }
 }
 
@@ -243,6 +317,14 @@ async function syncShowsStateFromDb() {
     if (Array.isArray(data.hiddenEventIds)) {
       hiddenEventIds = new Set(data.hiddenEventIds.map(id => String(id)));
       persistHiddenEventIds();
+    }
+    if (Array.isArray(data.hiddenEventTitles)) {
+      hiddenEventTitles = new Set(
+        data.hiddenEventTitles
+          .map(entry => normalizeEventTitle(entry))
+          .filter(Boolean)
+      );
+      persistHiddenEventTitles();
     }
   } catch (err) {
     console.warn('Unable to sync shows state from Firestore', err);
@@ -374,7 +456,7 @@ function loadSearchPrefs() {
     }
     const parsed = JSON.parse(raw);
     return {
-      radius: clampRadius(parsed?.radius),
+      radius: DEFAULT_RADIUS_MILES,
       days: clampDays(parsed?.days),
       persisted: true
     };
@@ -388,31 +470,6 @@ function loadSearchPrefs() {
   }
 }
 
-function updateUrlWithPrefs({ radius, days }) {
-  if (typeof window === 'undefined' || typeof history === 'undefined') {
-    return;
-  }
-  try {
-    const current = new URL(window.location.href);
-    if (Number.isFinite(radius)) {
-      current.searchParams.set('radius', String(radius));
-    } else {
-      current.searchParams.delete('radius');
-    }
-    if (Number.isFinite(days)) {
-      current.searchParams.set('days', String(days));
-    } else {
-      current.searchParams.delete('days');
-    }
-    const normalized = current.toString();
-    if (window.location.href !== normalized && history.replaceState) {
-      history.replaceState(null, '', normalized);
-    }
-  } catch (err) {
-    console.warn('Unable to update shows URL params', err);
-  }
-}
-
 function persistSearchPrefs() {
   const storage = getStorage();
   if (!storage) return;
@@ -420,7 +477,7 @@ function persistSearchPrefs() {
     storage.setItem(
       SHOWS_SEARCH_PREFS_KEY,
       JSON.stringify({
-        radius: clampRadius(searchPrefs.radius),
+        radius: DEFAULT_RADIUS_MILES,
         days: clampDays(searchPrefs.days)
       })
     );
@@ -428,6 +485,24 @@ function persistSearchPrefs() {
     hasPersistedSearchPrefs = true;
   } catch (err) {
     console.warn('Unable to store shows search preferences', err);
+  }
+}
+
+function updateUrlWithPrefs(prefs) {
+  if (!prefs || typeof window === 'undefined' || typeof history === 'undefined') return;
+  const replace = history.replaceState;
+  if (typeof replace !== 'function') return;
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    params.set('radius', String(clampRadius(prefs.radius)));
+    params.set('days', String(clampDays(prefs.days)));
+    const search = params.toString();
+    const path = window.location.pathname || '';
+    const hash = window.location.hash || '';
+    const url = search ? `${path}?${search}${hash}` : `${path}${hash}`;
+    replace.call(history, null, '', url);
+  } catch {
+    // ignore failures to avoid spamming logs
   }
 }
 
@@ -834,6 +909,18 @@ function getEventStartTimestamp(event) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isSavedCalendarMatch(event, filter) {
+  if (!filter) return false;
+  const ts = getEventStartTimestamp(event);
+  if (!Number.isFinite(ts)) return false;
+  const d = new Date(ts);
+  return (
+    d.getFullYear() === filter.year &&
+    d.getMonth() === filter.month &&
+    d.getDate() === filter.day
+  );
+}
+
 function isEventInFuture(event) {
   const timestamp = getEventStartTimestamp(event);
   if (timestamp == null) return true;
@@ -910,15 +997,7 @@ function buildEventsSummaryText(source, count, timestamp, view) {
 }
 
 function createEventsSummaryElement(source, count, timestamp, view, renderOptions = {}) {
-  const prefsText = describeSearchPrefs(
-    renderOptions.radius ?? searchPrefs.radius,
-    renderOptions.days ?? searchPrefs.days
-  );
-  const statusText = buildEventsSummaryText(source, count, timestamp, view);
-  const container = document.createElement('div');
-  container.className = 'shows-list-summary';
-  container.textContent = [prefsText, statusText].filter(Boolean).join(' • ');
-  return container;
+  return null;
 }
 
 function clearList() {
@@ -1200,7 +1279,7 @@ function getEffectiveLocationLabel() {
   if (storedLabel) {
     return storedLabel;
   }
-  return 'your area';
+  return DEFAULT_LOCATION.label;
 }
 
 function formatSavedSectionHeading(options = {}) {
@@ -1220,7 +1299,7 @@ function formatSavedSectionHeading(options = {}) {
     formattedDate = endDate.toLocaleDateString();
   }
   const locationLabel = getEffectiveLocationLabel();
-  return `Saved events through ${formattedDate} within ${radiusValue} miles of ${locationLabel}`;
+  return `Saved events through ${formattedDate} within ${normalizedRadius} miles of ${locationLabel}`;
 }
 
 function enterLocationEditMode() {
@@ -1479,11 +1558,15 @@ function renderEventImages(event) {
       return a.area - b.area;
     })[0];
 
-  if (!bestImage) {
-    return null;
+  let image = bestImage ? bestImage.image : null;
+  if (!image) {
+    const fallbackImages = Array.isArray(event?.images) ? event.images : [];
+    image = fallbackImages.find(entry => entry && typeof entry.url === 'string' && entry.url) || null;
   }
 
-  const { image } = bestImage;
+  if (!image) {
+    return null;
+  }
   const gallery = document.createElement('div');
   gallery.className = 'show-card__gallery';
 
@@ -1495,7 +1578,7 @@ function renderEventImages(event) {
   img.alt = `${event?.name?.text || 'Event'} image`;
   figure.appendChild(img);
 
-  if (image.fallback) {
+  if (image.fallback && event?.source !== 'blackcat') {
     const figcaption = document.createElement('figcaption');
     figcaption.textContent = 'Fallback image';
     figure.appendChild(figcaption);
@@ -1624,28 +1707,42 @@ function createGenreBadges(genres) {
   return wrapper;
 }
 
+function shouldShowMediaLinks(event) {
+  const segment =
+    typeof event?.segment === 'string' ? event.segment.toLowerCase() : '';
+  if (segment.includes('music') || segment.includes('comedy')) {
+    return true;
+  }
+  const rawGenres = Array.isArray(event?.genres) ? event.genres : [];
+  return rawGenres.some(genre => {
+    if (!genre || typeof genre !== 'string') return false;
+    const normalized = genre.toLowerCase();
+    return normalized.includes('music') || normalized.includes('comedy');
+  });
+}
+
 function createArtistLinkRow(event) {
   if (!event || typeof event !== 'object') {
     return null;
   }
 
-  const primaryName = getPrimaryArtistName(event);
-  if (!primaryName) {
-    return null;
-  }
-
-  const searchQuery = primaryName;
-  const youtubeUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
-  const spotifyUrl = `https://open.spotify.com/search/${encodeURIComponent(primaryName)}`;
-  const spotifyDeepLink = `spotify:search:${encodeURIComponent(primaryName)}`;
-
   const isMobile =
     typeof navigator !== 'undefined' &&
     /iphone|ipad|ipod|android|mobile/i.test(navigator.userAgent || '');
+  const popupWindowName = 'shows-media-search';
 
   const openPopup = (href, name) => {
     if (typeof window === 'undefined' || typeof window.open !== 'function') {
       return;
+    }
+    if (mediaSearchPopup && !mediaSearchPopup.closed) {
+      try {
+        mediaSearchPopup.location.href = href;
+        mediaSearchPopup.focus();
+        return;
+      } catch {
+        mediaSearchPopup = null;
+      }
     }
     const docEl = typeof document !== 'undefined' ? document.documentElement : null;
     const screenWidth =
@@ -1672,50 +1769,85 @@ function createArtistLinkRow(event) {
     const left = shouldUseFullWidth ? 0 : viewportWidth ? Math.max(0, viewportWidth - popupWidth) : 0;
     const features = `width=${popupWidth},height=${popupHeight},left=${left},top=0,menubar=0,location=0,resizable=1,scrollbars=1,status=0`;
     const popup = window.open(href, name, features);
-    if (popup && typeof popup.focus === 'function') {
-      popup.focus();
+    if (popup) {
+      mediaSearchPopup = popup;
+      if (typeof popup.focus === 'function') {
+        popup.focus();
+      }
     }
   };
+
+  const links = [];
+  const eventUrl = typeof event?.url === 'string' ? event.url.trim() : '';
+  if (eventUrl) {
+    links.push({
+      label: 'View listing',
+      url: eventUrl,
+      popup: false
+    });
+  }
+
+  const primaryName = getPrimaryArtistName(event);
+  if (primaryName && shouldShowMediaLinks(event)) {
+    const searchQuery = primaryName;
+    const youtubeUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(
+      searchQuery
+    )}`;
+    const spotifyUrl = `https://open.spotify.com/search/${encodeURIComponent(primaryName)}`;
+    const spotifyDeepLink = `spotify:search:${encodeURIComponent(primaryName)}`;
+    links.push(
+      {
+        label: 'Search on YouTube',
+        url: `${youtubeUrl}&autoplay=1`,
+        name: 'shows-youtube-search',
+        popup: true
+      },
+      {
+        label: 'Search on Spotify',
+        url: `${spotifyUrl}?autoplay=true`,
+        name: 'shows-spotify-search',
+        deepLink: spotifyDeepLink,
+        popup: true
+      }
+    );
+  }
+
+  if (!links.length) {
+    return null;
+  }
 
   const wrapper = document.createElement('div');
   wrapper.className = 'show-card__external-links';
 
-  [
-    {
-      label: 'Search on YouTube',
-      url: `${youtubeUrl}&autoplay=1`,
-      name: 'shows-youtube-search'
-    },
-    {
-      label: 'Search on Spotify',
-      url: `${spotifyUrl}?autoplay=true`,
-      name: 'shows-spotify-search',
-      deepLink: spotifyDeepLink
-    }
-  ].forEach(({ label, url, name, deepLink }, index) => {
+  links.forEach((linkConfig, index) => {
     const link = document.createElement('a');
     link.className = 'show-card__external-link';
-    link.href = url;
+    link.href = linkConfig.url;
     link.rel = 'noopener noreferrer';
-    link.textContent = label;
-    link.addEventListener('click', event => {
-      event.preventDefault();
-      // On mobile, attempt to open the Spotify app directly; fall back to web search.
-      if (name === 'shows-spotify-search' && isMobile && deepLink) {
-        try {
-          window.location.href = deepLink;
-          setTimeout(() => {
-            window.location.href = url;
-          }, 1200);
-        } catch {
-          window.location.href = url;
+    link.textContent = linkConfig.label;
+
+    if (linkConfig.popup) {
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        if (linkConfig.name === 'shows-spotify-search' && isMobile && linkConfig.deepLink) {
+          try {
+            window.location.href = linkConfig.deepLink;
+            setTimeout(() => {
+              window.location.href = linkConfig.url;
+            }, 1200);
+          } catch {
+            window.location.href = linkConfig.url;
+          }
+          return;
         }
-        return;
-      }
-      openPopup(url, name);
-    });
+        openPopup(linkConfig.url, popupWindowName);
+      });
+    } else {
+      link.target = '_blank';
+    }
+
     wrapper.appendChild(link);
-    if (index === 0) {
+    if (index === 0 && index < links.length - 1) {
       const divider = document.createElement('span');
       divider.className = 'show-card__external-divider';
       divider.setAttribute('aria-hidden', 'true');
@@ -1806,6 +1938,9 @@ function createEventCard(event, options = {}) {
   if (isSavedCard) {
     card.classList.add('show-card--saved');
   }
+  if (options.dateMatch) {
+    card.classList.add('show-card--date-match');
+  }
 
   const saveBtn = document.createElement('a');
   saveBtn.href = '#';
@@ -1862,15 +1997,68 @@ function createEventCard(event, options = {}) {
   hideBtn.textContent = 'Hide';
   hideBtn.addEventListener('click', e => {
     e.preventDefault();
-    hiddenEventIds.add(eventId);
-    persistHiddenEventIds();
-    persistShowsStateToDb();
-    if (savedEvents.has(eventId)) {
-      savedEvents.delete(eventId);
-      persistSavedEvents();
+    const changed = hideEventOnce(event);
+    if (changed) {
+      renderEvents(null, { view: currentView });
     }
-    renderEvents(null, { view: currentView });
   });
+
+  function hideEventOnce(targetEvent) {
+    const changed = markEventHiddenById(targetEvent);
+    if (changed) {
+      persistHiddenEventIds();
+      persistShowsStateToDb();
+    }
+    return changed;
+  }
+
+  function hideEventForever(targetEvent) {
+    const changed = markEventHiddenById(targetEvent);
+    const titleAdded = addHiddenEventTitle(targetEvent);
+    if (changed) {
+      persistHiddenEventIds();
+    }
+    if (titleAdded) {
+      persistHiddenEventTitles();
+    }
+    if (changed || titleAdded) {
+      persistShowsStateToDb();
+      return true;
+    }
+    return false;
+  }
+
+  function markEventHiddenById(targetEvent) {
+    if (!targetEvent || typeof targetEvent !== 'object') return false;
+    const targetId = getEventId(targetEvent);
+    if (!targetId) return false;
+    let changed = false;
+    if (!hiddenEventIds.has(targetId)) {
+      hiddenEventIds.add(targetId);
+      changed = true;
+    }
+    if (savedEvents.has(targetId)) {
+      savedEvents.delete(targetId);
+      persistSavedEvents();
+      changed = true;
+    }
+    return changed;
+  }
+
+  const hideAllRow = document.createElement('div');
+  hideAllRow.className = 'show-card__hide-all';
+  const hideAllLink = document.createElement('a');
+  hideAllLink.href = '#';
+  hideAllLink.className = 'show-card__hide-all-link';
+  hideAllLink.textContent = 'Hide forever';
+  hideAllLink.addEventListener('click', e => {
+    e.preventDefault();
+    const changed = hideEventForever(event);
+    if (changed) {
+      renderEvents(null, { view: currentView });
+    }
+  });
+  hideAllRow.appendChild(hideAllLink);
 
   const cta = document.createElement('a');
   cta.className = 'show-card__button show-card__button--link';
@@ -1949,6 +2137,7 @@ function createEventCard(event, options = {}) {
     detailsColumn.appendChild(genreBadges);
   }
   detailsColumn.appendChild(actionsRow);
+  detailsColumn.appendChild(hideAllRow);
 
   if (gallery) {
     const mediaColumn = document.createElement('div');
@@ -1973,6 +2162,10 @@ function renderGenreFilters(events, options = {}) {
   const renderOptions = { ...options };
   const genres = new Map();
   events.forEach(event => {
+    const eventId = getEventId(event);
+    if (savedEvents.has(eventId)) {
+      return;
+    }
     getEventGenres(event).forEach(genre => {
       genres.set(genre, (genres.get(genre) || 0) + 1);
     });
@@ -2230,7 +2423,7 @@ function createSavedCalendars(events) {
             month: monthData.month,
             day
           };
-          renderEvents(null, { view: 'saved', scrollToFirstOnMobile: true });
+          renderEvents(null, { view: 'saved' });
         });
       } else {
         cell.classList.add('shows-saved-calendar__cell--disabled');
@@ -2256,6 +2449,7 @@ function createSavedCalendars(events) {
 function renderEvents(events, options = {}) {
   hideEmptyStreamMessage();
   resetPendingEmptyStream();
+  resetPendingEmptyStream();
   if (!elements.list) return;
   const view = options.view || currentView || 'all';
   currentView = view;
@@ -2278,7 +2472,14 @@ function renderEvents(events, options = {}) {
   setLoading(true);
 
   hiddenGenres = loadHiddenGenres();
-  hiddenEventIds = loadHiddenEventIds();
+  hiddenEventIds = new Set([
+    ...hiddenEventIds,
+    ...loadHiddenEventIds()
+  ]);
+  hiddenEventTitles = new Set([
+    ...hiddenEventTitles,
+    ...loadHiddenEventTitles()
+  ]);
   const cached = loadCachedEvents();
 
   let workingEvents;
@@ -2295,12 +2496,15 @@ function renderEvents(events, options = {}) {
   const effectiveDays = clampDays(renderOptions.days ?? searchPrefs.days);
   const upcomingEvents = workingEvents.filter(isEventInFuture);
 
-  const preferenceFiltered = filterEventsByPreferences(upcomingEvents, {
-    radius: effectiveRadius,
-    days: effectiveDays
-  });
+  const preferenceFiltered =
+    view === 'saved'
+      ? upcomingEvents
+      : filterEventsByPreferences(upcomingEvents, {
+          radius: effectiveRadius,
+          days: effectiveDays
+        });
 
-  let visibleEvents = preferenceFiltered.filter(event => !hiddenEventIds.has(getEventId(event)));
+  let visibleEvents = preferenceFiltered.filter(event => !isEventHidden(event));
   if (view === 'saved' && savedCalendarFilter) {
     visibleEvents = [
       ...visibleEvents.filter(event => {
@@ -2400,7 +2604,7 @@ function renderEvents(events, options = {}) {
     }
 
     const fallbackSavedEvents = getSavedEventsList().filter(
-      event => event && isEventInFuture(event) && !hiddenEventIds.has(getEventId(event))
+      event => event && isEventInFuture(event) && !isEventHidden(event)
     );
 
     if (fallbackSavedEvents.length) {
@@ -2456,11 +2660,19 @@ function renderEvents(events, options = {}) {
   }
 
   const appendCards = (eventsToRender, opts = {}) => {
-    eventsToRender.forEach(event =>
+    eventsToRender.forEach(event => {
+      const dateMatch =
+        view === 'saved' && savedCalendarFilter
+          ? isSavedCalendarMatch(event, savedCalendarFilter)
+          : false;
       listColumn.appendChild(
-        createEventCard(event, { ...renderOptions, saved: opts.saved === true })
-      )
-    );
+        createEventCard(event, {
+          ...renderOptions,
+          saved: opts.saved === true,
+          dateMatch
+        })
+      );
+    });
   };
 
   if (view === 'saved') {
@@ -2495,19 +2707,6 @@ function renderEvents(events, options = {}) {
     listColumn.insertBefore(summary, listColumn.firstChild);
   }
   elements.list.appendChild(layout);
-
-  if (
-    view === 'saved' &&
-    renderOptions.scrollToFirstOnMobile &&
-    typeof window !== 'undefined' &&
-    window.matchMedia &&
-    window.matchMedia('(max-width: 640px)').matches
-  ) {
-    const firstCard = layout.querySelector('.show-card');
-    if (firstCard && typeof firstCard.scrollIntoView === 'function') {
-      firstCard.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
-    }
-  }
 }
 
 function requestLocation() {
@@ -2561,44 +2760,18 @@ async function discoverNewEvents(options = {}) {
   setLoading(true);
   hideEmptyStreamMessage();
   resetPendingEmptyStream();
-  setStatus('Checking for new shows in your area...');
+  setStatus('Checking for events within 50 miles of Washington, DC...');
 
-  const desiredRadius = clampRadius(
-    options.radius != null ? options.radius : searchPrefs.radius
-  );
+  const desiredRadius = DEFAULT_RADIUS_MILES;
   const desiredDays = clampDays(options.days != null ? options.days : searchPrefs.days);
   searchPrefs.radius = desiredRadius;
   searchPrefs.days = desiredDays;
   persistSearchPrefs();
-  if (elements.distanceSelect) {
-    elements.distanceSelect.value = String(desiredRadius);
-  }
   syncDatePickerValue(desiredDays);
 
   const cached = loadCachedEvents();
-  const normalizedOverride = normalizeLocationCandidate(options.location);
-  let location = normalizedOverride || preferredLocation;
-  if (!location) {
-    location = await requestLocation();
-  }
-  if (!location) {
-    setStatus('Unable to access your location.');
-    clearList();
-    setRefreshLoading(false);
-    setLoading(false);
-    isDiscovering = false;
-    return;
-  }
-  if (normalizedOverride) {
-    preferredLocation = normalizedOverride;
-    if (options.persistLocation !== false) {
-      persistPreferredLocation(preferredLocation);
-    }
-  }
-  const statusMessage = location.label
-    ? `Checking for shows near ${location.label}...`
-    : 'Checking for shows in your area...';
-  setStatus(statusMessage);
+  const location = DEFAULT_LOCATION;
+  setStatus('Checking for events within 50 miles of Washington, DC...');
 
   const cacheLocationMatches = isSameLocation(cached?.location, location);
   if (
@@ -2719,10 +2892,10 @@ export async function initShowsPanel(options = {}) {
   savedEvents = loadSavedEvents();
   hiddenEventIds = loadHiddenEventIds();
   await syncShowsStateFromDb();
-  preferredLocation = loadPreferredLocation();
+  preferredLocation = DEFAULT_LOCATION;
   const loadedPrefs = loadSearchPrefs();
   searchPrefs = {
-    radius: loadedPrefs.radius,
+    radius: DEFAULT_RADIUS_MILES,
     days: loadedPrefs.days
   };
   hasPersistedSearchPrefs = Boolean(loadedPrefs.persisted);
@@ -2731,26 +2904,7 @@ export async function initShowsPanel(options = {}) {
   hiddenGenres = loadHiddenGenres();
   updateViewTabs(currentView);
 
-  ensureSelectOptions(
-    elements.distanceSelect,
-    AVAILABLE_RADIUS_OPTIONS,
-    value => `${value} mi`
-  );
-
-  if (elements.distanceSelect) {
-    elements.distanceSelect.value = String(clampRadius(searchPrefs.radius));
-    elements.distanceSelect.addEventListener('change', () => {
-    const nextRadius = clampRadius(elements.distanceSelect.value);
-    if (nextRadius === searchPrefs.radius) return;
-    searchPrefs.radius = nextRadius;
-    persistSearchPrefs();
-    renderWithPrefsAndMaybeRefresh();
-  });
-}
-
   initDatePickerControl();
-  initLocationControls();
-  await ensureInitialLocation();
 
   if (elements.tabAll) {
     elements.tabAll.addEventListener('click', () => {
@@ -2768,9 +2922,6 @@ export async function initShowsPanel(options = {}) {
     });
   }
 
-  if (elements.distanceSelect) {
-    elements.distanceSelect.value = String(searchPrefs.radius);
-  }
   syncDatePickerValue(searchPrefs.days);
 
   const hashView = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
@@ -2788,16 +2939,10 @@ export async function initShowsPanel(options = {}) {
   if (cached && Array.isArray(cached.events) && cached.events.length) {
     latestEvents = cached.events;
     if (!hasPersistedSearchPrefs) {
-      if (cached.radiusMiles) {
-        searchPrefs.radius = clampRadius(cached.radiusMiles);
-      }
       if (cached.days) {
         searchPrefs.days = clampDays(cached.days);
       }
       persistSearchPrefs();
-    }
-    if (elements.distanceSelect) {
-      elements.distanceSelect.value = String(searchPrefs.radius);
     }
     syncDatePickerValue(searchPrefs.days);
     const renderOptions = {

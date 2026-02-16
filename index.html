@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
-    <title>Live Events</title>
+    <title>DMV Events</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -25,7 +25,7 @@
     <div id="showsPanel" class="main-layout">
       <div class="full-column">
         <div class="shows-panel-header">
-          <h2>Live Events</h2>
+          <h2>DMV Events</h2>
         </div>
         <div class="shows-toolbar">
           <div class="shows-tab-buttons" role="tablist" aria-label="Live music view">
@@ -35,46 +35,7 @@
           <div class="shows-toolbar__actions">
             <div class="shows-toolbar__control shows-toolbar__control--distance-location">
               <div class="shows-distance-group">
-                <select id="showsDistanceSelect">
-                  <option value="10">10 mi</option>
-                  <option value="25">25 mi</option>
-                  <option value="50">50 mi</option>
-                  <option value="75">75 mi</option>
-                  <option value="100">100 mi</option>
-                  <option value="125">125 mi</option>
-                  <option value="150">150 mi</option>
-                </select>
-                <div class="shows-location-inline">
-                  <span id="showsLocationText" class="shows-location-text">&nbsp;</span>
-                  <input
-                    type="search"
-                    id="showsLocationInput"
-                    class="shows-location-input"
-                    placeholder="City, address, or landmark"
-                    autocomplete="off"
-                    hidden
-                  />
-                  <button
-                    type="button"
-                    id="showsLocationEditButton"
-                    class="shows-location-edit-btn"
-                    aria-label="Edit location"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M5 17.25V21h3.75l11.06-11.06-3.75-3.75L5 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    id="showsLocationButton"
-                    class="shows-location-btn"
-                    aria-label="Use my current location"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 112.5-2.5A2.5 2.5 0 0112 11.5z" />
-                    </svg>
-                  </button>
-                </div>
+                <span class="shows-location-text">Within 50 miles of Washington, DC</span>
               </div>
             </div>
             <div class="shows-toolbar__control shows-toolbar__control--date">
@@ -82,6 +43,12 @@
               <div class="shows-date-picker">
                 <input type="date" id="showsDateInput" />
               </div>
+            </div>
+            <div class="shows-toolbar__control shows-toolbar__control--hidden-toggle">
+              <label class="shows-hidden-toggle">
+                <input type="checkbox" id="showsHiddenEventsToggle" />
+                <span>Show hidden events</span>
+              </label>
             </div>
             <div class="shows-toolbar__shortcut-group" role="group" aria-label="Quick action links">
               <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="0">Today</a>
