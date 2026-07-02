@@ -5,19 +5,11 @@
   <meta charset="UTF-8" />
     <title>DMV Events</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="style.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap"
-    rel="stylesheet"
-  />
+  <link rel="stylesheet" href="style.css?v=20260702-3" />
+  <link rel="modulepreload" href="js/shows.js?v=20260702-3" />
+  <link rel="preload" href="data/shows-bootstrap-dmv.json?v=20260702-3" as="fetch" crossorigin="anonymous" />
   <link rel="icon" href="assets/favicon.ico" type="image/x-icon">
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png">
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
 </head>
 
 <body>
@@ -35,25 +27,8 @@
           <div class="shows-toolbar__actions">
             <div class="shows-toolbar__control shows-toolbar__control--distance-location">
               <div class="shows-distance-group">
-                <span class="shows-location-text">Within 50 miles of Washington, DC</span>
+                <span class="shows-location-text"></span>
               </div>
-            </div>
-            <div class="shows-toolbar__control shows-toolbar__control--date">
-              <label for="showsDateInput">Through</label>
-              <div class="shows-date-picker">
-                <input type="date" id="showsDateInput" />
-              </div>
-            </div>
-            <div class="shows-toolbar__control shows-toolbar__control--hidden-toggle">
-              <label class="shows-hidden-toggle">
-                <input type="checkbox" id="showsHiddenEventsToggle" />
-                <span>Show hidden events</span>
-              </label>
-            </div>
-            <div class="shows-toolbar__shortcut-group" role="group" aria-label="Quick action links">
-              <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="0">Today</a>
-              <a href="#" class="shows-date-chip shows-toolbar__shortcut" data-days="7">Next 7 days</a>
-              <a href="#" id="showsRefreshBtn" class="shows-discover-btn shows-toolbar__shortcut">Check for new events</a>
             </div>
           </div>
         </div>
@@ -112,8 +87,6 @@
       </form>
     </div>
   </div>
-  <script src="https://apis.google.com/js/api.js"></script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="text/javascript">
     (() => {
       if (typeof window === 'undefined' || typeof window.location === 'undefined') return;
@@ -128,8 +101,93 @@
       window.showsEndpoint = `${base}/api/shows`;
     })();
   </script>
-  <script type="module" src="js/main.js"></script>
-  <script type="module" src="js/shows.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script type="text/javascript">
+    (() => {
+      const assetVersion = '20260702-3';
+      if (typeof window === 'undefined') return;
+      const storageKey = 'dashboardAssetVersion';
+      const freshClientDoneParam = 'freshClientDone';
+      const loadModule = src =>
+        new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.type = 'module';
+          script.src = src;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.body.appendChild(script);
+        });
+      const afterIdle = callback => {
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(callback, { timeout: 1500 });
+          return;
+        }
+        setTimeout(callback, 250);
+      };
+      const loadOptionalScript = src => {
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = src;
+        document.body.appendChild(script);
+      };
+      const getStartupParams = () => {
+        try {
+          return new URLSearchParams(window.location.search || '');
+        } catch {
+          return new URLSearchParams();
+        }
+      };
+      const shouldForceFreshClient = () => {
+        const params = getStartupParams();
+        const value = String(params.get('freshClient') || '').trim().toLowerCase();
+        return value === '1' || value === 'true' || value === 'yes';
+      };
+      const buildFreshClientReloadUrl = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('freshClient');
+        url.searchParams.set(freshClientDoneParam, assetVersion);
+        url.searchParams.set('_', String(Date.now()));
+        return url.toString();
+      };
+      const clearDashboardCaches = async () => {
+        try {
+          if (window.caches?.keys) {
+            const names = await caches.keys();
+            await Promise.all(
+              names
+                .filter(name => name.startsWith('dashboard-static-') || name.startsWith('dashboard-dynamic-') || name.startsWith('dashboard-images-'))
+                .map(name => caches.delete(name))
+            );
+          }
+        } catch (err) {
+          console.warn('Asset cache cleanup failed:', err);
+        }
+      };
+      const start = async () => {
+        const previousVersion = localStorage.getItem(storageKey);
+        const startupParams = getStartupParams();
+        const forceFreshClient = shouldForceFreshClient();
+        const freshClientAlreadyDone = startupParams.get(freshClientDoneParam) === assetVersion;
+        if (forceFreshClient && !freshClientAlreadyDone) {
+          localStorage.setItem(storageKey, assetVersion);
+          window.location.replace(buildFreshClientReloadUrl());
+          return;
+        }
+        if (previousVersion !== assetVersion) {
+          localStorage.setItem(storageKey, assetVersion);
+          if (previousVersion) {
+            await clearDashboardCaches();
+          }
+        }
+        await loadModule(`js/shows.js?v=${assetVersion}`);
+        loadModule(`js/main.js?v=${assetVersion}`).catch(err =>
+          console.error('Dashboard app startup failed:', err)
+        );
+        afterIdle(() => {
+          loadOptionalScript('https://cdn.jsdelivr.net/npm/chart.js');
+        });
+      };
+      start().catch(err => console.error('Dashboard startup failed:', err));
+    })();
+  </script>
 </body>
 </html>

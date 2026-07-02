@@ -14,46 +14,11 @@ import { initDescriptions } from './descriptions.js';
 
 let hiddenTabsTimer = null;
 let renderQueue = Promise.resolve();
+let dashboardAppInitialized = false;
 
-window.addEventListener('DOMContentLoaded', () => {
-  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-    let refreshing = false;
-    let shouldReloadOnChange = Boolean(navigator.serviceWorker.controller);
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (refreshing) return;
-      if (!shouldReloadOnChange) {
-        shouldReloadOnChange = true;
-        return;
-      }
-      refreshing = true;
-      window.location.reload();
-    });
-
-    navigator.serviceWorker
-      .register('./service-worker.js')
-      .then(registration => {
-        if (!registration) return;
-        if (registration.waiting && navigator.serviceWorker.controller) {
-          registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-        }
-        registration.addEventListener('updatefound', () => {
-          const newWorker = registration.installing;
-          if (!newWorker) return;
-          newWorker.addEventListener('statechange', () => {
-            if (
-              newWorker.state === 'installed' &&
-              navigator.serviceWorker.controller &&
-              registration.waiting
-            ) {
-              registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-            }
-          });
-        });
-      })
-      .catch(err => {
-        console.warn('Service worker registration failed:', err);
-      });
-  }
+function initDashboardApp() {
+  if (dashboardAppInitialized) return;
+  dashboardAppInitialized = true;
     applySiteName();
     initDescriptions();
   const uiRefs = {
@@ -466,9 +431,19 @@ window.addEventListener('DOMContentLoaded', () => {
 
       if (goalsView) goalsView.style.display = '';
 
+      const showsRefreshPromise =
+        typeof window.initShowsPanel === 'function'
+          ? window.initShowsPanel({
+              syncStateFromDb: true,
+              showRefreshLoading: false
+            }).catch(err => {
+              console.error('Failed to refresh shows after sign-in', err);
+            })
+          : Promise.resolve();
       await initTabs(user, db);
       const hidden = await loadHiddenTabs();
       applyHiddenTabs(hidden);
+      await showsRefreshPromise;
       if (hiddenTabsTimer) clearInterval(hiddenTabsTimer);
       hiddenTabsTimer = setInterval(async () => {
         const h = await loadHiddenTabs();
@@ -524,7 +499,13 @@ window.addEventListener('DOMContentLoaded', () => {
       // ignore errors during unload
     }
   });
-});
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', initDashboardApp, { once: true });
+} else {
+  queueMicrotask(initDashboardApp);
+}
 
 window.renderDailyTasks = renderDailyTasks;
 window.initMetricsUI = initMetricsUI;

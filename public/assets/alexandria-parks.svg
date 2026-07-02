@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+  <title id="title">Alexandria Parks</title>
+  <desc id="desc">Generic Alexandria Parks event image.</desc>
+  <rect width="1200" height="900" fill="#f4f7ef"/>
+  <path d="M0 652c116-62 233-88 351-78 96 8 169 40 243 72 91 39 184 80 324 70 96-7 191-38 282-88v272H0z" fill="#2f6f4e"/>
+  <path d="M0 713c127-42 244-48 351-18 98 28 178 78 276 99 155 33 337-5 573-126v232H0z" fill="#214f3a"/>
+  <circle cx="942" cy="213" r="104" fill="#f4bc45"/>
+  <path d="M311 540c54-120 150-205 289-255 138 50 235 135 289 255H311z" fill="#3b7c5d"/>
+  <path d="M386 540c46-74 117-128 214-162 97 34 168 88 214 162H386z" fill="#6ba15f"/>
+  <path d="M600 238v340" stroke="#214f3a" stroke-width="34" stroke-linecap="round"/>
+  <path d="M600 280c-73 16-128 58-166 126 84 7 152-18 205-76z" fill="#75a843"/>
+  <path d="M600 331c78 15 139 61 183 138-92 8-168-22-226-90z" fill="#4f8f45"/>
+  <rect x="166" y="93" width="420" height="106" rx="16" fill="#ffffff" opacity=".92"/>
+  <text x="197" y="139" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#214f3a">Alexandria</text>
+  <text x="197" y="178" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#2f6f4e">Parks &amp; Recreation</text>
+</svg>

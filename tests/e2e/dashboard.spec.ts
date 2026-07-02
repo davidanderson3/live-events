@@ -1,23 +1,4 @@
 import { test, expect } from '@playwright/test';
-import { spawn } from 'child_process';
-import path from 'path';
-
-let server: ReturnType<typeof spawn>;
-
-// Start the static server before the suite and stop afterwards
-// The server simply serves the project at http://localhost:3002
-
-const serverPath = path.join(__dirname, '../../functions/backend/server.js');
-
-test.beforeAll(async () => {
-  server = spawn('node', [serverPath], { stdio: 'inherit' });
-  // give the server a moment to start
-  await new Promise(r => setTimeout(r, 1000));
-});
-
-test.afterAll(() => {
-  server.kill();
-});
 
 // Stub external resources (Firebase, Google APIs, etc.) so the tests run
 async function stubExternal(page) {
@@ -48,16 +29,12 @@ async function stubExternal(page) {
   });
 }
 
-test('shows tab renders when ready', async ({ page }) => {
+test('events view renders when ready', async ({ page }) => {
   await stubExternal(page);
-  await page.goto('http://localhost:3002');
-  await page.evaluate(() => {
-    const tabs = document.getElementById('tabsContainer');
-    if (tabs) tabs.style.visibility = 'visible';
-  });
+  await page.goto('/');
 
-  await page.waitForSelector('button[data-target="showsPanel"]', { state: 'visible' });
+  await expect(page.getByRole('heading', { name: 'DMV Events' })).toBeVisible();
   await expect(page.locator('#showsPanel')).toBeVisible();
-  const tabCount = await page.locator('#tabsContainer .tab-button').count();
-  expect(tabCount).toBe(1);
+  await expect(page.getByRole('tablist', { name: 'Live music view' })).toBeVisible();
+  await expect(page.locator('.show-card').first()).toBeVisible();
 });

@@ -38,16 +38,747 @@
       }
     },
     {
+      "id": "recurring",
+      "name": "Recurring Events",
+      "type": "recurring",
+      "enabled": true,
+      "description": "Recurring events aggregated from multiple active sources",
+      "order": 2,
+      "config": {
+        "sourceIds": [
+          "smithsonian",
+          "politicsandprose",
+          "glenecho",
+          "alexandriaparks",
+          "montgomeryparks",
+          "pgparks",
+          "joesmovement",
+          "theatrewashington",
+          "allsoulsunitarian"
+        ]
+      }
+    },
+    {
+      "id": "establishedrecurring",
+      "name": "Established Recurring Nights",
+      "type": "established_recurring",
+      "enabled": true,
+      "description": "Standing weekly events that recur indefinitely and should be periodically re-verified",
+      "order": 2.5,
+      "config": {
+        "timeZone": "America/New_York",
+        "autoApprove": true,
+        "verificationCadenceDays": 30,
+        "events": [
+          {
+            "id": "nellies-out-of-bounds-trivia",
+            "title": "Out of Bounds Trivia",
+            "url": "https://www.nelliessportsbar.com/trivia-night/",
+            "weekday": 3,
+            "startTime": "19:30",
+            "endTime": "20:30",
+            "lastVerifiedAt": "2026-05-21",
+            "verificationNote": "Nellie's lists Out of Bounds Trivia every Wednesday at 7:30pm and 8:30pm; re-check monthly.",
+            "summary": "Weekly pub trivia at Nellie's Sports Bar with games at 7:30pm and 8:30pm every Wednesday for teams of up to eight players.",
+            "venue": {
+              "name": "Nellie's Sports Bar",
+              "address": {
+                "line1": "900 U Street NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20001"
+              }
+            },
+            "genres": [
+              "Games & Competitions"
+            ],
+            "imageUrl": "https://cdn.nelliessportsbar.com/2022/10/Out_of_Bounds_StyleA_1x1-1024x1024.jpg"
+          },
+          {
+            "id": "nellies-karaoke-night",
+            "title": "Karaoke Night",
+            "url": "https://www.nelliessportsbar.com/karaoke-night/",
+            "weekday": 2,
+            "startTime": "21:00",
+            "endTime": "23:59",
+            "lastVerifiedAt": "2026-05-21",
+            "verificationNote": "Nellie's lists karaoke every Tuesday at 9pm; re-check monthly.",
+            "summary": "Weekly karaoke night at Nellie's Sports Bar every Tuesday at 9pm.",
+            "venue": {
+              "name": "Nellie's Sports Bar",
+              "address": {
+                "line1": "900 U Street NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20001"
+              }
+            },
+            "genres": [
+              "Games & Competitions"
+            ],
+            "imageUrl": "https://cdn.nelliessportsbar.com/2021/09/logo_white-2.png"
+          }
+        ]
+      }
+    },
+    {
+      "id": "freshfarmmarkets",
+      "name": "FRESHFARM Farmers Markets",
+      "type": "established_recurring",
+      "enabled": true,
+      "description": "Recurring FRESHFARM farmers markets in the DC area",
+      "order": 2.6,
+      "config": {
+        "timeZone": "America/New_York",
+        "autoApprove": true,
+        "verificationCadenceDays": 14,
+        "events": [
+          {
+            "id": "freshfarm-citycenterdc",
+            "title": "FRESHFARM CityCenterDC Market",
+            "url": "https://www.freshfarm.org/markets/citycenterdc",
+            "weekday": 2,
+            "startDate": "2026-05-05",
+            "endDate": "2026-10-27",
+            "startTime": "11:00",
+            "endTime": "14:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists CityCenterDC on Tuesdays, May 5 - Oct 27, 11:00am - 2:00pm.",
+            "summary": "Weekly FRESHFARM farmers market at CityCenterDC.",
+            "venue": {
+              "name": "CityCenterDC",
+              "address": {
+                "line1": "1098 New York Ave NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20001"
+              }
+            },
+            "geo": { "latitude": 38.9004, "longitude": -77.0263 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-whittier-elementary",
+            "title": "FRESHFARM Whittier Elementary Farm Stand",
+            "url": "https://www.freshfarm.org/markets/whittier-farm-stand",
+            "weekday": 2,
+            "startDate": "2026-05-05",
+            "endDate": "2026-11-24",
+            "startTime": "15:00",
+            "endTime": "18:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Whittier Elementary on Tuesdays, May 5 - Nov 24, 3:00pm - 6:00pm.",
+            "summary": "Weekly FRESHFARM farm stand at Whittier Elementary School.",
+            "venue": {
+              "name": "Whittier Elementary School",
+              "address": {
+                "line1": "6201 5th St NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20011"
+              }
+            },
+            "geo": { "latitude": 38.9668, "longitude": -77.0194 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-columbia-heights-wed",
+            "title": "FRESHFARM Columbia Heights Wednesday Market",
+            "url": "https://www.freshfarm.org/markets/columbia-heights-wed",
+            "weekday": 3,
+            "startDate": "2026-05-06",
+            "endDate": "2026-11-25",
+            "startTime": "15:00",
+            "endTime": "19:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Columbia Heights (Wed) on Wednesdays, May 6 - Nov 25, 3:00pm - 7:00pm.",
+            "summary": "Weekly Wednesday FRESHFARM farmers market at Columbia Heights Civic Plaza.",
+            "venue": {
+              "name": "Columbia Heights Civic Plaza",
+              "address": {
+                "line1": "1400 Park Rd NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20010"
+              }
+            },
+            "geo": { "latitude": 38.9317, "longitude": -77.0324 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-foggy-bottom",
+            "title": "FRESHFARM Foggy Bottom Market",
+            "url": "https://www.freshfarm.org/markets/foggy-bottom",
+            "weekday": 3,
+            "startDate": "2026-01-07",
+            "endDate": "2026-12-30",
+            "startTime": "15:00",
+            "endTime": "19:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Foggy Bottom on Wednesdays, Jan 7 - Dec 30, 3:00pm - 7:00pm.",
+            "summary": "Weekly FRESHFARM farmers market on the George Washington University campus.",
+            "venue": {
+              "name": "Foggy Bottom",
+              "address": {
+                "line1": "I St NW at 23rd St NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20052"
+              }
+            },
+            "geo": { "latitude": 38.9006, "longitude": -77.0491 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-reston",
+            "title": "FRESHFARM Reston Market",
+            "url": "https://www.freshfarm.org/markets/reston",
+            "weekday": 3,
+            "startDate": "2026-01-07",
+            "endDate": "2026-12-30",
+            "startTime": "15:00",
+            "endTime": "19:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Reston on Wednesdays, Jan 7 - Dec 30, 3:00pm - 7:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in Reston.",
+            "venue": {
+              "name": "Reston",
+              "address": {
+                "line1": "11900 Market St",
+                "city": "Reston",
+                "region": "VA",
+                "postalCode": "20190"
+              }
+            },
+            "geo": { "latitude": 38.9585, "longitude": -77.3588 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-rosslyn",
+            "title": "FRESHFARM Rosslyn Market",
+            "url": "https://www.freshfarm.org/markets/rosslyn",
+            "weekday": 3,
+            "startDate": "2026-05-06",
+            "endDate": "2026-10-28",
+            "startTime": "14:00",
+            "endTime": "18:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Rosslyn on Wednesdays, May 6 - Oct 28, 2:00pm - 6:00pm.",
+            "summary": "Weekly FRESHFARM farmers market at Central Place Plaza in Rosslyn.",
+            "venue": {
+              "name": "Central Place Plaza",
+              "address": {
+                "line1": "1800 N Lynn St",
+                "city": "Arlington",
+                "region": "VA",
+                "postalCode": "22209"
+              }
+            },
+            "geo": { "latitude": 38.8954, "longitude": -77.0713 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-ballston",
+            "title": "FRESHFARM Ballston Market",
+            "url": "https://www.freshfarm.org/markets/ballston",
+            "weekday": 4,
+            "startDate": "2026-01-08",
+            "endDate": "2026-12-17",
+            "startTime": "15:00",
+            "endTime": "19:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Ballston on Thursdays, Jan 8 - Dec 17, 3:00pm - 7:00pm.",
+            "summary": "Weekly FRESHFARM farmers market at Welburn Square in Ballston.",
+            "venue": {
+              "name": "Welburn Square",
+              "address": {
+                "line1": "901 N Taylor St",
+                "city": "Arlington",
+                "region": "VA",
+                "postalCode": "22203"
+              }
+            },
+            "geo": { "latitude": 38.8819, "longitude": -77.1123 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-by-the-white-house",
+            "title": "FRESHFARM By The White House Market",
+            "url": "https://www.freshfarm.org/markets/by-the-white-house",
+            "weekday": 4,
+            "startDate": "2026-04-02",
+            "endDate": "2026-11-19",
+            "startTime": "11:00",
+            "endTime": "14:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists By The White House on Thursdays, Apr 2 - Nov 19, 11:00am - 2:00pm.",
+            "summary": "Weekly lunchtime FRESHFARM farmers market by the White House.",
+            "venue": {
+              "name": "By The White House",
+              "address": {
+                "line1": "810 Vermont Ave NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20420"
+              }
+            },
+            "geo": { "latitude": 38.9006, "longitude": -77.0334 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-minnesota-ave",
+            "title": "FRESHFARM Minnesota Ave Farm Stand",
+            "url": "https://www.freshfarm.org/markets/minnesota-ave",
+            "weekday": 4,
+            "startDate": "2026-06-04",
+            "endDate": "2026-11-19",
+            "startTime": "13:00",
+            "endTime": "16:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Minnesota Ave. on Thursdays, Jun 4 - Nov 19, 1:00pm - 4:00pm.",
+            "summary": "Weekly Thursday FRESHFARM farm stand on Minnesota Avenue.",
+            "venue": {
+              "name": "Minnesota Ave.",
+              "address": {
+                "line1": "3924 Minnesota Ave NE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20019"
+              }
+            },
+            "geo": { "latitude": 38.8944, "longitude": -76.9495 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-simon-elementary",
+            "title": "FRESHFARM Simon Elementary Farm Stand",
+            "url": "https://www.freshfarm.org/markets/simon-farm-stand",
+            "weekday": 4,
+            "startDate": "2026-05-07",
+            "endDate": "2026-11-19",
+            "startTime": "14:30",
+            "endTime": "17:30",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Simon Elementary on Thursdays, May 7 - Nov 19, 2:30pm - 5:30pm.",
+            "summary": "Weekly FRESHFARM farm stand at Simon Elementary School.",
+            "venue": {
+              "name": "Simon Elementary School",
+              "address": {
+                "line1": "401 Mississippi Ave SE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20032"
+              }
+            },
+            "geo": { "latitude": 38.8397, "longitude": -76.9970 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-anacostia-community-museum",
+            "title": "FRESHFARM Anacostia Community Museum Market",
+            "url": "https://www.freshfarm.org/markets/anacostia-community-museum",
+            "weekday": 6,
+            "startDate": "2026-04-18",
+            "endDate": "2026-11-21",
+            "startTime": "10:00",
+            "endTime": "14:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Anacostia Community Museum on Saturdays, Apr 18 - Nov 21, 10:00am - 2:00pm.",
+            "summary": "Weekly FRESHFARM farmers market at the Anacostia Community Museum.",
+            "venue": {
+              "name": "Anacostia Community Museum",
+              "address": {
+                "line1": "1901 Fort Pl SE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20020"
+              }
+            },
+            "geo": { "latitude": 38.8566, "longitude": -76.9763 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-arlington",
+            "title": "FRESHFARM Arlington Market",
+            "url": "https://www.freshfarm.org/markets/arlington",
+            "weekday": 6,
+            "startDate": "2026-01-03",
+            "endDate": "2026-12-26",
+            "startTime": "08:00",
+            "endTime": "12:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Arlington on Saturdays, Jan 3 - Dec 26, 8:00am - 12:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in the Arlington Courthouse parking lot.",
+            "venue": {
+              "name": "Arlington Courthouse Parking Lot",
+              "address": {
+                "line1": "1400 N Courthouse Rd",
+                "city": "Arlington",
+                "region": "VA",
+                "postalCode": "22201"
+              }
+            },
+            "geo": { "latitude": 38.8893, "longitude": -77.0832 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-cesar-chavez",
+            "title": "FRESHFARM Cesar Chavez Farm Stand",
+            "url": "https://www.freshfarm.org/markets/cesar-chavez",
+            "weekday": 6,
+            "startDate": "2026-06-06",
+            "endDate": "2026-11-21",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Cesar Chavez on Saturdays, Jun 6 - Nov 21, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farm stand near Cesar Chavez High School.",
+            "venue": {
+              "name": "Cesar Chavez",
+              "address": {
+                "line1": "3701 Hayes St NE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20019"
+              }
+            },
+            "geo": { "latitude": 38.8993, "longitude": -76.9517 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-cleveland-park",
+            "title": "FRESHFARM Cleveland Park Market",
+            "url": "https://www.freshfarm.org/markets/cleveland-park",
+            "weekday": 6,
+            "startDate": "2026-04-04",
+            "endDate": "2026-12-19",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Cleveland Park on Saturdays, Apr 4 - Dec 19, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in Cleveland Park.",
+            "venue": {
+              "name": "Cleveland Park",
+              "address": {
+                "line1": "3400 Connecticut Ave NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20008"
+              }
+            },
+            "geo": { "latitude": 38.9346, "longitude": -77.0578 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-columbia-heights-sat",
+            "title": "FRESHFARM Columbia Heights Saturday Market",
+            "url": "https://www.freshfarm.org/markets/columbia-heights-sat",
+            "weekday": 6,
+            "startDate": "2026-01-03",
+            "endDate": "2026-12-26",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Columbia Heights (Sat) on Saturdays, Jan 3 - Dec 26, 9:00am - 1:00pm.",
+            "summary": "Weekly Saturday FRESHFARM farmers market at Columbia Heights Civic Plaza.",
+            "venue": {
+              "name": "Columbia Heights Civic Plaza",
+              "address": {
+                "line1": "1400 Park Rd NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20010"
+              }
+            },
+            "geo": { "latitude": 38.9317, "longitude": -77.0324 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-downtown-silver-spring",
+            "title": "FRESHFARM Downtown Silver Spring Market",
+            "url": "https://www.freshfarm.org/markets/downtown-silver-spring",
+            "weekday": 6,
+            "startDate": "2026-01-03",
+            "endDate": "2026-12-26",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Downtown Silver Spring on Saturdays, Jan 3 - Dec 26, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farmers market on Veterans Plaza in Downtown Silver Spring.",
+            "venue": {
+              "name": "Veterans Plaza",
+              "address": {
+                "line1": "1 Veterans Pl",
+                "city": "Silver Spring",
+                "region": "MD",
+                "postalCode": "20910"
+              }
+            },
+            "geo": { "latitude": 38.9970, "longitude": -77.0261 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-h-street-ne",
+            "title": "FRESHFARM H Street NE Market",
+            "url": "https://www.freshfarm.org/markets/h-street-ne",
+            "weekday": 6,
+            "startDate": "2026-01-03",
+            "endDate": "2026-12-26",
+            "startTime": "09:00",
+            "endTime": "12:30",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists H Street NE on Saturdays, Jan 3 - Dec 26, 9:00am - 12:30pm.",
+            "summary": "Weekly FRESHFARM farmers market on H Street NE.",
+            "venue": {
+              "name": "H Street NE",
+              "address": {
+                "line1": "800 13th St NE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20002"
+              }
+            },
+            "geo": { "latitude": 38.9004, "longitude": -76.9873 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-kenilworth-rec-center",
+            "title": "FRESHFARM Kenilworth Rec Center Farm Stand",
+            "url": "https://www.freshfarm.org/markets/kenilworth-rec-center",
+            "weekday": 6,
+            "startDate": "2026-06-06",
+            "endDate": "2026-11-21",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Kenilworth Rec Center on Saturdays, Jun 6 - Nov 21, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farm stand at Kenilworth Recreation Center.",
+            "venue": {
+              "name": "Kenilworth Recreation Center",
+              "address": {
+                "line1": "4321 Ord St NE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20019"
+              }
+            },
+            "geo": { "latitude": 38.9086, "longitude": -76.9392 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-monroe-street",
+            "title": "FRESHFARM Monroe Street Market",
+            "url": "https://www.freshfarm.org/markets/monroe-street",
+            "weekday": 6,
+            "startDate": "2026-01-03",
+            "endDate": "2026-12-26",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Monroe Street on Saturdays, Jan 3 - Dec 26, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farmers market at Monroe Street Market.",
+            "venue": {
+              "name": "Monroe Street Market",
+              "address": {
+                "line1": "716 Monroe St NE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20017"
+              }
+            },
+            "geo": { "latitude": 38.9326, "longitude": -76.9957 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-mount-vernon-triangle",
+            "title": "FRESHFARM Mount Vernon Triangle Market",
+            "url": "https://www.freshfarm.org/markets/mount-vernon-triangle",
+            "weekday": 6,
+            "startDate": "2026-01-03",
+            "endDate": "2026-12-26",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Mount Vernon Triangle on Saturdays, Jan 3 - Dec 26, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in Mount Vernon Triangle.",
+            "venue": {
+              "name": "Mount Vernon Triangle",
+              "address": {
+                "line1": "5th St NW at I St NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20001"
+              }
+            },
+            "geo": { "latitude": 38.9009, "longitude": -77.0188 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-thearc",
+            "title": "FRESHFARM THEARC Farm Stand",
+            "url": "https://www.freshfarm.org/markets/thearc",
+            "weekday": 6,
+            "startDate": "2026-06-06",
+            "endDate": "2026-11-21",
+            "startTime": "10:00",
+            "endTime": "14:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists THEARC on Saturdays, Jun 6 - Nov 21, 10:00am - 2:00pm.",
+            "summary": "Weekly FRESHFARM farm stand at THEARC.",
+            "venue": {
+              "name": "THEARC",
+              "address": {
+                "line1": "1901 Mississippi Ave SE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20020"
+              }
+            },
+            "geo": { "latitude": 38.8438, "longitude": -76.9772 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-uptown",
+            "title": "FRESHFARM Uptown Market",
+            "url": "https://www.freshfarm.org/markets/uptown",
+            "weekday": 6,
+            "startDate": "2026-04-04",
+            "endDate": "2026-11-21",
+            "startTime": "09:00",
+            "endTime": "13:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Uptown on Saturdays, Apr 4 - Nov 21, 9:00am - 1:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in Uptown DC.",
+            "venue": {
+              "name": "Uptown",
+              "address": {
+                "line1": "5500 Colorado Ave NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20011"
+              }
+            },
+            "geo": { "latitude": 38.9569, "longitude": -77.0321 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-dupont-circle",
+            "title": "FRESHFARM Dupont Circle Market",
+            "url": "https://www.freshfarm.org/markets/dupont-circle",
+            "weekday": 0,
+            "startDate": "2026-01-04",
+            "endDate": "2026-12-27",
+            "startTime": "08:30",
+            "endTime": "13:30",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Dupont Circle on Sundays, Jan 4 - Dec 27, 8:30am - 1:30pm.",
+            "summary": "Weekly FRESHFARM farmers market at Dupont Circle.",
+            "venue": {
+              "name": "Dupont Circle",
+              "address": {
+                "line1": "1600 20th St NW",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20009"
+              }
+            },
+            "geo": { "latitude": 38.9116, "longitude": -77.0445 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-mosaic",
+            "title": "FRESHFARM Mosaic Market",
+            "url": "https://www.freshfarm.org/markets/mosaic",
+            "weekday": 0,
+            "startDate": "2026-01-04",
+            "endDate": "2026-12-27",
+            "startTime": "09:00",
+            "endTime": "14:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Mosaic on Sundays, Jan 4 - Dec 27, 9:00am - 2:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in the Mosaic District.",
+            "venue": {
+              "name": "Mosaic District",
+              "address": {
+                "line1": "2910 District Ave",
+                "city": "Fairfax",
+                "region": "VA",
+                "postalCode": "22031"
+              }
+            },
+            "geo": { "latitude": 38.8736, "longitude": -77.2292 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          },
+          {
+            "id": "freshfarm-union-market-district",
+            "title": "FRESHFARM Union Market District Market",
+            "url": "https://www.freshfarm.org/markets/union-market-district",
+            "weekday": 0,
+            "startDate": "2026-04-05",
+            "endDate": "2026-11-22",
+            "startTime": "10:00",
+            "endTime": "14:00",
+            "lastVerifiedAt": "2026-06-19",
+            "verificationNote": "FRESHFARM market schedule lists Union Market District on Sundays, Apr 5 - Nov 22, 10:00am - 2:00pm.",
+            "summary": "Weekly FRESHFARM farmers market in Union Market District.",
+            "venue": {
+              "name": "Union Market District",
+              "address": {
+                "line1": "1309 5th St NE",
+                "city": "Washington",
+                "region": "DC",
+                "postalCode": "20002"
+              }
+            },
+            "geo": { "latitude": 38.9083, "longitude": -76.9970 },
+            "genres": ["Food & Drink", "Farmers Market"],
+            "imageUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+          }
+        ]
+      }
+    },
+    {
       "id": "smithsonian",
       "name": "Smithsonian",
       "type": "rss",
       "enabled": true,
       "description": "Smithsonian events (Trumba RSS)",
-      "order": 2,
+      "order": 3,
       "config": {
         "feedUrl": "https://www.trumba.com/calendars/smithsonian-events.rss",
         "fetchImageFromLink": true,
-        "imageFetchLimit": 25,
+        "imageFetchLimit": 250,
+        "missingImageFetchLimit": 250,
+        "excludeGenres": [
+          "Webcasts & Online"
+        ],
+        "excludeKeywords": [
+          "tour"
+        ],
         "venue": {
           "address": {
             "city": "Washington",
@@ -58,14 +789,142 @@
       }
     },
     {
+      "id": "politicsandprose",
+      "name": "Politics and Prose",
+      "type": "politicsandprose",
+      "enabled": true,
+      "description": "Politics and Prose author and bookstore events",
+      "order": 4,
+      "config": {
+        "url": "https://politics-prose.com/events"
+      }
+    },
+    {
+      "id": "glenecho",
+      "name": "Glen Echo Park",
+      "type": "glenecho",
+      "enabled": true,
+      "description": "Glen Echo Park featured events",
+      "order": 5,
+      "config": {
+        "url": "https://glenechopark.org/Events"
+      }
+    },
+    {
+      "id": "alexandriaparks",
+      "name": "Alexandria Parks",
+      "type": "rss",
+      "enabled": true,
+      "description": "City of Alexandria Recreation, Parks & Cultural Activities events",
+      "order": 6,
+      "config": {
+        "feedUrl": "https://apps.alexandriava.gov/Calendar/RSS.aspx",
+        "fetchImageFromLink": true,
+        "imageFetchLimit": 50,
+        "missingImageFetchLimit": 50,
+        "includeKeywords": [
+          "tags: parks",
+          "tags: recreation",
+          "tags: recreation centers",
+          "tags: mobile art lab",
+          "tags: nature",
+          "tags: sports",
+          "tags: aquatics"
+        ],
+        "excludeKeywords": [
+          "citypoolhours",
+          "rpca closure"
+        ],
+        "venue": {
+          "address": {
+            "city": "Alexandria",
+            "region": "VA",
+            "country": "US"
+          }
+        }
+      }
+    },
+    {
+      "id": "dprevents",
+      "name": "DC Parks and Recreation",
+      "type": "dprevents",
+      "enabled": true,
+      "description": "DC Department of Parks and Recreation events and programs",
+      "order": 7,
+      "config": {
+        "url": "https://r.jina.ai/http://dprevents.com/",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
+      "id": "rhizomedc",
+      "name": "Rhizome DC",
+      "type": "rss",
+      "enabled": true,
+      "description": "Rhizome DC events RSS feed",
+      "order": 7.4,
+      "config": {
+        "feedUrl": "https://rhizomedc.org/new-events/?format=rss",
+        "fetchImageFromLink": false,
+        "timeZone": "America/New_York",
+        "venue": {
+          "name": "Rhizome DC",
+          "address": {
+            "line1": "6950 Maple St NW",
+            "city": "Washington",
+            "region": "DC",
+            "postalCode": "20012",
+            "country": "US"
+          }
+        }
+      }
+    },
+    {
+      "id": "montgomeryparks",
+      "name": "Montgomery County Parks",
+      "type": "montgomeryparks",
+      "enabled": true,
+      "description": "Montgomery Parks events calendar",
+      "order": 8,
+      "config": {
+        "url": "https://montgomeryparks.org/events/",
+        "ajaxUrl": "https://montgomeryparks.org/wp-admin/admin-ajax.php",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
+      "id": "pgparks",
+      "name": "Prince George's County Parks",
+      "type": "pgparks",
+      "enabled": true,
+      "description": "Prince George's County Parks activities and events",
+      "order": 9,
+      "config": {
+        "url": "https://pgparks.com/activities-events-events",
+        "feedUrl": "https://pgparks.com/?post_type=tribe_events&ical=1&eventDisplay=list",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
       "id": "blackcat",
       "name": "Black Cat",
       "type": "blackcat",
       "enabled": true,
       "description": "Black Cat schedule page",
-      "order": 3,
+      "order": 10,
       "config": {
         "url": "https://www.blackcatdc.com/schedule.html"
+      }
+    },
+    {
+      "id": "songbyrd",
+      "name": "Songbyrd",
+      "type": "songbyrd",
+      "enabled": true,
+      "description": "Songbyrd shows page",
+      "order": 11,
+      "config": {
+        "url": "https://songbyrddc.com/shows/"
       }
     },
     {
@@ -74,7 +933,7 @@
       "type": "ical",
       "enabled": true,
       "description": "Sixth & I events (iCal)",
-      "order": 4,
+      "order": 12,
       "config": {
         "feedUrl": "https://www.sixthandi.org/events/?ical=1",
         "fetchImageFromLink": true,
@@ -93,6 +952,128 @@
             "city": "Washington",
             "region": "DC",
             "postalCode": "20001",
+            "country": "US"
+          }
+        }
+      }
+    },
+    {
+      "id": "soundgarden",
+      "name": "The Sound Garden",
+      "type": "soundgarden",
+      "enabled": true,
+      "description": "The Sound Garden Baltimore in-store events",
+      "order": 13,
+      "config": {
+        "url": "https://www.sgrecordshop.com/c/2683/the-sound-garden-baltimore"
+      }
+    },
+    {
+      "id": "echostage",
+      "name": "Echostage",
+      "type": "songkickvenue",
+      "enabled": true,
+      "description": "Echostage events via Songkick venue listings",
+      "order": 14,
+      "config": {
+        "venueUrl": "https://www.songkick.com/venues/1864683-echostage",
+        "geo": {
+          "latitude": 38.9198,
+          "longitude": -76.9726
+        }
+      }
+    },
+    {
+      "id": "berhta",
+      "name": "BERHTA",
+      "type": "songkickvenue",
+      "enabled": true,
+      "description": "BERHTA events via Songkick venue listings",
+      "order": 15,
+      "config": {
+        "venueUrl": "https://www.songkick.com/venues/4601750-berhta",
+        "geo": {
+          "latitude": 38.9173,
+          "longitude": -76.99043
+        }
+      }
+    },
+    {
+      "id": "joesmovement",
+      "name": "Joe's Movement Emporium",
+      "type": "joesmovement",
+      "enabled": true,
+      "description": "Joe's Movement Emporium event listings",
+      "order": 16,
+      "config": {
+        "url": "https://www.joesmovement.org/listofevents"
+      }
+    },
+    {
+      "id": "waba",
+      "name": "WABA",
+      "type": "waba",
+      "enabled": true,
+      "description": "Washington Area Bicyclist Association events",
+      "order": 17,
+      "config": {
+        "url": "https://waba.org/fun/"
+      }
+    },
+    {
+      "id": "washingtonglassschool",
+      "name": "Washington Glass School",
+      "type": "washingtonglassschool",
+      "enabled": true,
+      "description": "Washington Glass School classes, workshops, and special events",
+      "order": 18,
+      "config": {
+        "url": "http://washingtonglassschool.com/school/current-classes",
+        "venue": {
+          "name": "Washington Glass School",
+          "address": {
+            "city": "Mount Rainier",
+            "region": "MD",
+            "country": "US"
+          }
+        }
+      }
+    },
+    {
+      "id": "theatrewashington",
+      "name": "TheatreWashington",
+      "type": "theatrewashington",
+      "enabled": true,
+      "description": "TheatreWashington now playing and upcoming shows",
+      "order": 19,
+      "config": {
+        "url": "https://theatrewashington.org/upcoming-shows"
+      }
+    },
+    {
+      "id": "allsoulsunitarian",
+      "name": "All Souls Church Unitarian",
+      "type": "timely",
+      "enabled": true,
+      "description": "All Souls Church Unitarian events calendar",
+      "order": 20,
+      "config": {
+        "calendarId": "54755706",
+        "calendarUrl": "https://events.timely.fun/rw9v3rgy",
+        "apiBaseUrl": "https://timelyapp.time.ly/api",
+        "apiKey": "c6e5e0363b5925b28552de8805464c66f25ba0ce",
+        "timelyTimeZone": "EST5EDT",
+        "timeZone": "America/New_York",
+        "perPage": 100,
+        "maxPages": 10,
+        "defaultImage": "https://images.squarespace-cdn.com/content/v1/68923f5e4c9e372b3bfbfcc9/c702d5a1-58a7-4552-b7d6-8e3deb3fce80/All+Souls+Logo-Medium.png?format=1500w",
+        "venue": {
+          "name": "All Souls Church Unitarian",
+          "address": {
+            "line1": "1500 Harvard St NW",
+            "city": "Washington",
+            "region": "DC",
+            "postalCode": "20009",
             "country": "US"
           }
         }

@@ -1,19 +1,37 @@
-const STATIC_CACHE = 'dashboard-static-v7';
-const DYNAMIC_CACHE = 'dashboard-dynamic-v3';
-const MAX_DYNAMIC_ENTRIES = 60;
+const STATIC_CACHE = 'dashboard-static-v33';
+const DYNAMIC_CACHE = 'dashboard-dynamic-v27';
+const IMAGE_CACHE = 'dashboard-images-v2';
+const MAX_DYNAMIC_ENTRIES = 80;
+const MAX_IMAGE_ENTRIES = 300;
+const BYPASS_PATHS = new Set([
+  '/datasources-admin.html',
+  '/js/datasourcesAdmin.js',
+  '/js/main.js',
+  '/js/shows.js',
+  '/favicon.ico',
+  '/public/datasources-admin.html',
+  '/public/js/datasourcesAdmin.js',
+  '/public/js/main.js',
+  '/public/js/shows.js',
+  '/public/favicon.ico',
+  '/service-worker.js',
+  '/public/service-worker.js',
+  '/api/shows',
+  '/api/shows-bootstrap',
+  '/api/review/show-events'
+]);
 
 const PRECACHE_URLS = [
   './',
   './index.html',
   './style.css',
-  './js/main.js',
   './js/tabs.js',
-  './js/shows.js',
   './js/tabReports.js',
   './js/helpers.js',
   './js/auth.js',
   './js/descriptions.js',
   './js/siteName.js',
+  './favicon.ico',
   './assets/favicon.png',
   './assets/favicon.ico'
 ];
@@ -62,6 +80,23 @@ async function networkFirst(request, cacheName, { isDocument = false, cacheBust 
   }
 }
 
+async function cacheFirst(request, cacheName, { maxEntries } = {}) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  try {
+    const response = await fetch(request);
+    if (response && response.ok) {
+      await putInCache(cacheName, request, response.clone(), maxEntries);
+    }
+    return response;
+  } catch (err) {
+    return new Response('Offline', {
+      status: 503,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+    });
+  }
+}
+
 self.addEventListener('install', event => {
   event.waitUntil(
     (async () => {
@@ -79,7 +114,7 @@ self.addEventListener('activate', event => {
     caches.keys().then(keys =>
       Promise.all(
         keys
-          .filter(key => key !== STATIC_CACHE && key !== DYNAMIC_CACHE)
+          .filter(key => key !== STATIC_CACHE && key !== DYNAMIC_CACHE && key !== IMAGE_CACHE)
           .map(key => caches.delete(key))
       )
     )
@@ -101,6 +136,14 @@ self.addEventListener('fetch', event => {
 
   const requestUrl = new URL(request.url);
   const isNavigation = request.mode === 'navigate' || request.destination === 'document';
+
+  if (
+    BYPASS_PATHS.has(requestUrl.pathname) ||
+    requestUrl.pathname.startsWith('/api/review/show-events/') ||
+    requestUrl.pathname.startsWith('/api/images/')
+  ) {
+    return;
+  }
 
   if (PRECACHE_URL_SET.has(requestUrl.href)) {
     event.respondWith(

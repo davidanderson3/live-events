@@ -1,13 +1,5 @@
 // File: js/buttonStyles.js
 
-// Generate a random dark HSL color
-function randomDarkColor() {
-  const h = Math.floor(Math.random() * 360);
-  const s = Math.floor(Math.random() * 50) + 50;  // 50–100% saturation
-  const l = Math.floor(Math.random() * 20) + 10;  // 10–30% lightness
-  return `hsl(${h}, ${s}%, ${l}%)`;
-}
-
 // Detect an “icon-only” button
 function isIconButton(btn) {
   // 1) if you've explicitly marked it with one of our icon classes
@@ -37,10 +29,8 @@ function styleButton(btn) {
   if (btn.classList.contains('genre-filter-chip-remove')) return;
 
   // 2️⃣ Style everything else
-  btn.style.backgroundColor = randomDarkColor();
-  btn.style.color           = '#fff';
-  btn.style.border          = 'none';
-  btn.style.cursor          = 'pointer';
+  btn.style.border = 'none';
+  btn.style.cursor = 'pointer';
 }
 
 

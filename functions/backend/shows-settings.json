@@ -1,0 +1,850 @@
+{
+  "categoryOptions": [
+    "Comedy",
+    "Theater & Musical",
+    "Dance",
+    "Film",
+    "Talks & Readings",
+    "Classes & Workshops",
+    "Kids & Family",
+    "Online",
+    "Rock & Alternative",
+    "Pop",
+    "Hip-Hop & R&B",
+    "Electronic & DJ",
+    "Jazz & Blues",
+    "Folk & Country",
+    "Classical & Opera",
+    "Metal & Punk",
+    "Latin",
+    "Global",
+    "Museums & Galleries",
+    "Spiritual",
+    "Games & Competitions",
+    "Fitness & Wellness",
+    "Fairs & Festivals",
+    "Outdoors",
+    "Advocacy & Protests",
+    "Animals",
+    "Art",
+    "Books & Literature",
+    "Community Meetings",
+    "Crafting",
+    "Discussion Groups",
+    "Experimental Music",
+    "Farmers Markets",
+    "Food",
+    "Funk",
+    "Gardening",
+    "Happy Hour",
+    "Indie",
+    "Karaoke",
+    "Reggae",
+    "Soul",
+    "Trivia",
+    "Volunteering",
+    "World"
+  ],
+  "defaultCategoryFilters": [
+    "Comedy",
+    "Theater & Musical",
+    "Rock & Alternative",
+    "Pop",
+    "Hip-Hop & R&B",
+    "Jazz & Blues",
+    "Folk & Country",
+    "Classical & Opera",
+    "Games & Competitions",
+    "Fairs & Festivals"
+  ],
+  "categoryMappings": {
+    "comedy": [
+      "Comedy"
+    ],
+    "stand up": [
+      "Comedy"
+    ],
+    "stand-up": [
+      "Comedy"
+    ],
+    "improv": [
+      "Comedy"
+    ],
+    "sketch": [
+      "Comedy"
+    ],
+    "theater": [
+      "Theater & Musical"
+    ],
+    "theatre": [
+      "Theater & Musical"
+    ],
+    "musical": [
+      "Theater & Musical"
+    ],
+    "broadway": [
+      "Theater & Musical"
+    ],
+    "dance": [
+      "Dance"
+    ],
+    "ballet": [
+      "Dance"
+    ],
+    "tango": [
+      "Dance"
+    ],
+    "film": [
+      "Film"
+    ],
+    "movie": [
+      "Film"
+    ],
+    "screening": [
+      "Film"
+    ],
+    "documentary": [
+      "Film"
+    ],
+    "anime": [
+      "Film"
+    ],
+    "talk": [
+      "Talks & Readings"
+    ],
+    "lecture": [
+      "Talks & Readings"
+    ],
+    "panel": [
+      "Talks & Readings"
+    ],
+    "reading": [
+      "Talks & Readings"
+    ],
+    "author": [
+      "Talks & Readings"
+    ],
+    "poetry": [
+      "Talks & Readings"
+    ],
+    "class": [
+      "Classes & Workshops"
+    ],
+    "classes": [
+      "Classes & Workshops"
+    ],
+    "workshop": [
+      "Classes & Workshops"
+    ],
+    "training": [
+      "Classes & Workshops"
+    ],
+    "family": [
+      "Kids & Family"
+    ],
+    "kids": [
+      "Kids & Family"
+    ],
+    "children": [
+      "Kids & Family"
+    ],
+    "youth": [
+      "Kids & Family"
+    ],
+    "online": [
+      "Online"
+    ],
+    "virtual": [
+      "Online"
+    ],
+    "livestream": [
+      "Online"
+    ],
+    "rock": [
+      "Rock & Alternative"
+    ],
+    "alternative": [
+      "Rock & Alternative"
+    ],
+    "indie": [
+      "Rock & Alternative"
+    ],
+    "pop": [
+      "Pop"
+    ],
+    "hip hop": [
+      "Hip-Hop & R&B"
+    ],
+    "hip-hop": [
+      "Hip-Hop & R&B"
+    ],
+    "rap": [
+      "Hip-Hop & R&B"
+    ],
+    "r&b": [
+      "Hip-Hop & R&B"
+    ],
+    "soul": [
+      "Hip-Hop & R&B"
+    ],
+    "electronic": [
+      "Electronic & DJ"
+    ],
+    "edm": [
+      "Electronic & DJ"
+    ],
+    "techno": [
+      "Electronic & DJ"
+    ],
+    "trance": [
+      "Electronic & DJ"
+    ],
+    "dj": [
+      "Electronic & DJ"
+    ],
+    "jazz": [
+      "Jazz & Blues"
+    ],
+    "blues": [
+      "Jazz & Blues"
+    ],
+    "folk": [
+      "Folk & Country"
+    ],
+    "country": [
+      "Folk & Country"
+    ],
+    "bluegrass": [
+      "Folk & Country"
+    ],
+    "americana": [
+      "Folk & Country"
+    ],
+    "classical": [
+      "Classical & Opera"
+    ],
+    "opera": [
+      "Classical & Opera"
+    ],
+    "orchestra": [
+      "Classical & Opera"
+    ],
+    "symphony": [
+      "Classical & Opera"
+    ],
+    "metal": [
+      "Metal & Punk"
+    ],
+    "punk": [
+      "Metal & Punk"
+    ],
+    "hardcore": [
+      "Metal & Punk"
+    ],
+    "latin": [
+      "Latin"
+    ],
+    "salsa": [
+      "Latin"
+    ],
+    "bachata": [
+      "Latin"
+    ],
+    "cumbia": [
+      "Latin"
+    ],
+    "reggae": [
+      "Global"
+    ],
+    "afrobeat": [
+      "Global"
+    ],
+    "bollywood": [
+      "Global"
+    ],
+    "museum": [
+      "Museums & Galleries"
+    ],
+    "gallery": [
+      "Museums & Galleries"
+    ],
+    "exhibit": [
+      "Museums & Galleries"
+    ],
+    "exhibition": [
+      "Museums & Galleries"
+    ],
+    "yoga": [
+      "Fitness & Wellness"
+    ],
+    "meditation": [
+      "Fitness & Wellness"
+    ],
+    "mindfulness": [
+      "Fitness & Wellness"
+    ],
+    "fitness": [
+      "Fitness & Wellness"
+    ],
+    "wellness": [
+      "Fitness & Wellness"
+    ],
+    "cycling": [
+      "Fitness & Wellness"
+    ],
+    "biking": [
+      "Fitness & Wellness"
+    ],
+    "chess": [
+      "Games & Competitions"
+    ],
+    "trivia": [
+      "Games & Competitions"
+    ],
+    "bingo": [
+      "Games & Competitions"
+    ],
+    "tournament": [
+      "Games & Competitions"
+    ],
+    "festival": [
+      "Fairs & Festivals"
+    ],
+    "fair": [
+      "Fairs & Festivals"
+    ],
+    "market": [
+      "Fairs & Festivals"
+    ],
+    "farmers market": [
+      "Fairs & Festivals"
+    ],
+    "block party": [
+      "Fairs & Festivals"
+    ],
+    "spiritual": [
+      "Spiritual"
+    ],
+    "spirituality": [
+      "Spiritual"
+    ],
+    "prayer": [
+      "Spiritual"
+    ],
+    "campfire": [
+      "Outdoors"
+    ],
+    "outdoors": [
+      "Outdoors"
+    ],
+    "outdoor": [
+      "Outdoors"
+    ],
+    "nature": [
+      "Outdoors"
+    ],
+    "naturalist": [
+      "Outdoors"
+    ],
+    "trail": [
+      "Outdoors"
+    ],
+    "trails": [
+      "Outdoors"
+    ],
+    "hike": [
+      "Outdoors"
+    ],
+    "hiking": [
+      "Outdoors"
+    ],
+    "park": [
+      "Outdoors"
+    ],
+    "parks": [
+      "Outdoors"
+    ],
+    "garden": [
+      "Outdoors"
+    ],
+    "gardens": [
+      "Outdoors"
+    ],
+    "wildlife": [
+      "Outdoors"
+    ],
+    "birding": [
+      "Outdoors"
+    ],
+    "birdwatching": [
+      "Outdoors"
+    ],
+    "camping": [
+      "Outdoors"
+    ],
+    "creek": [
+      "Outdoors"
+    ],
+    "river": [
+      "Outdoors"
+    ],
+    "lake": [
+      "Outdoors"
+    ],
+    "weed warrior": [
+      "Outdoors"
+    ],
+    "invasive plants": [
+      "Outdoors"
+    ],
+    "__codex_b__": [
+      "Comedy"
+    ]
+  },
+  "confirmedCategoryMappings": {
+    "comedy": [
+      "Comedy"
+    ],
+    "stand up": [
+      "Comedy"
+    ],
+    "stand-up": [
+      "Comedy"
+    ],
+    "improv": [
+      "Comedy"
+    ],
+    "sketch": [
+      "Comedy"
+    ],
+    "theater": [
+      "Theater & Musical"
+    ],
+    "theatre": [
+      "Theater & Musical"
+    ],
+    "musical": [
+      "Theater & Musical"
+    ],
+    "broadway": [
+      "Theater & Musical"
+    ],
+    "dance": [
+      "Dance"
+    ],
+    "ballet": [
+      "Dance"
+    ],
+    "tango": [
+      "Dance"
+    ],
+    "film": [
+      "Film"
+    ],
+    "movie": [
+      "Film"
+    ],
+    "screening": [
+      "Film"
+    ],
+    "documentary": [
+      "Film"
+    ],
+    "anime": [
+      "Film"
+    ],
+    "talk": [
+      "Talks & Readings"
+    ],
+    "lecture": [
+      "Talks & Readings"
+    ],
+    "panel": [
+      "Talks & Readings"
+    ],
+    "reading": [
+      "Talks & Readings"
+    ],
+    "author": [
+      "Talks & Readings"
+    ],
+    "poetry": [
+      "Talks & Readings"
+    ],
+    "class": [
+      "Classes & Workshops"
+    ],
+    "classes": [
+      "Classes & Workshops"
+    ],
+    "workshop": [
+      "Classes & Workshops"
+    ],
+    "training": [
+      "Classes & Workshops"
+    ],
+    "family": [
+      "Kids & Family"
+    ],
+    "kids": [
+      "Kids & Family"
+    ],
+    "children": [
+      "Kids & Family"
+    ],
+    "youth": [
+      "Kids & Family"
+    ],
+    "online": [
+      "Online"
+    ],
+    "virtual": [
+      "Online"
+    ],
+    "livestream": [
+      "Online"
+    ],
+    "rock": [
+      "Rock & Alternative"
+    ],
+    "alternative": [
+      "Rock & Alternative"
+    ],
+    "indie": [
+      "Rock & Alternative"
+    ],
+    "pop": [
+      "Pop"
+    ],
+    "hip hop": [
+      "Hip-Hop & R&B"
+    ],
+    "hip-hop": [
+      "Hip-Hop & R&B"
+    ],
+    "rap": [
+      "Hip-Hop & R&B"
+    ],
+    "r&b": [
+      "Hip-Hop & R&B"
+    ],
+    "soul": [
+      "Hip-Hop & R&B"
+    ],
+    "electronic": [
+      "Electronic & DJ"
+    ],
+    "edm": [
+      "Electronic & DJ"
+    ],
+    "techno": [
+      "Electronic & DJ"
+    ],
+    "trance": [
+      "Electronic & DJ"
+    ],
+    "dj": [
+      "Electronic & DJ"
+    ],
+    "jazz": [
+      "Jazz & Blues"
+    ],
+    "blues": [
+      "Jazz & Blues"
+    ],
+    "folk": [
+      "Folk & Country"
+    ],
+    "country": [
+      "Folk & Country"
+    ],
+    "bluegrass": [
+      "Folk & Country"
+    ],
+    "americana": [
+      "Folk & Country"
+    ],
+    "classical": [
+      "Classical & Opera"
+    ],
+    "opera": [
+      "Classical & Opera"
+    ],
+    "orchestra": [
+      "Classical & Opera"
+    ],
+    "symphony": [
+      "Classical & Opera"
+    ],
+    "metal": [
+      "Metal & Punk"
+    ],
+    "punk": [
+      "Metal & Punk"
+    ],
+    "hardcore": [
+      "Metal & Punk"
+    ],
+    "latin": [
+      "Latin"
+    ],
+    "salsa": [
+      "Latin"
+    ],
+    "bachata": [
+      "Latin"
+    ],
+    "cumbia": [
+      "Latin"
+    ],
+    "reggae": [
+      "Global"
+    ],
+    "afrobeat": [
+      "Global"
+    ],
+    "bollywood": [
+      "Global"
+    ],
+    "museum": [
+      "Museums & Galleries"
+    ],
+    "gallery": [
+      "Museums & Galleries"
+    ],
+    "exhibit": [
+      "Museums & Galleries"
+    ],
+    "exhibition": [
+      "Museums & Galleries"
+    ],
+    "yoga": [
+      "Fitness & Wellness"
+    ],
+    "meditation": [
+      "Fitness & Wellness"
+    ],
+    "mindfulness": [
+      "Fitness & Wellness"
+    ],
+    "fitness": [
+      "Fitness & Wellness"
+    ],
+    "wellness": [
+      "Fitness & Wellness"
+    ],
+    "cycling": [
+      "Fitness & Wellness"
+    ],
+    "biking": [
+      "Fitness & Wellness"
+    ],
+    "chess": [
+      "Games & Competitions"
+    ],
+    "trivia": [
+      "Games & Competitions"
+    ],
+    "bingo": [
+      "Games & Competitions"
+    ],
+    "tournament": [
+      "Games & Competitions"
+    ],
+    "festival": [
+      "Fairs & Festivals"
+    ],
+    "fair": [
+      "Fairs & Festivals"
+    ],
+    "market": [
+      "Fairs & Festivals"
+    ],
+    "farmers market": [
+      "Fairs & Festivals"
+    ],
+    "block party": [
+      "Fairs & Festivals"
+    ],
+    "spiritual": [
+      "Spiritual"
+    ],
+    "spirituality": [
+      "Spiritual"
+    ],
+    "prayer": [
+      "Spiritual"
+    ],
+    "campfire": [
+      "Outdoors"
+    ],
+    "outdoors": [
+      "Outdoors"
+    ],
+    "outdoor": [
+      "Outdoors"
+    ],
+    "nature": [
+      "Outdoors"
+    ],
+    "naturalist": [
+      "Outdoors"
+    ],
+    "trail": [
+      "Outdoors"
+    ],
+    "trails": [
+      "Outdoors"
+    ],
+    "hike": [
+      "Outdoors"
+    ],
+    "hiking": [
+      "Outdoors"
+    ],
+    "park": [
+      "Outdoors"
+    ],
+    "parks": [
+      "Outdoors"
+    ],
+    "garden": [
+      "Outdoors"
+    ],
+    "gardens": [
+      "Outdoors"
+    ],
+    "wildlife": [
+      "Outdoors"
+    ],
+    "birding": [
+      "Outdoors"
+    ],
+    "birdwatching": [
+      "Outdoors"
+    ],
+    "camping": [
+      "Outdoors"
+    ],
+    "creek": [
+      "Outdoors"
+    ],
+    "river": [
+      "Outdoors"
+    ],
+    "lake": [
+      "Outdoors"
+    ],
+    "weed warrior": [
+      "Outdoors"
+    ],
+    "invasive plants": [
+      "Outdoors"
+    ],
+    "__codex_b__": [
+      "Comedy"
+    ]
+  },
+  "categoryLearningExamples": [
+    {
+      "signature": "waba::adult learn to ride - bethesda, md::classes & workshops",
+      "sourceId": "waba",
+      "title": "Adult Learn to Ride - Bethesda, MD",
+      "venueName": "",
+      "segment": "",
+      "sourceGenres": [
+        "Classes & Workshops"
+      ],
+      "categories": [
+        "Classes & Workshops",
+        "Fitness & Wellness"
+      ],
+      "updatedAt": "2026-07-02T14:17:56.200Z"
+    },
+    {
+      "signature": "waba::adult learn to ride::anacostia boat ramp lot",
+      "sourceId": "waba",
+      "title": "Adult Learn to Ride",
+      "venueName": "Anacostia Boat Ramp Lot",
+      "segment": "",
+      "sourceGenres": [],
+      "categories": [
+        "Classes & Workshops",
+        "Fitness & Wellness"
+      ],
+      "updatedAt": "2026-07-02T14:17:56.180Z"
+    },
+    {
+      "signature": "ticketmaster::image category event::kids & family",
+      "sourceId": "ticketmaster",
+      "title": "Image Category Event",
+      "venueName": "",
+      "segment": "",
+      "sourceGenres": [
+        "Kids & Family"
+      ],
+      "categories": [
+        "Comedy",
+        "Pop"
+      ],
+      "updatedAt": "2026-07-02T14:17:56.165Z"
+    },
+    {
+      "signature": "ticketmaster::category event::kids & family",
+      "sourceId": "ticketmaster",
+      "title": "Category Event",
+      "venueName": "",
+      "segment": "",
+      "sourceGenres": [
+        "Kids & Family"
+      ],
+      "categories": [
+        "Comedy",
+        "Pop"
+      ],
+      "updatedAt": "2026-07-02T14:17:56.154Z"
+    },
+    {
+      "signature": "ticketmaster::dup title::venue a",
+      "sourceId": "ticketmaster",
+      "title": "Dup Title",
+      "venueName": "Venue A",
+      "segment": "",
+      "sourceGenres": [],
+      "categories": [
+        "Comedy"
+      ],
+      "updatedAt": "2026-07-02T14:17:55.781Z"
+    },
+    {
+      "signature": "ticketmaster::image category event::arts & culture",
+      "sourceId": "ticketmaster",
+      "title": "Image Category Event",
+      "venueName": "",
+      "segment": "",
+      "sourceGenres": [],
+      "categories": [
+        "Comedy",
+        "Pop"
+      ],
+      "updatedAt": "2026-05-14T14:41:28.608Z"
+    },
+    {
+      "signature": "ticketmaster::category event::arts & culture",
+      "sourceId": "ticketmaster",
+      "title": "Category Event",
+      "venueName": "",
+      "segment": "",
+      "sourceGenres": [],
+      "categories": [
+        "Comedy",
+        "Pop"
+      ],
+      "updatedAt": "2026-05-14T14:41:28.603Z"
+    }
+  ],
+  "ignoredGenres": [
+    "after five"
+  ],
+  "updatedAt": "2026-07-02T14:17:56.201Z"
+}

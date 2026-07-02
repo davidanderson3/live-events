@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Datasource Feed Preview</title>
+    <title>Approval Queue</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="/favicon.ico" />
   <link rel="stylesheet" href="style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,57 +12,189 @@
     href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap"
     rel="stylesheet"
   />
+  <script>
+    (function disableDashboardServiceWorkerForAdmin() {
+      if (!('serviceWorker' in navigator) || !window.sessionStorage) return;
+      var reloadKey = 'datasources-admin-sw-reset';
+      if (sessionStorage.getItem(reloadKey) === 'done') return;
+      navigator.serviceWorker
+        .getRegistrations()
+        .then(function(registrations) {
+          var dashboardRegistrations = registrations.filter(function(registration) {
+            var scriptUrl =
+              (registration.active && registration.active.scriptURL) ||
+              (registration.waiting && registration.waiting.scriptURL) ||
+              (registration.installing && registration.installing.scriptURL) ||
+              '';
+            return /\/service-worker\.js(?:$|\?)/.test(scriptUrl);
+          });
+          if (!dashboardRegistrations.length) return;
+          return Promise.all(
+            dashboardRegistrations.map(function(registration) {
+              return registration.unregister();
+            })
+          ).then(function() {
+            sessionStorage.setItem(reloadKey, 'done');
+            window.location.reload();
+          });
+        })
+        .catch(function() {});
+    })();
+  </script>
 </head>
 <body class="datasources-admin-page">
-  <main class="datasources-admin datasources-admin--readonly">
+  <main class="datasources-admin">
     <header class="datasources-admin__header">
       <div>
-        <p class="datasources-admin__eyebrow">Read-only</p>
-        <h1>Datasource feed preview</h1>
+        <p class="datasources-admin__eyebrow">Admin</p>
+        <h1>Approval queue</h1>
         <p class="datasources-admin__intro">
-          Hardcoded sources list. Load the existing feed, then click a source to highlight the
-          events that belong to it.
+          Review and approve events before they publish to the live feed.
         </p>
       </div>
       <div class="datasources-admin__actions">
-        <button type="button" id="feedLoadBtn">Load feed</button>
+        <span id="adminAuthStatus" class="user-email"></span>
+        <button type="button" id="adminLoginBtn" class="secondary">Sign in</button>
+        <button type="button" id="adminLogoutBtn" class="secondary" hidden>Sign out</button>
+        <a class="button secondary" href="backend-refresh.html">Backend refresh</a>
         <button type="button" id="cacheClearBtn" class="secondary">Reset all caches</button>
       </div>
     </header>
 
-    <section class="datasources-admin__panel datasources-admin__panel--controls">
-      <div class="preview-controls">
-        <div class="preview-control">
-          <label for="previewDays">Lookahead (days)</label>
-          <input id="previewDays" type="number" min="1" max="31" value="14" />
+    <section id="adminAccessNotice" class="datasources-admin__panel" hidden>
+      <div class="datasources-admin__panel-header">
+        <div>
+          <h2>Sign in required</h2>
+          <p>Use the authorized Google account to open the approval queue.</p>
         </div>
-      </div>
-      <div id="sourcesStatus" class="datasources-admin__status" aria-live="polite">
-        Feed uses Washington, DC within 50 miles. Load the feed to list sources.
       </div>
     </section>
 
-    <section class="datasources-admin__grid">
+    <section id="adminContent" class="datasources-admin__grid" hidden>
       <div class="datasources-admin__panel">
         <div class="datasources-admin__panel-header">
           <div>
-            <h2>Sources</h2>
-            <p>Read-only list of sources with live counts. Add keywords to hide matching event titles.</p>
+            <h2>Category options</h2>
+            <p>All categories available in the approval queue. Highlighted categories are checked by default for first-time users.</p>
           </div>
         </div>
-        <div id="sourcesList" class="datasources-admin__list"></div>
+        <div id="defaultCategoryStatus" class="datasources-admin__status" aria-live="polite"></div>
+        <div id="defaultCategoryOptions" class="review-source-counts" aria-label="Category options"></div>
+        <div class="preview-controls preview-controls--single">
+          <div class="preview-control preview-control--wide">
+            <label for="newCategoryInput">Add a main category</label>
+            <input id="newCategoryInput" type="text" placeholder="Ex: Wellness" />
+          </div>
+          <div class="preview-actions preview-actions--inline">
+            <button type="button" id="newCategoryAddBtn">Add category</button>
+          </div>
+        </div>
+        <div class="preview-actions">
+          <button type="button" id="defaultCategorySaveBtn">Save category options</button>
+          <button type="button" id="defaultCategoryResetBtn" class="secondary">Reset to all on</button>
+        </div>
+        <div class="datasources-admin__subsection">
+          <div class="datasources-admin__panel-header">
+            <div>
+              <h2>Keyword mappings</h2>
+              <p>Map extracted title and description keywords, or mark them "Don't map".</p>
+            </div>
+          </div>
+          <div id="unmappedGenreStatus" class="datasources-admin__status" aria-live="polite"></div>
+          <div class="preview-controls preview-controls--single">
+            <div class="preview-control">
+              <label for="manualKeywordInput">Add keyword map</label>
+              <input id="manualKeywordInput" type="text" placeholder="Ex: campfire">
+            </div>
+            <div class="preview-control">
+              <label for="manualKeywordCategories">Categories</label>
+              <select id="manualKeywordCategories" multiple size="5"></select>
+            </div>
+            <div class="preview-control preview-control--button">
+              <button type="button" id="manualKeywordAddBtn">Add keyword map</button>
+            </div>
+          </div>
+          <div id="unmappedGenreMappings" class="keyword-mapping-list" aria-label="Keyword mappings"></div>
+          <div class="datasources-admin__subsection datasources-admin__subsection--compact">
+            <div class="datasources-admin__panel-header">
+              <div>
+                <h3>Approved keyword mappings</h3>
+                <p>Saved mappings used for category assignment and trusted auto-approval.</p>
+              </div>
+            </div>
+            <div id="mappedGenreStatus" class="datasources-admin__status" aria-live="polite"></div>
+            <div class="preview-control">
+              <label for="mappedGenreFilterInput">Filter approved mappings</label>
+              <input id="mappedGenreFilterInput" type="search" placeholder="Filter by keyword or category">
+            </div>
+            <div id="mappedGenreMappings" class="keyword-mapping-list" aria-label="Approved keyword mappings"></div>
+          </div>
+          <div class="datasources-admin__subsection datasources-admin__subsection--compact">
+            <div class="datasources-admin__panel-header">
+              <div>
+                <h3>Don't map keywords</h3>
+                <p>Keywords excluded from automatic category mapping.</p>
+              </div>
+            </div>
+            <div id="ignoredGenreStatus" class="datasources-admin__status" aria-live="polite"></div>
+            <div id="ignoredGenreMappings" class="keyword-mapping-list" aria-label="Don't map keywords"></div>
+          </div>
+          <div class="preview-actions">
+            <button type="button" id="unmappedGenreSaveBtn">Save keywords</button>
+          </div>
+        </div>
       </div>
 
       <div class="datasources-admin__panel">
         <div class="datasources-admin__panel-header">
           <div>
-            <h2>Feed preview</h2>
-            <p id="previewLabel">Load the feed to see events.</p>
+            <h2>Approval filters</h2>
+            <p>Filter by status, category, search, and lookahead window.</p>
           </div>
         </div>
-        <div id="previewStatus" class="datasources-admin__status" aria-live="polite"></div>
-        <div id="previewOutput" class="preview-output"></div>
+        <div class="preview-controls">
+          <div class="preview-control">
+            <label for="previewDays">Lookahead (days)</label>
+            <input id="previewDays" type="number" min="1" max="100" placeholder="100" />
+          </div>
+          <div class="preview-control">
+            <label for="reviewStatusFilter">Review queue</label>
+            <select id="reviewStatusFilter">
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+              <option value="image-missing">Image Missing</option>
+              <option value="excluded">Hidden Forever</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <div class="preview-control">
+            <label for="reviewCategoryFilter">Category</label>
+            <select id="reviewCategoryFilter">
+              <option value="">All categories</option>
+            </select>
+          </div>
+          <div class="preview-control preview-control--search">
+            <label for="reviewSearchInput">Search all events</label>
+            <input id="reviewSearchInput" type="search" placeholder="Title, venue, source, category, URL" autocomplete="off" />
+          </div>
+        </div>
+        <div class="preview-actions">
+          <button type="button" id="reviewLoadBtn">Load reviews</button>
+        </div>
+        <div class="datasources-admin__panel datasources-admin__panel--review">
+          <div class="datasources-admin__panel-header datasources-admin__panel-header--inline">
+            <div>
+              <h2>Approval queue</h2>
+              <p id="reviewLabel">Load pending events to approve publication.</p>
+            </div>
+            <button type="button" id="reviewRefreshBtn" class="secondary">Refresh queue</button>
+          </div>
+          <div id="reviewStatus" class="datasources-admin__status" aria-live="polite"></div>
+          <div id="reviewOutput" class="review-output"></div>
+        </div>
       </div>
+
     </section>
   </main>
 
@@ -71,11 +204,12 @@
       var host = (window.location && window.location.hostname) || '';
       var isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
       if (window.location.protocol === 'file:' || isLocalHost) {
-        window.apiBaseUrl = 'http://localhost:3004';
-        window.showsEndpoint = 'http://localhost:3004/api/shows';
+        var origin = window.location.origin || 'http://localhost:3004';
+        window.apiBaseUrl = origin;
+        window.showsEndpoint = origin + '/api/shows';
       }
     })();
   </script>
-  <script type="module" src="js/datasourcesAdmin.js"></script>
+  <script type="module" src="js/datasourcesAdmin.js?v=20260701-8"></script>
 </body>
 </html>

@@ -1,5 +1,19 @@
 {
   "projects": {
-    "default": "live-events-6f3e5"
+    "default": "live-events-6f3e5",
+    "staging": "live-events-6f3e5",
+    "prod": "live-events-6f3e5"
+  },
+  "targets": {
+    "live-events-6f3e5": {
+      "hosting": {
+        "web-staging": [
+          "live-events-6f3e5-staging"
+        ],
+        "web-prod": [
+          "live-events-6f3e5"
+        ]
+      }
+    }
   }
 }

@@ -3,10 +3,18 @@ const path = require('path');
 
 const pairs = [
   { src: 'js', dest: path.join('public', 'js'), isDir: true },
+  { src: 'assets', dest: path.join('public', 'assets'), isDir: true },
+  { src: 'data', dest: path.join('public', 'data'), isDir: true },
   { src: 'style.css', dest: path.join('public', 'style.css') },
   { src: 'index.html', dest: path.join('public', 'index.html') },
+  { src: 'datasources-admin.html', dest: path.join('public', 'datasources-admin.html') },
+  { src: 'backend-refresh.html', dest: path.join('public', 'backend-refresh.html') },
   { src: 'settings.html', dest: path.join('public', 'settings.html') },
-  { src: 'report.html', dest: path.join('public', 'report.html') }
+  { src: 'report.html', dest: path.join('public', 'report.html') },
+  { src: 'restore.html', dest: path.join('public', 'restore.html') },
+  { src: 'service-worker.js', dest: path.join('public', 'service-worker.js') },
+  { src: 'favicon.ico', dest: path.join('public', 'favicon.ico') },
+  { src: 'smithsonian.png', dest: path.join('public', 'smithsonian.png') }
 ];
 
 function copyFile(src, dest) {
@@ -18,6 +26,9 @@ function copyDir(srcDir, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   const entries = fs.readdirSync(srcDir, { withFileTypes: true });
   for (const entry of entries) {
+    if (entry.name.startsWith('.')) {
+      continue;
+    }
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
