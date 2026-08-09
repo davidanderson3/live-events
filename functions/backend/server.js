@@ -74,7 +74,7 @@ const PUBLIC_SHOWS_CACHE_CONTROL = 'public, max-age=120, s-maxage=600, stale-whi
 const SHOWS_PAYLOAD_STALE_TTL_MS = 1000 * 60 * 60 * 24;
 const PUBLIC_SHOWS_FAST_READ_TIMEOUT_MS = 2500;
 const PUBLIC_SHOWS_BOOTSTRAP_STORED_READ_TIMEOUT_MS = 100;
-const PUBLIC_SHOWS_STORED_READ_TIMEOUT_MS = 2500;
+const PUBLIC_SHOWS_STORED_READ_TIMEOUT_MS = 20000;
 const PUBLIC_SHOWS_REFRESH_WAIT_TIMEOUT_MS = 30000;
 const PUBLIC_SHOWS_SPARSE_FALLBACK_MIN_EVENTS = 20;
 const STATIC_DMV_SHOWS_BOOTSTRAP_PATH = path.join(__dirname, 'data', 'shows-bootstrap-dmv.json');
@@ -200,21 +200,28 @@ const MUSICBRAINZ_ARTIST_GENRE_MAX_UNCACHED_LOOKUPS = 4;
 const MUSICBRAINZ_ARTIST_GENRE_MAX_ARTISTS_PER_REFRESH = 24;
 const RSS_CACHE_COLLECTION = 'rssCache';
 const RSS_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
-const RSS_CACHE_VERSION = 'v2';
+const RSS_CACHE_VERSION = 'v3';
 const RSS_CACHE_SCHEMA_VERSION = 9;
 const IMAGE_CACHE_COLLECTION = 'imageCache';
 const SHOWS_PAYLOAD_CACHE_COLLECTION = 'showsPayloadCache';
 const IMAGE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 const IMAGE_CACHE_MAX_BYTES = 8 * 1024 * 1024; // Cloud Storage-backed cache can handle larger source images
 const IMAGE_CACHE_URL_PREFIX = '/api/images/';
+const IMAGE_PROXY_URL_PREFIX = '/api/image-proxy?url=';
 const IMAGE_CACHE_STORAGE_PREFIX = 'show-images/cache';
 const REVIEW_QUEUE_CACHE_TTL_MS = 1000 * 60 * 2; // 2 minutes
+const REVIEW_QUEUE_RESPONSE_CACHE_VERSION = '2026-07-04-pending-includes-image-missing';
 const REVIEW_QUEUE_APPROVED_DUPLICATES_CACHE_TTL_MS = 1000 * 60; // 1 minute
 const REVIEW_QUEUE_RULES_CACHE_TTL_MS = 1000 * 60; // 1 minute
 const REVIEW_QUEUE_MAX_LOOKAHEAD_DAYS = 100;
-const REVIEW_QUEUE_DUPLICATE_LOOKUP_TIMEOUT_MS = 1500;
+const REVIEW_QUEUE_MATERIALIZED_SCHEMA_VERSION = 1;
+const REVIEW_QUEUE_MATERIALIZATION_MAX_MS = 1000 * 60 * 7;
+const REVIEW_QUEUE_MATERIALIZATION_IMAGE_REPAIR_LIMIT = 80;
+const REVIEW_QUEUE_DUPLICATE_LOOKUP_TIMEOUT_MS = 6000;
+const REVIEW_QUEUE_APPROVED_DUPLICATE_LOOKUP_LIMIT = 5000;
 const REVIEW_QUEUE_SCAN_MULTIPLIER = 150;
 const REVIEW_QUEUE_MIN_SCAN_DOCS = 1500;
+const REVIEW_QUEUE_FAST_PAGE_MIN_READ_DOCS = 100;
 const SHOWS_REFRESH_SCHEDULER_DEDUPE_WINDOW_MS =
   Math.max(
     60 * 1000,
@@ -313,6 +320,7 @@ async function readShowsPayloadSnapshot(context = {}, { allowStale = false } = {
 
 async function writeShowsPayloadSnapshot(context = {}, payload = null) {
   if (!payload || typeof payload !== 'object') return;
+  if (isStaticShowsFallbackPayload(payload)) return;
   const encoded = encodeShowsPayloadSnapshot(payload);
   if (!encoded) return;
   await safeWriteCachedResponse(
@@ -627,14 +635,17 @@ function retainOnlyLocallyCachedImages(event) {
   const requiresLocalOnlyImages = sourceId === 'sixthandi';
   const isLocalImageUrl = url =>
     typeof url === 'string' &&
-    url.startsWith(IMAGE_CACHE_URL_PREFIX);
+    (url.startsWith(IMAGE_CACHE_URL_PREFIX) || url.startsWith(IMAGE_PROXY_URL_PREFIX));
   const keepImages = images =>
     (Array.isArray(images) ? images : []).filter(image => {
       const url = typeof image?.url === 'string' ? image.url.trim() : '';
       if (!url) return false;
       if (isLocalImageUrl(url) || image?.manual === true) return true;
       if (requiresLocalOnlyImages) return false;
-      return sourceId === 'ticketmaster' && isValidHttpUrl(url);
+      return (
+        sourceId === 'ticketmaster' ||
+        sourceId === 'dc9'
+      ) && isValidHttpUrl(url);
     });
 
   const directImages = keepImages(event.images);
@@ -665,7 +676,7 @@ function buildLocalEventImageUrl(imageUrl) {
   if (raw.startsWith(IMAGE_CACHE_URL_PREFIX)) {
     return raw;
   }
-  if (raw.startsWith('/api/image-proxy?url=')) {
+  if (raw.startsWith(IMAGE_PROXY_URL_PREFIX)) {
     return raw;
   }
   if (!isValidHttpUrl(raw)) {
@@ -686,7 +697,7 @@ function isWashingtonGlassSchoolUrl(url) {
 }
 
 function normalizeImageProxySourceUrl(rawUrl) {
-  const raw = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  const raw = decodeHtmlEntities(typeof rawUrl === 'string' ? rawUrl.trim() : '');
   if (!isValidHttpUrl(raw)) return raw;
   try {
     const parsed = new URL(raw);
@@ -742,8 +753,9 @@ function clonePlainJson(value) {
   }
 }
 
-async function refreshCachedRssEventsIfNeeded(events, source, cacheKeyParts) {
+async function refreshCachedRssEventsIfNeeded(events, source, cacheKeyParts, context = {}) {
   if (!Array.isArray(events) || !events.length) return events;
+  if (context?.skipImageProcessing === true) return events;
   if (source?.config?.fetchImageFromLink === false) return events;
   if (!events.some(event => event?.url && eventNeedsImageUpgrade(event))) {
     return events;
@@ -877,10 +889,10 @@ function resolveStoredShowEventStartMs(event) {
 
 function resolveStoredShowEventEndMs(event, fallbackStartMs = null) {
   const candidates = [
+    event?.recurring?.endDate ? buildDateOnlyLocalDateTime(event.recurring.endDate) : '',
     event?.end?.utc,
     event?.end?.local,
     event?.recurring?.occurrenceDate ? buildDateOnlyLocalDateTime(event.recurring.occurrenceDate) : '',
-    event?.recurring?.endDate ? buildDateOnlyLocalDateTime(event.recurring.endDate) : ''
   ];
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
@@ -1015,6 +1027,13 @@ function collapseRecurringStoredEvents(items, {
     if (!seriesId || occurrenceDates.length <= 1) return item;
     const event = item?.event && typeof item.event === 'object' ? item.event : item;
     const existingRecurring = event?.recurring && typeof event.recurring === 'object' ? event.recurring : {};
+    const preserveExistingRange = shouldPreserveExistingRecurringRange(
+      existingRecurring,
+      occurrenceDates[0],
+      occurrenceDates[occurrenceDates.length - 1]
+    );
+    const startDate = preserveExistingRange ? existingRecurring.startDate : occurrenceDates[0];
+    const endDate = preserveExistingRange ? existingRecurring.endDate : occurrenceDates[occurrenceDates.length - 1];
     const nextEvent = {
       ...event,
       recurring: {
@@ -1022,9 +1041,12 @@ function collapseRecurringStoredEvents(items, {
         isRecurring: true,
         seriesId,
         occurrenceDates,
-        startDate: occurrenceDates[0],
-        endDate: occurrenceDates[occurrenceDates.length - 1],
-        rangeLabel: formatRecurringRangeLabel(occurrenceDates[0], occurrenceDates[occurrenceDates.length - 1])
+        startDate,
+        endDate,
+        rangeLabel:
+          preserveExistingRange && typeof existingRecurring.rangeLabel === 'string' && existingRecurring.rangeLabel
+            ? existingRecurring.rangeLabel
+            : formatRecurringRangeLabel(startDate, endDate)
       }
     };
     return item?.event && typeof item.event === 'object' ? { ...item, event: nextEvent } : nextEvent;
@@ -1370,6 +1392,15 @@ function mergeSourceTitleEventGroup(events) {
   const seriesId =
     (typeof existingRecurring.seriesId === 'string' && existingRecurring.seriesId) ||
     buildAutoRecurringTitleSeriesId(merged, titleKey);
+  const observedStartDate = occurrenceDates[0] || existingRecurring.startDate;
+  const observedEndDate = occurrenceDates[occurrenceDates.length - 1] || existingRecurring.endDate;
+  const preserveExistingRange = shouldPreserveExistingRecurringRange(
+    existingRecurring,
+    occurrenceDates[0],
+    occurrenceDates[occurrenceDates.length - 1]
+  );
+  const startDate = preserveExistingRange ? existingRecurring.startDate : observedStartDate;
+  const endDate = preserveExistingRange ? existingRecurring.endDate : observedEndDate;
   merged = {
     ...merged,
     recurring: {
@@ -1384,12 +1415,14 @@ function mergeSourceTitleEventGroup(events) {
         Number.isFinite(existingRecurring.occurrenceCount) ? existingRecurring.occurrenceCount : 0,
         sortedEvents.length
       ),
-      startDate: occurrenceDates[0] || existingRecurring.startDate,
-      endDate: occurrenceDates[occurrenceDates.length - 1] || existingRecurring.endDate,
+      startDate,
+      endDate,
       rangeLabel:
-        occurrenceDates.length
-          ? formatRecurringRangeLabel(occurrenceDates[0], occurrenceDates[occurrenceDates.length - 1])
-          : existingRecurring.rangeLabel,
+        preserveExistingRange && typeof existingRecurring.rangeLabel === 'string' && existingRecurring.rangeLabel
+          ? existingRecurring.rangeLabel
+          : startDate
+            ? formatRecurringRangeLabel(startDate, endDate)
+            : existingRecurring.rangeLabel,
       autoGeneratedByName: existingRecurring.autoGeneratedByName === true || !existingRecurring.seriesId
     }
   };
@@ -1502,7 +1535,7 @@ function buildShowsFilterContext(query = {}) {
 
 function hasShowsClientFilters(filters = {}) {
   return ['categories', 'regions', 'subregions', 'venues'].some(key =>
-    Array.isArray(filters?.[key])
+    Array.isArray(filters?.[key]) && filters[key].length > 0
   );
 }
 
@@ -1890,6 +1923,15 @@ function collapseReviewItemsBySourceAndTitle(items) {
       .filter((date, index, all) => all.indexOf(date) === index);
     const event = representative?.event && typeof representative.event === 'object' ? representative.event : null;
     const existingRecurring = event?.recurring && typeof event.recurring === 'object' ? event.recurring : null;
+    const observedStartDate = occurrenceDates[0] || existingRecurring?.startDate;
+    const observedEndDate = occurrenceDates[occurrenceDates.length - 1] || existingRecurring?.endDate;
+    const preserveExistingRange = shouldPreserveExistingRecurringRange(
+      existingRecurring,
+      occurrenceDates[0],
+      occurrenceDates[occurrenceDates.length - 1]
+    );
+    const startDate = preserveExistingRange ? existingRecurring.startDate : observedStartDate;
+    const endDate = preserveExistingRange ? existingRecurring.endDate : observedEndDate;
     const seriesId =
       representative?.recurringSeriesId ||
       (typeof existingRecurring?.seriesId === 'string' && existingRecurring.seriesId) ||
@@ -1921,19 +1963,21 @@ function collapseReviewItemsBySourceAndTitle(items) {
               seriesId,
               occurrenceDate: getReviewItemOccurrenceDate(representative) || existingRecurring?.occurrenceDate,
               occurrenceDates,
-              startDate: occurrenceDates[0] || existingRecurring?.startDate,
-              endDate: occurrenceDates[occurrenceDates.length - 1] || existingRecurring?.endDate,
+              startDate,
+              endDate,
               rangeLabel:
-                occurrenceDates.length
-                  ? formatRecurringRangeLabel(occurrenceDates[0], occurrenceDates[occurrenceDates.length - 1])
-                  : existingRecurring?.rangeLabel,
+                preserveExistingRange && typeof existingRecurring?.rangeLabel === 'string' && existingRecurring.rangeLabel
+                  ? existingRecurring.rangeLabel
+                  : startDate
+                    ? formatRecurringRangeLabel(startDate, endDate)
+                    : existingRecurring?.rangeLabel,
               autoGeneratedByName: existingRecurring?.autoGeneratedByName === true || !existingRecurring
             }
           }
         : event
     });
   });
-  return [...passthrough, ...merged].sort(compareReviewItemsReverseChronological);
+  return [...passthrough, ...merged].sort(compareReviewItemsChronological);
 }
 
 function getReviewItemSortStartMs(item) {
@@ -1950,10 +1994,42 @@ function compareReviewItemsReverseChronological(left, right) {
     .localeCompare(String(right?.eventName || right?.eventId || right?.id || ''));
 }
 
+function compareReviewItemsChronological(left, right) {
+  const leftStart = getReviewItemSortStartMs(left);
+  const rightStart = getReviewItemSortStartMs(right);
+  if (leftStart !== rightStart) return leftStart - rightStart;
+  return String(left?.eventName || left?.eventId || left?.id || '')
+    .localeCompare(String(right?.eventName || right?.eventId || right?.id || ''));
+}
+
 function normalizeCrossSourceDuplicateTitleKey(eventName) {
   return typeof eventName === 'string'
     ? normalizeShowEventTitleText(eventName).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 80)
     : '';
+}
+
+const CROSS_SOURCE_DUPLICATE_TITLE_SUFFIX_PATTERN = /[\s:|\-]+(?:the\s+)?(?:musical|play|opera|ballet|concert|show|live|tour|experience)$/i;
+
+function buildCrossSourceDuplicateTitleAliasKeys(eventName) {
+  const normalizedTitle = normalizeShowEventTitleText(eventName || '')
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .trim();
+  if (!normalizedTitle) return [];
+  const aliases = [normalizeCrossSourceDuplicateTitleKey(normalizedTitle)];
+  const withoutDescriptor = normalizedTitle.replace(CROSS_SOURCE_DUPLICATE_TITLE_SUFFIX_PATTERN, '').trim();
+  if (withoutDescriptor && withoutDescriptor !== normalizedTitle) {
+    aliases.push(normalizeCrossSourceDuplicateTitleKey(withoutDescriptor));
+  }
+  return aliases.filter((key, index, all) => key && all.indexOf(key) === index);
+}
+
+function normalizeCrossSourceDuplicateVenueKey(event = null) {
+  const venueName = typeof event?.venue?.name === 'string' ? event.venue.name : '';
+  return cleanText(venueName)
+    .replace(/\([^)]*\)/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 80);
 }
 
 function buildCrossSourceDuplicateTimeKey(dateValue, event = null) {
@@ -1981,10 +2057,80 @@ function buildCrossSourceDuplicateTimeKey(dateValue, event = null) {
   return '';
 }
 
+function buildCrossSourceDuplicateDateKey(dateValue, event = null) {
+  const timeKey = buildCrossSourceDuplicateTimeKey(dateValue, {
+    ...(event && typeof event === 'object' ? event : {}),
+    start: { ...(event?.start && typeof event.start === 'object' ? event.start : {}), noTime: true }
+  });
+  return /^\d{4}-\d{2}-\d{2}/.test(timeKey) ? timeKey.slice(0, 10) : '';
+}
+
 function buildCrossSourceDuplicateKey(eventName, dateValue, event = null) {
   const name = normalizeCrossSourceDuplicateTitleKey(eventName);
   const timeKey = buildCrossSourceDuplicateTimeKey(dateValue, event);
   return name && timeKey ? `${name}::${timeKey}` : '';
+}
+
+function normalizeCrossSourceDuplicateUrlKey(url) {
+  const raw = typeof url === 'string' ? url.trim() : '';
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    const trumbaEventId = extractSmithsonianTrumbaEventId(parsed);
+    if (trumbaEventId) {
+      return `https://si.edu/events?trumbaEventId=${trumbaEventId}`;
+    }
+    parsed.hash = '';
+    ['fbclid', 'gclid', 'utm_campaign', 'utm_content', 'utm_medium', 'utm_source', 'utm_term']
+      .forEach(param => parsed.searchParams.delete(param));
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    parsed.pathname = pathname;
+    if (isGenericCrossSourceDuplicateUrl(parsed)) return '';
+    return parsed.toString().replace(/\/+$/, '').toLowerCase();
+  } catch {
+    return raw.replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+function extractSmithsonianTrumbaEventId(parsedUrl) {
+  const hostname = String(parsedUrl?.hostname || '').replace(/^www\./i, '').toLowerCase();
+  if (hostname !== 'si.edu') return '';
+  const directEventId = parsedUrl.searchParams.get('eventid') || parsedUrl.searchParams.get('eventId');
+  if (/^\d+$/.test(String(directEventId || ''))) return String(directEventId);
+  const trumbaEmbed = parsedUrl.searchParams.get('trumbaEmbed') || '';
+  const match = trumbaEmbed.match(/(?:^|[?&])eventid=(\d+)/i);
+  return match ? match[1] : '';
+}
+
+function isGenericCrossSourceDuplicateUrl(parsedUrl) {
+  const hostname = String(parsedUrl?.hostname || '').replace(/^www\./i, '').toLowerCase();
+  const pathname = String(parsedUrl?.pathname || '').replace(/\/+$/, '').toLowerCase() || '/';
+  return (
+    (hostname === 'glenechopark.org' && pathname === '/dances') ||
+    (hostname.endsWith('glenechopark.org') && pathname === '/dances')
+  );
+}
+
+function buildCrossSourceDuplicateKeys(eventName, dateValue, event = null) {
+  const keys = [];
+  const eventUrl = normalizeCrossSourceDuplicateUrlKey(event?.url || '');
+  if (eventUrl) keys.push(`url::${eventUrl}`);
+  const titleTimeKey = buildCrossSourceDuplicateKey(eventName, dateValue, event);
+  if (titleTimeKey) keys.push(`title-time::${titleTimeKey}`);
+  const timeKey = buildCrossSourceDuplicateTimeKey(dateValue, event);
+  const dateKey = buildCrossSourceDuplicateDateKey(dateValue, event);
+  const venueKey = normalizeCrossSourceDuplicateVenueKey(event);
+  if (timeKey && venueKey) {
+    buildCrossSourceDuplicateTitleAliasKeys(eventName).forEach(titleAliasKey => {
+      keys.push(`title-alias-time-venue::${titleAliasKey}::${timeKey}::${venueKey}`);
+    });
+  }
+  if (dateKey && venueKey) {
+    buildCrossSourceDuplicateTitleAliasKeys(eventName).forEach(titleAliasKey => {
+      keys.push(`title-alias-date-venue::${titleAliasKey}::${dateKey}::${venueKey}`);
+    });
+  }
+  return keys.filter((key, index, all) => key && all.indexOf(key) === index);
 }
 
 const POSSIBLE_DUPLICATE_TIME_TOLERANCE_MS = 2 * 60 * 60 * 1000;
@@ -2119,8 +2265,12 @@ function isShowEventTitleExcluded(excludedTitleKeys, titleKey, sourceId = '') {
 }
 
 function buildStoredShowEventDuplicateKey(data = {}) {
+  return buildStoredShowEventDuplicateKeys(data)[0] || '';
+}
+
+function buildStoredShowEventDuplicateKeys(data = {}) {
   const event = data?.event && typeof data.event === 'object' ? data.event : null;
-  return buildCrossSourceDuplicateKey(
+  return buildCrossSourceDuplicateKeys(
     data?.eventName || event?.name?.text || '',
     data?.eventStartMs ?? data?.eventDate,
     event
@@ -2362,7 +2512,7 @@ function buildAutoApprovalRuleDocId(key) {
   return `key-${crypto.createHash('sha1').update(normalized).digest('hex')}`;
 }
 
-function getTitleAutoApprovalRule(autoApprovedRules, data) {
+function getTitleAutoApprovalRule(autoApprovedRules, data, { allowSimilar = true } = {}) {
   if (!(autoApprovedRules instanceof Map) || !data?.eventTitleKey) return null;
   const sourceKey = buildTitleAutoApprovalKey(data.sourceId || data?.event?.source, data.eventTitleKey);
   if (sourceKey && autoApprovedRules.has(sourceKey)) {
@@ -2370,11 +2520,23 @@ function getTitleAutoApprovalRule(autoApprovedRules, data) {
   }
   if (!supportsTitleAutoApproval(data)) return null;
   const legacyKey = `title::${data.eventTitleKey}`;
-  return autoApprovedRules.get(legacyKey) || getSimilarTitleAutoApprovalRule(autoApprovedRules, data);
+  const legacyRule = autoApprovedRules.get(legacyKey);
+  if (legacyRule && !isUnsafeLegacyTitleAutoApprovalRule(legacyRule)) {
+    return legacyRule;
+  }
+  if (!allowSimilar) return null;
+  return getSimilarTitleAutoApprovalRule(autoApprovedRules, data);
 }
 
 function normalizeAutoApprovalRuleCategories(rule) {
   return normalizeManualReviewCategories(Array.isArray(rule?.categories) ? rule.categories : []);
+}
+
+function isUnsafeLegacyTitleAutoApprovalRule(rule) {
+  if (!rule || typeof rule !== 'object') return false;
+  const sourceId = normalizeDatasourceId(rule.sourceId || '');
+  const titleKey = normalizeShowEventTitleKey(rule.titleKey || '');
+  return Boolean(titleKey && !sourceId && !normalizeAutoApprovalRuleCategories(rule).length);
 }
 
 function applyAutoApprovalRuleCategories(data, rule) {
@@ -2545,6 +2707,23 @@ function applyAutoApprovalDecision(data, decision) {
   return next;
 }
 
+function applyDefaultShowEventAutoApproval(data, existingData = null) {
+  if (!data || typeof data !== 'object') return data;
+  const existingStatus = normalizeShowEventReviewStatus(existingData?.reviewStatus, '');
+  if (existingStatus === 'rejected') {
+    return data;
+  }
+  if (normalizeShowEventReviewStatus(data.reviewStatus, '') === 'rejected') {
+    return data;
+  }
+  return applyAutoApprovalDecision(data, {
+    ruleId: 'default:auto-approve-all',
+    score: 100,
+    reasons: ['default-auto-approve-all'],
+    notes: 'Auto-approved by default. Strike the event from the review screen to remove it from the feed.'
+  });
+}
+
 function getReviewItemAutoApprovalRule(autoApprovedRules, item) {
   if (!(autoApprovedRules instanceof Map) || !item || typeof item !== 'object') return null;
   const seriesId =
@@ -2561,7 +2740,11 @@ function getReviewItemAutoApprovalRule(autoApprovedRules, item) {
     return autoApprovedRules.get(sourceKey) || {};
   }
   const legacyKey = `title::${titleKey}`;
-  return autoApprovedRules.get(legacyKey) || getSimilarTitleAutoApprovalRule(autoApprovedRules, {
+  const legacyRule = autoApprovedRules.get(legacyKey);
+  if (legacyRule && !isUnsafeLegacyTitleAutoApprovalRule(legacyRule)) {
+    return legacyRule;
+  }
+  return getSimilarTitleAutoApprovalRule(autoApprovedRules, {
     sourceId: item.sourceId || item.event?.source || '',
     eventTitleKey: titleKey,
     event: item.event
@@ -2726,13 +2909,19 @@ function collapseReviewItemsByTitleAndTime(items) {
   return output;
 }
 
-function buildStoredShowEventRecord(source, event, syncedAtIso) {
+function buildStoredShowEventRecord(source, event, syncedAtIso, {
+  skipLearnedCategoryLabels = false,
+  settingsOverride = null
+} = {}) {
   if (!event || typeof event !== 'object') return null;
   const sourceId = normalizeDatasourceId(source?.id || event?.source || '');
   const eventId = typeof event.id === 'string' ? event.id.trim() : String(event.id || '').trim();
   if (!sourceId || !eventId) return null;
 
-  const normalizedEvent = normalizeShowEventGenres({ ...event, source: sourceId });
+  const normalizedEvent = normalizeShowEventGenres(
+    { ...event, source: sourceId },
+    { skipLearnedCategoryLabels, settingsOverride }
+  );
   const cleanedTitle = normalizeShowEventTitleText(normalizedEvent?.name?.text || normalizedEvent?.name || '');
   if (cleanedTitle && normalizedEvent?.name && typeof normalizedEvent.name === 'object') {
     normalizedEvent.name = { ...normalizedEvent.name, text: cleanedTitle };
@@ -2887,11 +3076,22 @@ function storedShowEventRecordsEquivalent(existingData, nextData) {
 function ensureStoredShowEventReviewDefaults(data) {
   if (!data || typeof data !== 'object') return data;
   if (!normalizeShowEventReviewStatus(data.reviewStatus, '')) {
-    data.reviewStatus = 'pending';
-    if (data.reviewNotes === undefined) data.reviewNotes = null;
-    if (data.reviewedAt === undefined) data.reviewedAt = null;
-    if (data.reviewedBy === undefined) data.reviewedBy = null;
-    if (data.publishedAt === undefined) data.publishedAt = null;
+    data.reviewStatus = SHOW_EVENT_PUBLISHED_REVIEW_STATUS;
+    data.reviewNotes = data.reviewNotes === undefined
+      ? 'Auto-approved by default. Strike the event from the review screen to remove it from the feed.'
+      : data.reviewNotes;
+    if (data.reviewedAt === undefined) data.reviewedAt = serverTimestamp();
+    if (data.reviewedBy === undefined) data.reviewedBy = AUTO_APPROVAL_REVIEWER;
+    if (data.publishedAt === undefined) data.publishedAt = serverTimestamp();
+    if (data.autoApprovalRuleId === undefined) data.autoApprovalRuleId = 'default:auto-approve-all';
+    if (data.autoApprovalScore === undefined) data.autoApprovalScore = 100;
+    if (data.autoApprovalReasons === undefined) data.autoApprovalReasons = ['default-auto-approve-all'];
+    if (data.autoApprovedAt === undefined) data.autoApprovedAt = serverTimestamp();
+    if (data.categoriesUpdatedAt === undefined && eventHasPublicCategories(data.event)) {
+      data.categoriesUpdatedAt = serverTimestamp();
+    }
+  } else if (data.reviewStatus === SHOW_EVENT_PUBLISHED_REVIEW_STATUS && data.categoriesUpdatedAt === undefined && eventHasPublicCategories(data.event)) {
+    data.categoriesUpdatedAt = serverTimestamp();
   }
   return data;
 }
@@ -2935,15 +3135,22 @@ function applyExcludedTitlesToDatasourceResults(results, excludedTitleKeys) {
   });
 }
 
-async function persistStoredShowEvents(results, { force = false, sourceIds = [], db: dbOverride = null } = {}) {
+async function persistStoredShowEvents(results, {
+  force = false,
+  sourceIds = [],
+  db: dbOverride = null,
+  skipSimilarTitleAutoApproval = false,
+  skipLearnedCategoryLabels = false,
+  settingsOverride = null
+} = {}) {
   const db = dbOverride || getFirestore();
   if (!db) {
-    return { written: 0, skipped: 0, pruned: 0, from: 'disabled' };
+    return { written: 0, created: 0, updated: 0, skipped: 0, pruned: 0, sources: [], from: 'disabled' };
   }
 
   const now = Date.now();
   if (!force && lastStoredShowEventsPersistAt && now - lastStoredShowEventsPersistAt < STORED_SHOW_EVENTS_PERSIST_INTERVAL_MS) {
-    return { written: 0, skipped: 0, pruned: 0, from: 'throttled' };
+    return { written: 0, created: 0, updated: 0, skipped: 0, pruned: 0, sources: [], from: 'throttled' };
   }
 
   const syncedAtIso = new Date().toISOString();
@@ -2951,6 +3158,13 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
     loadExcludedShowEventTitleKeys(db),
     loadAutoApprovedSeriesRules(db)
   ]);
+  const categorySettings = settingsOverride
+    ? normalizeShowsDefaultSettings(settingsOverride)
+    : await primeShowsSettingsCache();
+  console.info('[shows-refresh] persist rules loaded', {
+    excludedTitleCount: excludedTitleKeys instanceof Set ? excludedTitleKeys.size : 0,
+    autoRuleCount: autoApprovedSeriesRules instanceof Map ? autoApprovedSeriesRules.size : 0
+  });
   const preferredEventsByIdentity = new Map();
   (Array.isArray(results) ? results : []).forEach(result => {
     if (!result?.ok || !Array.isArray(result.events)) return;
@@ -2976,7 +3190,10 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
           return;
         }
       }
-      const record = buildStoredShowEventRecord(result.source, event, syncedAtIso);
+      const record = buildStoredShowEventRecord(result.source, event, syncedAtIso, {
+        skipLearnedCategoryLabels,
+        settingsOverride: categorySettings
+      });
       if (!record?.docId) {
         skipped += 1;
         return;
@@ -2991,7 +3208,9 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
       const seriesRule = data.recurringSeriesId
         ? autoApprovedSeriesRules.get(data.recurringSeriesId) || null
         : null;
-      const titleRule = getTitleAutoApprovalRule(autoApprovedSeriesRules, data);
+      const titleRule = getTitleAutoApprovalRule(autoApprovedSeriesRules, data, {
+        allowSimilar: !skipSimilarTitleAutoApproval
+      });
       const approvalRule = seriesRule || titleRule;
       if (approvalRule) {
         data = applyAutoApprovalRuleCategories(data, approvalRule);
@@ -3027,13 +3246,36 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
   });
 
   let written = 0;
+  let created = 0;
+  let updated = 0;
   let unchanged = 0;
+  const sourcePersistStats = new Map();
+  const getSourcePersistStats = sourceId => {
+    const normalizedSourceId = normalizeDatasourceId(sourceId);
+    const key = normalizedSourceId || 'unknown';
+    if (!sourcePersistStats.has(key)) {
+      sourcePersistStats.set(key, {
+        id: normalizedSourceId,
+        written: 0,
+        created: 0,
+        updated: 0,
+        unchanged: 0
+      });
+    }
+    return sourcePersistStats.get(key);
+  };
   const recordEntries = Array.from(records.entries());
+  console.info('[shows-refresh] persist records prepared', {
+    recordCount: recordEntries.length,
+    skipped,
+    skipLearnedCategoryLabels
+  });
   for (let index = 0; index < recordEntries.length; index += STORED_SHOW_EVENTS_BATCH_SIZE) {
     const chunk = recordEntries.slice(index, index + STORED_SHOW_EVENTS_BATCH_SIZE);
-    const existingDocs = await Promise.all(
-      chunk.map(([docId]) => db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(docId).get())
-    );
+    const refs = chunk.map(([docId]) => db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(docId));
+    const existingDocs = typeof db.getAll === 'function'
+      ? await db.getAll(...refs)
+      : await Promise.all(refs.map(ref => ref.get()));
     const batch = db.batch();
     let pendingWrites = 0;
     chunk.forEach(([docId, data], chunkIndex) => {
@@ -3046,7 +3288,7 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
       const shouldResetLegacyApproval =
         hasLegacyTitleAutoApproval &&
         !getStoredShowEventRecurringSeriesId(existingData);
-      const mergedData = ensureStoredShowEventReviewDefaults(mergePersistentReviewFieldsIntoStoredRecord(
+      let mergedData = ensureStoredShowEventReviewDefaults(mergePersistentReviewFieldsIntoStoredRecord(
         shouldResetLegacyApproval
           ? {
               ...data,
@@ -3064,6 +3306,7 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
           : data,
         existingData
       ));
+      mergedData = applyDefaultShowEventAutoApproval(mergedData, existingData);
       if (shouldResetLegacyApproval && mergedData?.event && typeof mergedData.event === 'object') {
         mergedData.event = compactStoredShowEvent({
           ...mergedData.event,
@@ -3071,8 +3314,10 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
         });
         mergedData.taxonomyGenres = Array.isArray(data?.taxonomyGenres) ? data.taxonomyGenres : [];
       }
+      mergedData = applyReviewQueueMaterializedFields(mergedData, { excludedTitleKeys });
       if (existingData && storedShowEventRecordsEquivalent(existingData, mergedData)) {
         unchanged += 1;
+        getSourcePersistStats(data?.sourceId || data?.event?.source || '').unchanged += 1;
         return;
       }
       batch.set(
@@ -3081,6 +3326,15 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
         { merge: true }
       );
       written += 1;
+      const sourceStats = getSourcePersistStats(data?.sourceId || data?.event?.source || '');
+      sourceStats.written += 1;
+      if (existingData) {
+        updated += 1;
+        sourceStats.updated += 1;
+      } else {
+        created += 1;
+        sourceStats.created += 1;
+      }
       pendingWrites += 1;
     });
     if (pendingWrites > 0) {
@@ -3140,7 +3394,16 @@ async function persistStoredShowEvents(results, { force = false, sourceIds = [],
     lastStoredShowEventsPruneAt = now;
   }
 
-  return { written, skipped, unchanged, pruned, from: 'firestore' };
+  return {
+    written,
+    created,
+    updated,
+    skipped,
+    unchanged,
+    pruned,
+    sources: Array.from(sourcePersistStats.values()).filter(source => source.id),
+    from: 'firestore'
+  };
 }
 
 async function fetchStoredShowEvents({
@@ -3416,6 +3679,7 @@ function buildShowEventReviewItem(doc) {
     reviewedAt: serializeReviewTimestamp(data.reviewedAt),
     syncedAtIso: typeof data.syncedAtIso === 'string' ? data.syncedAtIso : '',
     hasReviewedPublicCategories: storedShowEventHasReviewedPublicCategories(data),
+    possibleDuplicates: Array.isArray(data.possibleDuplicates) ? data.possibleDuplicates : [],
     event
   };
 }
@@ -3590,6 +3854,154 @@ function isDisabledDatasourceRecord(record) {
   });
 }
 
+function buildReviewQueueGroupKey(data = {}) {
+  const sourceId = normalizeDatasourceId(data.sourceId || data?.event?.source || '');
+  const recurringSeriesId = getStoredShowEventRecurringSeriesId(data);
+  if (recurringSeriesId) return `series::${sourceId}::${recurringSeriesId}`;
+  const titleKey = normalizeShowEventTitleKey(data.eventTitleKey || getShowEventTitleFromData(data));
+  if (sourceId && titleKey) return `source-title::${sourceId}::${titleKey}`;
+  const duplicateKey = buildStoredShowEventDuplicateKey(data);
+  return duplicateKey ? `duplicate::${duplicateKey}` : '';
+}
+
+function buildReviewQueueMaterializedFields(data = {}, {
+  excludedTitleKeys = null
+} = {}) {
+  const event = data?.event && typeof data.event === 'object' ? data.event : null;
+  const storedStatus = normalizeShowEventReviewStatus(data?.reviewStatus, 'pending');
+  const sourceId = normalizeDatasourceId(data?.sourceId || event?.source || '');
+  const titleKey = normalizeShowEventTitleKey(data?.eventTitleKey || getShowEventTitleFromData(data));
+  const isExcluded = Boolean(titleKey && isShowEventTitleExcluded(excludedTitleKeys, titleKey, sourceId));
+  const hasUsableImage = event ? (eventHasUsableImage(event) || eventHasStoredReviewImage(event)) : false;
+  const hasReviewedCategories = storedShowEventHasReviewedPublicCategories(data);
+  const isDisabled = isDisabledDatasourceRecord(data);
+  const queueVisible = storedStatus === 'pending' && !isDisabled && !isExcluded;
+  const eventStartMs = Number.isFinite(data?.eventStartMs)
+    ? data.eventStartMs
+    : event
+      ? resolveStoredShowEventStartMs(event)
+      : null;
+  const eventEndMs = Number.isFinite(data?.eventEndMs)
+    ? data.eventEndMs
+    : event
+      ? resolveStoredShowEventEndMs(event, eventStartMs)
+      : null;
+  return {
+    reviewQueueSchemaVersion: REVIEW_QUEUE_MATERIALIZED_SCHEMA_VERSION,
+    reviewQueueVisible: queueVisible,
+    reviewQueueStatus: storedStatus === 'pending' ? 'pending' : storedStatus,
+    reviewQueueNeedsImage: storedStatus === 'pending' && !hasUsableImage,
+    reviewQueueNeedsCategories: storedStatus === 'pending' && !hasReviewedCategories,
+    reviewQueueSourceDisabled: isDisabled,
+    reviewQueueTitleExcluded: isExcluded,
+    reviewQueueSortMs: Number.isFinite(eventStartMs) ? eventStartMs : null,
+    reviewQueueEndMs: Number.isFinite(eventEndMs) ? eventEndMs : null,
+    reviewQueueGroupKey: buildReviewQueueGroupKey(data)
+  };
+}
+
+function buildCityCastDcTitleRepairFields(data = {}) {
+  const event = data?.event && typeof data.event === 'object' ? clonePlainJson(data.event) : null;
+  const currentTitle = cleanText(data?.eventName || event?.name?.text || event?.name || '');
+  const repairedTitle = normalizeCityCastDcTitle(currentTitle);
+  if (!currentTitle || !repairedTitle || repairedTitle === currentTitle) return null;
+  const repairedEvent = event
+    ? {
+        ...event,
+        name:
+          event.name && typeof event.name === 'object'
+            ? { ...event.name, text: repairedTitle }
+            : { text: repairedTitle }
+      }
+    : null;
+  const repairedData = {
+    ...data,
+    eventName: repairedTitle,
+    eventTitleKey: normalizeShowEventTitleKey(repairedTitle),
+    ...(repairedEvent ? { event: repairedEvent } : {})
+  };
+  return {
+    eventName: repairedTitle,
+    eventTitleKey: repairedData.eventTitleKey,
+    ...(repairedEvent ? { event: repairedEvent } : {}),
+    ...buildReviewQueueMaterializedFields(repairedData),
+    cityCastDcTitleRepairedAt: serverTimestamp()
+  };
+}
+
+async function repairCityCastDcStoredTitles({
+  limit = 1000,
+  dryRun = false,
+  db: dbOverride = null
+} = {}) {
+  const db = dbOverride || getFirestore();
+  if (!db) {
+    throw new Error('Firestore is unavailable. Configure Firebase credentials first.');
+  }
+  const maxDocs = Math.max(1, Math.floor(Number(limit) || 1000));
+  const snapshot = await db
+    .collection(STORED_SHOW_EVENTS_COLLECTION)
+    .where('sourceId', '==', CITY_CAST_DC_SOURCE_ID)
+    .limit(maxDocs)
+    .get();
+  const repairs = [];
+  snapshot.docs.forEach(doc => {
+    const data = doc.data() || {};
+    const fields = buildCityCastDcTitleRepairFields(data);
+    if (!fields) return;
+    repairs.push({
+      doc,
+      fields,
+      before: cleanText(data.eventName || data?.event?.name?.text || ''),
+      after: fields.eventName
+    });
+  });
+  if (!dryRun && repairs.length) {
+    for (let index = 0; index < repairs.length; index += STORED_SHOW_EVENTS_BATCH_SIZE) {
+      const batch = db.batch();
+      repairs.slice(index, index + STORED_SHOW_EVENTS_BATCH_SIZE).forEach(({ doc, fields }) => {
+        batch.set(doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id), fields, { merge: true });
+      });
+      await batch.commit();
+    }
+  }
+  return {
+    scanned: snapshot.docs.length,
+    repaired: dryRun ? 0 : repairs.length,
+    wouldRepair: dryRun ? repairs.length : undefined,
+    examples: repairs.slice(0, 10).map(({ doc, before, after }) => ({
+      id: doc.id,
+      before,
+      after
+    })),
+    complete: snapshot.docs.length < maxDocs,
+    dryRun: Boolean(dryRun),
+    sourceId: CITY_CAST_DC_SOURCE_ID
+  };
+}
+
+function applyReviewQueueMaterializedFields(data = {}, options = {}) {
+  if (!data || typeof data !== 'object') return data;
+  return {
+    ...data,
+    ...buildReviewQueueMaterializedFields(data, options)
+  };
+}
+
+function buildReviewQueueMaterializedMutationPayload(existingData = {}, payload = {}, options = {}) {
+  const mergedData = {
+    ...(existingData && typeof existingData === 'object' ? existingData : {}),
+    ...(payload && typeof payload === 'object' ? payload : {})
+  };
+  if (payload?.event) {
+    mergedData.event = payload.event;
+  }
+  return {
+    ...(payload && typeof payload === 'object' ? payload : {}),
+    ...buildReviewQueueMaterializedFields(mergedData, options)
+  };
+}
+
 function buildManualReviewImagePayload(data, imageUrl, { originalUrl = '' } = {}) {
   const normalizedUrl = normalizeManualReviewImageStorageUrl(imageUrl);
   if (!normalizedUrl) return {};
@@ -3672,6 +4084,7 @@ async function repairMissingReviewQueueImages(items, {
       }
     });
     await cacheAllEventImages(eventsToRepair);
+    eventsToRepair.forEach(localizeEventImageUrls);
 
     entries.forEach((entry, index) => {
       const repairedEvent = eventsToRepair[index];
@@ -3682,7 +4095,14 @@ async function repairMissingReviewQueueImages(items, {
       retainOnlyLocallyCachedImages(entry.item.event);
       repairedRecords.push({
         docId: entry.item.id,
-        data: record.data
+        data: applyReviewQueueMaterializedFields({
+          ...record.data,
+          reviewStatus: 'pending',
+          reviewNotes: null,
+          reviewedAt: null,
+          reviewedBy: null,
+          publishedAt: null
+        })
       });
     });
   }
@@ -3714,6 +4134,27 @@ function repairMissingReviewQueueImagesInBackground(items, options = {}) {
   });
 }
 
+async function repairReviewQueuePageImages(items, {
+  db,
+  status = 'pending'
+} = {}) {
+  if (!Array.isArray(items) || !items.length || !db) return items;
+  const repairedItems = await repairMissingReviewQueueImages(items, { db });
+  const normalizedStatusInput = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  const isImageMissingQueue = normalizedStatusInput === 'image-missing';
+  return repairedItems
+    .map(item => {
+      if (
+        normalizeShowEventReviewStatus(item?.storedReviewStatus || '', '') === 'pending' &&
+        eventHasUsableImage(item?.event)
+      ) {
+        return { ...item, reviewStatus: 'pending' };
+      }
+      return item;
+    })
+    .filter(item => !isImageMissingQueue || !eventHasUsableImage(item?.event));
+}
+
 function buildReviewQueueCacheKey({
   status = 'pending',
   sourceId = '',
@@ -3737,6 +4178,7 @@ function buildReviewQueueCacheKey({
     String(lookaheadDays).trim() !== '';
   const normalizedDays = hasLookahead ? clampReviewQueueLookaheadDays(lookaheadDays) : '';
   return JSON.stringify({
+    version: REVIEW_QUEUE_RESPONSE_CACHE_VERSION,
     status: normalizedStatus,
     sourceId: normalizedSourceId,
     category: normalizedCategory,
@@ -3808,18 +4250,19 @@ async function loadApprovedReviewDuplicateMap(db) {
       const approvedSnap = await db
         .collection(STORED_SHOW_EVENTS_COLLECTION)
         .where('reviewStatus', '==', SHOW_EVENT_PUBLISHED_REVIEW_STATUS)
-        .limit(500)
+        .limit(REVIEW_QUEUE_APPROVED_DUPLICATE_LOOKUP_LIMIT)
         .get();
       approvedSnap.docs.forEach(doc => {
         const data = doc.data() || {};
-        const key = buildCrossSourceDuplicateKey(data.eventName, data.eventStartMs ?? data.eventDate, data.event);
-        if (!key) return;
-        if (!approvedByKey.has(key)) approvedByKey.set(key, []);
-        approvedByKey.get(key).push({
-          id: doc.id,
-          sourceId: data.sourceId,
-          sourceName: data.sourceName || data.sourceId,
-          reviewStatus: 'approved'
+        buildStoredShowEventDuplicateKeys(data).forEach(key => {
+          if (!approvedByKey.has(key)) approvedByKey.set(key, []);
+          approvedByKey.get(key).push({
+            id: doc.id,
+            sourceId: data.sourceId,
+            sourceName: data.sourceName || data.sourceId,
+            eventName: data.eventName || data?.event?.name?.text || '',
+            reviewStatus: 'approved'
+          });
         });
       });
       approvedReviewDuplicateMapCache = approvedByKey;
@@ -3831,6 +4274,52 @@ async function loadApprovedReviewDuplicateMap(db) {
     });
   }
   return approvedReviewDuplicateMapPromise;
+}
+
+async function annotateReviewItemDuplicates(items, db) {
+  if (!Array.isArray(items) || !items.length || !db) {
+    return items;
+  }
+  let approvedByKey = new Map();
+  try {
+    approvedByKey = await withTimeout(
+      loadApprovedReviewDuplicateMap(db),
+      REVIEW_QUEUE_DUPLICATE_LOOKUP_TIMEOUT_MS,
+      () => new Error(`Approved duplicate lookup timed out after ${REVIEW_QUEUE_DUPLICATE_LOOKUP_TIMEOUT_MS}ms`)
+    );
+  } catch (err) {
+    console.warn('Failed to load approved events for duplicate check', err);
+  }
+  const pageItemsByKey = new Map();
+  items.forEach(item => {
+    buildCrossSourceDuplicateKeys(item.eventName, item.eventStartMs ?? item.eventDate, item.event).forEach(key => {
+      const group = pageItemsByKey.get(key) || [];
+      group.push(item);
+      pageItemsByKey.set(key, group);
+    });
+  });
+  items.forEach(item => {
+    const matchesById = new Map();
+    buildCrossSourceDuplicateKeys(item.eventName, item.eventStartMs ?? item.eventDate, item.event).forEach(key => {
+      (pageItemsByKey.get(key) || [])
+        .filter(match => match.id !== item.id)
+        .forEach(match => matchesById.set(match.id, {
+          id: match.id,
+          sourceId: match.sourceId,
+          sourceName: match.sourceName,
+          eventName: match.eventName,
+          reviewStatus: match.reviewStatus
+        }));
+      (approvedByKey.get(key) || [])
+        .filter(match => match.id !== item.id)
+        .forEach(match => matchesById.set(match.id, match));
+    });
+    const matches = Array.from(matchesById.values());
+    if (matches.length) {
+      item.possibleDuplicates = matches.slice(0, 6);
+    }
+  });
+  return items;
 }
 
 async function listShowEventsForReview({
@@ -3927,90 +4416,58 @@ async function listShowEventsForReview({
     return pagedExcludedItems;
   }
 
-  const canUseFastPendingPage =
+  const canUseMaterializedReviewQueuePage =
     !countOnly &&
     resolvedStatus === 'pending' &&
     Number.isFinite(normalizedLimit) &&
-    !isImageMissingQueue &&
     !normalizedCategory &&
     !normalizedQuery &&
-    !includeDuplicateMatches;
+    !includeDuplicateMatches &&
+    !normalizedSourceId;
 
-  if (canUseFastPendingPage) {
-    const [excludedTitleKeys, autoApprovedSeriesRules] = await Promise.all([
-      loadExcludedShowEventTitleKeys(db),
-      loadAutoApprovedSeriesRules(db)
-    ]);
-    markTiming('rules');
-    const requestedLimit = normalizedLimit;
-    const readLimit = Math.min(Math.max(normalizedOffset + requestedLimit + 1, requestedLimit + 1), 120);
-    const neededCollapsedItems = normalizedOffset + requestedLimit + 1;
-    const maxDocsToScanForFastPage = Math.max(
-      neededCollapsedItems * REVIEW_QUEUE_SCAN_MULTIPLIER,
-      REVIEW_QUEUE_MIN_SCAN_DOCS
-    );
-    const candidateItems = [];
-    let collapsed = [];
-    let lastDoc = null;
-    let scannedDocs = 0;
-    let exhausted = false;
-    while (scannedDocs < maxDocsToScanForFastPage && collapsed.length < neededCollapsedItems && !exhausted) {
+  if (canUseMaterializedReviewQueuePage) {
+    try {
       let query = db
         .collection(STORED_SHOW_EVENTS_COLLECTION)
-        .where('reviewStatus', '==', 'pending')
-        .where('eventStartMs', '>=', queryStartMs);
+        .where('reviewQueueVisible', '==', true)
+        .where('reviewQueueStatus', '==', 'pending')
+        .where('reviewQueueSortMs', '>=', queryStartMs);
+      if (isImageMissingQueue) {
+        query = query.where('reviewQueueNeedsImage', '==', true);
+      } else {
+        query = query.where('reviewQueueNeedsImage', '==', false);
+      }
       if (Number.isFinite(queryEndMs)) {
-        query = query.where('eventStartMs', '<=', queryEndMs);
+        query = query.where('reviewQueueSortMs', '<=', queryEndMs);
       }
       if (normalizedSourceId) {
         query = query.where('sourceId', '==', normalizedSourceId);
       }
-      query = query
-        .orderBy('eventStartMs', 'desc')
-        .limit(readLimit);
-      if (lastDoc) {
-        query = query.startAfter(lastDoc);
-      }
-      const snapshot = await query.get();
-      markTiming('query');
-      if (snapshot.empty) {
-        exhausted = true;
-        break;
-      }
-      scannedDocs += snapshot.docs.length;
-      lastDoc = snapshot.docs[snapshot.docs.length - 1];
-      if (snapshot.docs.length < readLimit) {
-        exhausted = true;
-      }
-      const batchItems = snapshot.docs
+      const materializedLimit = normalizedOffset + normalizedLimit + 1;
+      const snapshot = await query
+        .orderBy('reviewQueueSortMs', 'asc')
+        .limit(materializedLimit)
+        .get();
+      markTiming('materializedQuery');
+      const items = snapshot.docs
         .map(buildShowEventReviewItem)
         .filter(Boolean)
-        .filter(item => {
-          if (isDisabledDatasourceRecord(item)) return false;
-          if (normalizedSourceId && normalizeDatasourceId(item.sourceId) !== normalizedSourceId) return false;
-          if (Number.isFinite(item.eventStartMs) && item.eventStartMs < startOfTodayMs) return false;
-          if (Number.isFinite(item.eventStartMs) && item.eventStartMs > endMs) return false;
-          if (item.eventTitleKey && isShowEventTitleExcluded(excludedTitleKeys, item.eventTitleKey, item.sourceId || item.event?.source || '')) return false;
-          return true;
-        });
-      candidateItems.push(
-        ...applyAutoApprovalRulesToReviewItems(batchItems, autoApprovedSeriesRules)
-          .filter(isPendingReviewCandidate)
-          .map(item => ({ ...item, reviewStatus: 'pending' }))
-      );
-      collapsed = collapseReviewItemsBySourceAndTitle(candidateItems);
+        .map(normalizePendingQueueReviewStatus);
+      const page = items.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+      Object.defineProperty(page, 'hasMore', {
+        value: items.length > normalizedOffset + normalizedLimit,
+        enumerable: false
+      });
+      Object.defineProperty(page, 'timings', {
+        value: { ...timings, total: Date.now() - startedAt },
+        enumerable: false
+      });
+      return page;
+    } catch (err) {
+      if (!isFirestoreMissingIndexError(err)) throw err;
+      console.warn('Materialized review queue index unavailable; falling back to stored event scan.', err?.message || err);
+      markTiming('materializedIndexFallback');
     }
-    markTiming('filter');
-    const page = collapsed.slice(normalizedOffset, normalizedOffset + requestedLimit);
-    Object.defineProperty(page, 'hasMore', {
-      value: collapsed.length > normalizedOffset + requestedLimit || !exhausted,
-      enumerable: false
-    });
-    Object.defineProperty(page, 'timings', {
-      value: { ...timings, total: Date.now() - startedAt },
-      enumerable: false
-    });
-    return page;
   }
 
   const [excludedTitleKeys, autoApprovedSeriesRules] = await Promise.all([
@@ -4029,6 +4486,7 @@ async function listShowEventsForReview({
     .filter(item => !isDisabledDatasourceRecord(item))
     .filter(item => !item.eventTitleKey || !isShowEventTitleExcluded(excludedTitleKeys, item.eventTitleKey, item.sourceId || item.event?.source || ''))
     .filter(item => !isImageMissingQueue || !eventHasUsableImage(item.event))
+    .filter(item => resolvedStatus !== 'pending' || eventHasUsableImage(item.event))
     .filter(item => !normalizedCategory || eventHasCategory(item.event, normalizedCategory))
     .filter(item => resolvedStatus !== 'pending' || isPendingReviewCandidate(item))
     .filter(item =>
@@ -4040,9 +4498,8 @@ async function listShowEventsForReview({
           : item.reviewStatus === resolvedStatus)
     )
     .map(item =>
-      resolvedStatus === 'pending' &&
-      normalizeShowEventReviewStatus(item?.storedReviewStatus || item?.reviewStatus, 'pending') === 'pending'
-        ? { ...item, reviewStatus: 'pending' }
+      resolvedStatus === 'pending'
+        ? normalizePendingQueueReviewStatus(item)
         : item
     );
 
@@ -4062,7 +4519,7 @@ async function listShowEventsForReview({
       query = query.where('sourceId', '==', normalizedSourceId);
     }
     const snapshot = await query
-      .orderBy('eventStartMs', 'desc')
+      .orderBy('eventStartMs', 'asc')
       .limit(5000)
       .get();
     markTiming('query');
@@ -4078,7 +4535,9 @@ async function listShowEventsForReview({
         return true;
       });
     const filteredReviewItems = buildFilteredReviewItems(candidateItems);
-    const collapsed = collapseReviewItemsBySourceAndTitle(filteredReviewItems);
+    let collapsed = collapseReviewItemsBySourceAndTitle(filteredReviewItems);
+    collapsed = await repairReviewQueuePageImages(collapsed, { db, status: resolvedStatus });
+    collapsed = await annotateReviewItemDuplicates(collapsed, db);
     markTiming('filter');
     Object.defineProperty(collapsed, 'hasMore', {
       value: snapshot.docs.length >= 5000,
@@ -4113,7 +4572,7 @@ async function listShowEventsForReview({
       if (normalizedSourceId) {
         query = query.where('sourceId', '==', normalizedSourceId);
       }
-      query = query.orderBy('eventStartMs', 'desc');
+      query = query.orderBy('eventStartMs', 'asc');
     } else {
       const queryStatus =
         resolvedStatus === 'pending' || resolvedStatus === 'image-missing'
@@ -4128,7 +4587,7 @@ async function listShowEventsForReview({
       if (normalizedSourceId) {
         query = query.where('sourceId', '==', normalizedSourceId);
       }
-      query = query.orderBy('eventStartMs', 'desc');
+      query = query.orderBy('eventStartMs', 'asc');
     }
     query = query.limit(batchSize);
     if (lastDoc) {
@@ -4204,7 +4663,7 @@ async function listShowEventsForReview({
       legacyQuery = legacyQuery.where('sourceId', '==', normalizedSourceId);
     }
     const legacySnapshot = await legacyQuery
-      .orderBy('eventStartMs', 'desc')
+      .orderBy('eventStartMs', 'asc')
       .limit(200)
       .get();
     const legacyItems = legacySnapshot.docs
@@ -4237,7 +4696,7 @@ async function listShowEventsForReview({
   const filteredReviewItems = buildFilteredReviewItems(items);
   const collapsed = collapseReviewItemsBySourceAndTitle(filteredReviewItems);
   markTiming('filter');
-  const limitedCollapsed = countOnly
+  let limitedCollapsed = countOnly
     ? collapsed
     : collapsed.slice(normalizedOffset, normalizedOffset + (normalizedLimit || collapsed.length));
   const pageHasMore =
@@ -4249,13 +4708,16 @@ async function listShowEventsForReview({
     return limitedCollapsed;
   }
 
+  limitedCollapsed = await repairReviewQueuePageImages(limitedCollapsed, { db, status: resolvedStatus });
+  limitedCollapsed = await annotateReviewItemDuplicates(limitedCollapsed, db);
+
   // Cross-source duplicate detection: within the result set
   const byDupKey = new Map();
   limitedCollapsed.forEach(item => {
-    const key = buildCrossSourceDuplicateKey(item.eventName, item.eventStartMs ?? item.eventDate, item.event);
-    if (!key) return;
-    if (!byDupKey.has(key)) byDupKey.set(key, []);
-    byDupKey.get(key).push(item);
+    buildCrossSourceDuplicateKeys(item.eventName, item.eventStartMs ?? item.eventDate, item.event).forEach(key => {
+      if (!byDupKey.has(key)) byDupKey.set(key, []);
+      byDupKey.get(key).push(item);
+    });
   });
 
   // Also cross-check against approved events not in this result set
@@ -4277,14 +4739,22 @@ async function listShowEventsForReview({
   markTiming('duplicates');
 
   collapsed.forEach(item => {
-    const key = buildCrossSourceDuplicateKey(item.eventName, item.eventStartMs ?? item.eventDate, item.event);
-    if (!key) return;
-    const withinQueue = (byDupKey.get(key) || [])
-      .filter(m => m.id !== item.id)
-      .map(m => ({ id: m.id, sourceId: m.sourceId, sourceName: m.sourceName, reviewStatus: m.reviewStatus }));
-    const alreadyApproved = (approvedByKey.get(key) || [])
-      .filter(m => m.id !== item.id);
-    const all = [...alreadyApproved, ...withinQueue];
+    const matchesById = new Map();
+    buildCrossSourceDuplicateKeys(item.eventName, item.eventStartMs ?? item.eventDate, item.event).forEach(key => {
+      (byDupKey.get(key) || [])
+        .filter(m => m.id !== item.id)
+        .forEach(m => matchesById.set(m.id, {
+          id: m.id,
+          sourceId: m.sourceId,
+          sourceName: m.sourceName,
+          eventName: m.eventName,
+          reviewStatus: m.reviewStatus
+        }));
+      (approvedByKey.get(key) || [])
+        .filter(m => m.id !== item.id)
+        .forEach(m => matchesById.set(m.id, m));
+    });
+    const all = Array.from(matchesById.values());
     if (all.length) item.possibleDuplicates = all;
   });
 
@@ -4320,6 +4790,12 @@ function buildReviewSourceCounts(items = []) {
 function normalizeReviewSearchQuery(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
   return raw.replace(/\s+/g, ' ').toLowerCase().slice(0, 120);
+}
+
+function isFirestoreMissingIndexError(err) {
+  const code = typeof err?.code === 'number' ? err.code : null;
+  const message = String(err?.message || err || '');
+  return code === 9 && /requires an index|create_composite/i.test(message);
 }
 
 function reviewSearchFieldValues(item) {
@@ -4406,6 +4882,16 @@ function isPendingReviewCandidate(item) {
   return status === 'pending';
 }
 
+function normalizePendingQueueReviewStatus(item) {
+  if (
+    normalizeShowEventReviewStatus(item?.storedReviewStatus || '', '') === 'pending' &&
+    normalizeShowEventReviewStatus(item?.reviewStatus || '', '') === SHOW_EVENT_PUBLISHED_REVIEW_STATUS
+  ) {
+    return { ...item, reviewStatus: 'pending' };
+  }
+  return item;
+}
+
 async function listReviewSourceCounts({
   status = 'pending',
   category = '',
@@ -4422,6 +4908,208 @@ async function listReviewSourceCounts({
     db: dbOverride
   });
   return buildReviewSourceCounts(items);
+}
+
+async function backfillReviewQueueMaterializedFields({
+  limit = 1000,
+  sourceId = '',
+  maxMs = REVIEW_QUEUE_MATERIALIZATION_MAX_MS,
+  maxImageRepairItems = REVIEW_QUEUE_MATERIALIZATION_IMAGE_REPAIR_LIMIT,
+  dryRun = false,
+  db: dbOverride = null
+} = {}) {
+  const db = dbOverride || getFirestore();
+  if (!db) {
+    const err = new Error('Review storage is unavailable');
+    err.status = 503;
+    err.code = 'review_storage_unavailable';
+    throw err;
+  }
+  const normalizedLimit = normalizePositiveInteger(limit, { min: 1, max: 5000 }) || 1000;
+  const normalizedSourceId = normalizeDatasourceId(sourceId);
+  const startedAt = Date.now();
+  const deadlineMs = startedAt + Math.max(1000, Number(maxMs) || REVIEW_QUEUE_MATERIALIZATION_MAX_MS);
+  const hasBudget = () => Date.now() < deadlineMs;
+  const cutoffMs = Date.now() - STORED_SHOW_EVENTS_PRUNE_GRACE_MS;
+  const excludedTitleKeys = await loadExcludedShowEventTitleKeys(db);
+  let query = db
+    .collection(STORED_SHOW_EVENTS_COLLECTION)
+    .where('eventEndMs', '>=', cutoffMs);
+  if (normalizedSourceId) {
+    query = query.where('sourceId', '==', normalizedSourceId);
+  }
+  const snapshot = await query
+    .orderBy('eventEndMs', 'asc')
+    .limit(normalizedLimit)
+    .get();
+  const docs = snapshot.docs;
+  const docsById = new Map(docs.map(doc => [doc.id, doc]));
+  const dataById = new Map(docs.map(doc => [doc.id, doc.data?.() || {}]));
+  let imageRepairAttempted = 0;
+  let imageRepairTimedOut = false;
+
+  if (hasBudget() && Number(maxImageRepairItems) > 0) {
+    const pendingItems = docs
+      .map(buildShowEventReviewItem)
+      .filter(Boolean)
+      .filter(item => normalizeShowEventReviewStatus(item.storedReviewStatus, 'pending') === 'pending')
+      .filter(item => !eventHasUsableImage(item.event));
+    imageRepairAttempted = Math.min(pendingItems.length, Math.max(0, Number(maxImageRepairItems) || 0));
+    if (imageRepairAttempted > 0) {
+      try {
+        await withTimeout(
+          repairMissingReviewQueueImages(pendingItems, {
+            db,
+            maxItems: imageRepairAttempted
+          }),
+          Math.max(1000, deadlineMs - Date.now()),
+          () => {
+            const err = new Error('Review queue image materialization timed out');
+            err.code = 'review_queue_image_materialization_timeout';
+            return err;
+          }
+        );
+        pendingItems.forEach(item => {
+          if (!item?.id || !eventHasUsableImage(item.event)) return;
+          const current = dataById.get(item.id) || {};
+          dataById.set(item.id, {
+            ...current,
+            event: item.event,
+            eventStartMs: Number.isFinite(item.eventStartMs) ? item.eventStartMs : current.eventStartMs,
+            eventEndMs: Number.isFinite(item.eventEndMs) ? item.eventEndMs : current.eventEndMs
+          });
+        });
+      } catch (err) {
+        imageRepairTimedOut = err?.code === 'review_queue_image_materialization_timeout';
+        console.warn('Review queue image materialization did not complete', err?.message || err);
+      }
+    }
+  }
+
+  const baseUpdates = docs
+    .map(doc => {
+      const data = dataById.get(doc.id) || {};
+      return {
+        doc,
+        data,
+        fields: {
+          ...buildReviewQueueMaterializedFields(data, { excludedTitleKeys }),
+          reviewQueueRepresentativeId: null,
+          possibleDuplicates: null
+        }
+      };
+    })
+    .filter(({ fields }) => fields && typeof fields === 'object');
+
+  const itemEntries = baseUpdates
+    .map(entry => ({
+      ...entry,
+      item: buildShowEventReviewItem({
+        id: entry.doc.id,
+        data: () => ({
+          ...entry.data,
+          ...entry.fields
+        })
+      })
+    }))
+    .filter(entry => entry.item);
+  const pendingVisibleEntries = itemEntries.filter(entry =>
+    entry.fields.reviewQueueVisible === true &&
+    entry.fields.reviewQueueStatus === 'pending'
+  );
+  const collapsedPendingItems = collapseReviewItemsBySourceAndTitle(pendingVisibleEntries.map(entry => entry.item));
+  let duplicateAnnotatedItems = collapsedPendingItems;
+  let duplicateAnnotationTimedOut = false;
+  if (hasBudget() && collapsedPendingItems.length) {
+    try {
+      duplicateAnnotatedItems = await withTimeout(
+        annotateReviewItemDuplicates(collapsedPendingItems, db),
+        Math.max(1000, deadlineMs - Date.now()),
+        () => {
+          const err = new Error('Review queue duplicate materialization timed out');
+          err.code = 'review_queue_duplicate_materialization_timeout';
+          return err;
+        }
+      );
+    } catch (err) {
+      duplicateAnnotationTimedOut = err?.code === 'review_queue_duplicate_materialization_timeout';
+      console.warn('Review queue duplicate materialization did not complete', err?.message || err);
+    }
+  }
+  const visibleRepresentativeIds = new Set(
+    duplicateAnnotatedItems.map(item => String(item?.id || '').trim()).filter(Boolean)
+  );
+  const annotatedItemsById = new Map(
+    duplicateAnnotatedItems
+      .filter(item => item?.id)
+      .map(item => [String(item.id), item])
+  );
+  const representativeByGroup = new Map();
+  duplicateAnnotatedItems.forEach(item => {
+    const doc = docsById.get(item.id);
+    const data = doc ? dataById.get(doc.id) || {} : {};
+    const groupKey = buildReviewQueueGroupKey({
+      ...data,
+      event: item.event
+    });
+    if (groupKey) representativeByGroup.set(groupKey, item.id);
+  });
+
+  const updates = baseUpdates.map(entry => {
+    const item = itemEntries.find(candidate => candidate.doc.id === entry.doc.id)?.item || null;
+    const groupKey = entry.fields.reviewQueueGroupKey || buildReviewQueueGroupKey(entry.data);
+    const representativeId = groupKey ? representativeByGroup.get(groupKey) || null : null;
+    const annotatedItem = annotatedItemsById.get(entry.doc.id);
+    const isCollapsedPendingMember =
+      entry.fields.reviewQueueVisible === true &&
+      entry.fields.reviewQueueStatus === 'pending' &&
+      visibleRepresentativeIds.size > 0 &&
+      !visibleRepresentativeIds.has(entry.doc.id);
+    const nextFields = {
+      ...entry.fields,
+      reviewQueueVisible: isCollapsedPendingMember ? false : entry.fields.reviewQueueVisible,
+      reviewQueueRepresentativeId: representativeId
+    };
+    if (annotatedItem?.event && annotatedItem.id === entry.doc.id) {
+      nextFields.event = annotatedItem.event;
+    } else if (item?.event && eventHasUsableImage(item.event)) {
+      nextFields.event = item.event;
+    }
+    if (annotatedItem?.possibleDuplicates?.length) {
+      nextFields.possibleDuplicates = annotatedItem.possibleDuplicates.slice(0, 6);
+    } else {
+      nextFields.possibleDuplicates = null;
+    }
+    return {
+      doc: entry.doc,
+      fields: nextFields
+    };
+  });
+  if (!dryRun && updates.length) {
+    for (let index = 0; index < updates.length; index += STORED_SHOW_EVENTS_BATCH_SIZE) {
+      if (!hasBudget()) break;
+      const chunk = updates.slice(index, index + STORED_SHOW_EVENTS_BATCH_SIZE);
+      const batch = db.batch();
+      chunk.forEach(({ doc, fields }) => {
+        batch.set(doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id), fields, { merge: true });
+      });
+      await batch.commit();
+    }
+  }
+  return {
+    scanned: snapshot.docs.length,
+    updated: dryRun ? 0 : updates.length,
+    wouldUpdate: dryRun ? updates.length : undefined,
+    visible: updates.filter(entry => entry.fields?.reviewQueueVisible === true).length,
+    collapsedHidden: updates.filter(entry => entry.fields?.reviewQueueRepresentativeId && entry.fields?.reviewQueueVisible === false).length,
+    imageRepairAttempted,
+    imageRepairTimedOut,
+    duplicateAnnotationTimedOut,
+    elapsedMs: Date.now() - startedAt,
+    complete: hasBudget(),
+    dryRun: Boolean(dryRun),
+    sourceId: normalizedSourceId || ''
+  };
 }
 
 async function updateShowEventReviewStatus(docId, {
@@ -4515,7 +5203,7 @@ async function updateShowEventReviewStatus(docId, {
     if (candidateImagePayload.imageUpdatedAt !== undefined) {
       candidatePayload.imageUpdatedAt = candidateImagePayload.imageUpdatedAt;
     }
-    return candidatePayload;
+    return buildReviewQueueMaterializedMutationPayload(candidateData, candidatePayload);
   };
 
   const payload = buildReviewMutationPayload(data);
@@ -4530,7 +5218,7 @@ async function updateShowEventReviewStatus(docId, {
   }
 
   const recurringSeriesId = getStoredShowEventRecurringSeriesId(data);
-  const duplicateKey = buildStoredShowEventDuplicateKey(data);
+  const duplicateKeys = buildStoredShowEventDuplicateKeys(data);
   if (recurringSeriesId) {
     const seriesSnapshot = await db
       .collection(STORED_SHOW_EVENTS_COLLECTION)
@@ -4563,7 +5251,7 @@ async function updateShowEventReviewStatus(docId, {
       await docRef.set(payload, { merge: true });
     }
   } else {
-    if (duplicateKey) {
+    if (duplicateKeys.length) {
       const now = Date.now();
       const futureSnapshot = await db
         .collection(STORED_SHOW_EVENTS_COLLECTION)
@@ -4572,7 +5260,8 @@ async function updateShowEventReviewStatus(docId, {
         .get();
       const matchingDocs = futureSnapshot.docs.filter(doc => {
         const candidate = doc.data?.() || {};
-        return buildStoredShowEventDuplicateKey(candidate) === duplicateKey;
+        const candidateKeys = buildStoredShowEventDuplicateKeys(candidate);
+        return candidateKeys.some(key => duplicateKeys.includes(key));
       });
       if (matchingDocs.length && typeof db.batch === 'function') {
         const batch = db.batch();
@@ -4681,7 +5370,7 @@ async function approveCurrentTitleQueueMatches(data, {
       }
       batch.set(
         doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id),
-        candidatePayload,
+        buildReviewQueueMaterializedMutationPayload(candidate, candidatePayload),
         { merge: true }
       );
     });
@@ -4891,14 +5580,16 @@ async function excludeShowEventTitle(docId, {
 
   const now = Date.now();
   let matched = 0;
-  const updatePayload = {
+  const updatePayload = buildReviewQueueMaterializedMutationPayload(data, {
     reviewStatus: 'rejected',
     excludedTitleKey: resolvedTitleKey,
     excludedSourceId: resolvedSourceId,
     excludedAt: serverTimestamp(),
     reviewedAt: serverTimestamp(),
     publishedAt: null
-  };
+  }, {
+    excludedTitleKeys: new Set([buildShowEventTitleSourceExclusionKey(resolvedSourceId, resolvedTitleKey)])
+  });
   if (trimmedReviewer) updatePayload.reviewedBy = trimmedReviewer;
   updatePayload.reviewNotes = trimmedNotes || `Excluded exact title/source match: ${resolvedTitle || resolvedTitleKey}`;
 
@@ -4917,9 +5608,12 @@ async function excludeShowEventTitle(docId, {
   if (matchingDocs.length && typeof db.batch === 'function') {
     const batch = db.batch();
     matchingDocs.forEach(doc => {
+      const candidate = doc.data?.() || {};
       batch.set(
         doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id),
-        updatePayload,
+        buildReviewQueueMaterializedMutationPayload(candidate, updatePayload, {
+          excludedTitleKeys: new Set([buildShowEventTitleSourceExclusionKey(resolvedSourceId, resolvedTitleKey)])
+        }),
         { merge: true }
       );
       matched += 1;
@@ -4927,7 +5621,13 @@ async function excludeShowEventTitle(docId, {
     await batch.commit();
   } else {
     for (const doc of matchingDocs) {
-      await (doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id)).set(updatePayload, { merge: true });
+      const candidate = doc.data?.() || {};
+      await (doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id)).set(
+        buildReviewQueueMaterializedMutationPayload(candidate, updatePayload, {
+          excludedTitleKeys: new Set([buildShowEventTitleSourceExclusionKey(resolvedSourceId, resolvedTitleKey)])
+        }),
+        { merge: true }
+      );
       matched += 1;
     }
   }
@@ -4973,13 +5673,14 @@ async function updateShowEventReviewCategories(docId, {
   }
 
   const data = snapshot.data() || {};
-  const payload = buildManualReviewCategoryPayload(data, categories);
+  let payload = buildManualReviewCategoryPayload(data, categories);
   if (!Object.keys(payload).length) {
     const err = new Error('Invalid categories');
     err.status = 400;
     err.code = 'invalid_categories';
     throw err;
   }
+  payload = buildReviewQueueMaterializedMutationPayload(data, payload);
 
   const recurringSeriesId = getStoredShowEventRecurringSeriesId(data);
   const duplicateKey = buildStoredShowEventDuplicateKey(data);
@@ -4996,8 +5697,9 @@ async function updateShowEventReviewCategories(docId, {
       seriesSnapshot.docs.forEach(seriesDoc => {
         const seriesData = seriesDoc.data?.() || {};
         if (data.sourceId && seriesData.sourceId && data.sourceId !== seriesData.sourceId) return;
-        const seriesPayload = buildManualReviewCategoryPayload(seriesData, categories);
+        let seriesPayload = buildManualReviewCategoryPayload(seriesData, categories);
         if (!Object.keys(seriesPayload).length) return;
+        seriesPayload = buildReviewQueueMaterializedMutationPayload(seriesData, seriesPayload);
         batch.set(seriesDoc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(seriesDoc.id), seriesPayload, { merge: true });
         matched += 1;
       });
@@ -5025,8 +5727,9 @@ async function updateShowEventReviewCategories(docId, {
       let matched = 0;
       matchingDocs.forEach(doc => {
         const candidate = doc.data?.() || {};
-        const candidatePayload = buildManualReviewCategoryPayload(candidate, categories);
+        let candidatePayload = buildManualReviewCategoryPayload(candidate, categories);
         if (!Object.keys(candidatePayload).length) return;
+        candidatePayload = buildReviewQueueMaterializedMutationPayload(candidate, candidatePayload);
         batch.set(doc.ref || db.collection(STORED_SHOW_EVENTS_COLLECTION).doc(doc.id), candidatePayload, { merge: true });
         matched += 1;
       });
@@ -5052,7 +5755,7 @@ async function updateShowEventReviewCategories(docId, {
   };
 }
 
-async function updateShowEventReviewImage(docId, { imageUrl = '' } = {}) {
+async function updateShowEventReviewImage(docId, { imageUrl = '', db: providedDb = null } = {}) {
   const normalizedDocId = String(docId || '').trim();
   if (!/^[a-f0-9]{40}$/i.test(normalizedDocId)) {
     const err = new Error('Invalid show event id');
@@ -5068,7 +5771,7 @@ async function updateShowEventReviewImage(docId, { imageUrl = '' } = {}) {
     throw err;
   }
 
-  const db = getFirestore();
+  const db = providedDb || getFirestore();
   if (!db) {
     const err = new Error('Review storage is unavailable');
     err.status = 503;
@@ -5091,9 +5794,9 @@ async function updateShowEventReviewImage(docId, { imageUrl = '' } = {}) {
     referer: data?.event?.url || ''
   });
   const buildImagePayloadForData = candidateData =>
-    buildManualReviewImagePayload(candidateData, imageUrlForPayload, {
+    buildReviewQueueMaterializedMutationPayload(candidateData, buildManualReviewImagePayload(candidateData, imageUrlForPayload, {
       originalUrl: normalizedImageUrl
-    });
+    }));
   if (recurringSeriesId) {
     const seriesSnapshot = await db
       .collection(STORED_SHOW_EVENTS_COLLECTION)
@@ -5246,6 +5949,27 @@ async function getShowEventReviewImageCandidates(docId, { limit = 12 } = {}) {
   return { id: normalizedDocId, query, images };
 }
 
+async function getShowEventReviewImageCandidatesFromPayload(docId, payload = {}) {
+  const normalizedDocId = String(docId || '').trim();
+  if (!/^[a-f0-9]{40}$/i.test(normalizedDocId)) {
+    const err = new Error('Invalid show event id');
+    err.status = 400;
+    err.code = 'invalid_event_id';
+    throw err;
+  }
+  const event = payload?.event && typeof payload.event === 'object' ? payload.event : null;
+  if (!event) {
+    return getShowEventReviewImageCandidates(normalizedDocId, { limit: payload?.limit });
+  }
+  const data = {
+    ...(payload && typeof payload === 'object' ? payload : {}),
+    event
+  };
+  const query = buildReviewImageSearchQuery(data);
+  const images = await fetchDuckDuckGoImageCandidates(query, { limit: payload?.limit });
+  return { id: normalizedDocId, query, images };
+}
+
 function buildDefaultShowsRefreshContext(overrides = {}) {
   const sourceIds = Array.isArray(overrides.sourceIds)
     ? Array.from(new Set(
@@ -5276,7 +6000,8 @@ function buildDefaultShowsRefreshContext(overrides = {}) {
     longitude: Number.isFinite(longitude) ? longitude : -77.0422,
     radiusMiles,
     lookaheadDays,
-    sourceIds
+    sourceIds,
+    skipImageProcessing: parseBooleanQuery(overrides.skipImageProcessing)
   };
 }
 
@@ -5582,9 +6307,17 @@ function buildStaticDmvShowsFallbackPayload(context = {}, {
 } = {}) {
   const payload = loadStaticDmvShowsPayload();
   if (!payload) return null;
+  const startOfTodayMs = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+  const events = (Array.isArray(payload.events) ? payload.events : []).filter(event => {
+    const startMs = resolveStoredShowEventStartMs(event);
+    const endMs = resolveStoredShowEventEndMs(event, startMs);
+    return Number.isFinite(endMs) && endMs >= startOfTodayMs;
+  });
+  if (!events.length) return null;
   return buildServedShowsPayload(
     {
       ...payload,
+      events,
       source,
       cached,
       generatedAt: typeof payload.generatedAt === 'string'
@@ -5756,7 +6489,7 @@ function buildShowsFilterIndex(events = []) {
   };
 }
 
-function buildShowsPayloadFromResults(results, { radiusMiles, lookaheadDays }) {
+function buildShowsPayloadFromResults(results, { radiusMiles, lookaheadDays, skipDuplicateAnnotation = false } = {}) {
   const events = [];
   const sourceSummaries = [];
   let anySuccess = false;
@@ -5791,8 +6524,11 @@ function buildShowsPayloadFromResults(results, { radiusMiles, lookaheadDays }) {
   const normalizedEvents = applyAutomaticRecurringByName(
     collapseShowEventsByTitleAndTime(collapseShowEventsByIdentity(events))
   );
+  const duplicateAnnotatedEvents = skipDuplicateAnnotation
+    ? normalizedEvents
+    : annotatePossibleDuplicateShowEvents(normalizedEvents);
   const filteredEvents = filterShowEventsForContext(
-    annotatePossibleDuplicateShowEvents(normalizedEvents),
+    duplicateAnnotatedEvents,
     { radiusMiles, lookaheadDays }
   );
 
@@ -5941,7 +6677,11 @@ async function readReusableShowsPayloadSnapshot(context = {}) {
   const contexts = buildShowsSnapshotCandidateContexts(context);
   for (const candidateContext of contexts) {
     const payload = await readShowsPayloadSnapshot(candidateContext, { allowStale: true });
-    if (Array.isArray(payload?.events) && payload.events.length) {
+    if (
+      Array.isArray(payload?.events) &&
+      payload.events.length &&
+      !isStaticShowsFallbackPayload(payload)
+    ) {
       return { payload, context: candidateContext };
     }
   }
@@ -6026,7 +6766,11 @@ async function primeLatestShowsPayloadsFromSnapshot() {
   latestShowsPayloadPrimePromise = (async () => {
     const defaultContext = buildDefaultShowsRefreshContext();
     const snapshotPayload = await readShowsPayloadSnapshot(defaultContext, { allowStale: true });
-    if (Array.isArray(snapshotPayload?.events) && snapshotPayload.events.length) {
+    if (
+      Array.isArray(snapshotPayload?.events) &&
+      snapshotPayload.events.length &&
+      !isStaticShowsFallbackPayload(snapshotPayload)
+    ) {
       latestShowsPayloads.set(buildShowsRefreshKey(defaultContext), snapshotPayload);
     }
   })().catch(err => {
@@ -6202,6 +6946,130 @@ async function readShowsRefreshStatus(db = getFirestore()) {
   }
 }
 
+async function countApprovedStoredShowEvents(db = getFirestore()) {
+  if (!db) return null;
+  try {
+    const query = db
+      .collection(STORED_SHOW_EVENTS_COLLECTION)
+      .where('reviewStatus', '==', SHOW_EVENT_PUBLISHED_REVIEW_STATUS);
+    if (typeof query.count === 'function') {
+      const countSnapshot = await query.count().get();
+      const count = Number(countSnapshot?.data?.()?.count);
+      if (Number.isFinite(count)) return count;
+    }
+    const snapshot = await query.get();
+    if (Number.isFinite(Number(snapshot?.size))) return Number(snapshot.size);
+    return Array.isArray(snapshot?.docs) ? snapshot.docs.length : 0;
+  } catch (err) {
+    console.warn('Failed to count approved stored show events', err?.message || err);
+    return null;
+  }
+}
+
+async function countApprovedStoredShowEventsForSource(sourceId, db = getFirestore()) {
+  const normalizedSourceId = normalizeDatasourceId(sourceId);
+  if (!db || !normalizedSourceId) return null;
+  try {
+    const query = db
+      .collection(STORED_SHOW_EVENTS_COLLECTION)
+      .where('reviewStatus', '==', SHOW_EVENT_PUBLISHED_REVIEW_STATUS)
+      .where('sourceId', '==', normalizedSourceId);
+    if (typeof query.count === 'function') {
+      const countSnapshot = await query.count().get();
+      const count = Number(countSnapshot?.data?.()?.count);
+      if (Number.isFinite(count)) return count;
+    }
+    const snapshot = await query.get();
+    if (Number.isFinite(Number(snapshot?.size))) return Number(snapshot.size);
+    return Array.isArray(snapshot?.docs) ? snapshot.docs.length : 0;
+  } catch (err) {
+    console.warn('Failed to count approved stored show events for source', normalizedSourceId, err?.message || err);
+    return null;
+  }
+}
+
+async function countApprovedStoredShowEventsBySource(sourceIds = [], db = getFirestore()) {
+  const normalizedSourceIds = Array.from(new Set(
+    (Array.isArray(sourceIds) ? sourceIds : [])
+      .map(sourceId => normalizeDatasourceId(sourceId))
+      .filter(Boolean)
+  ));
+  const counts = new Map();
+  for (const sourceId of normalizedSourceIds) {
+    const count = await countApprovedStoredShowEventsForSource(sourceId, db);
+    if (Number.isFinite(Number(count))) {
+      counts.set(sourceId, Number(count));
+    }
+  }
+  return counts;
+}
+
+async function attachApprovedStoredEventCountToRefreshStatus(status, db = getFirestore()) {
+  if (!status || typeof status !== 'object') return status;
+  const sourceIds = Array.from(new Set([
+    ...(Array.isArray(status.sources) ? status.sources : []).map(source => source?.id || source?.key || ''),
+    ...(Array.isArray(status.recentRuns)
+      ? status.recentRuns.flatMap(run => Array.isArray(run?.sources) ? run.sources.map(source => source?.id || source?.key || '') : [])
+      : [])
+  ].map(sourceId => normalizeDatasourceId(sourceId)).filter(Boolean)));
+  const [approvedEventCount, approvedCountsBySource] = await Promise.all([
+    countApprovedStoredShowEvents(db),
+    countApprovedStoredShowEventsBySource(sourceIds, db)
+  ]);
+  if (!Number.isFinite(Number(approvedEventCount)) && !approvedCountsBySource.size) return status;
+  const attachSourceCount = source => {
+    const sourceId = normalizeDatasourceId(source?.id || source?.key || '');
+    if (!sourceId || !approvedCountsBySource.has(sourceId)) return source;
+    return {
+      ...source,
+      approvedEventCount: approvedCountsBySource.get(sourceId)
+    };
+  };
+  return {
+    ...status,
+    ...(Number.isFinite(Number(approvedEventCount)) ? { approvedEventCount: Number(approvedEventCount) } : {}),
+    sources: Array.isArray(status.sources) ? status.sources.map(attachSourceCount) : status.sources,
+    recentRuns: Array.isArray(status.recentRuns)
+      ? status.recentRuns.map(run => ({
+          ...run,
+          sources: Array.isArray(run?.sources) ? run.sources.map(attachSourceCount) : run?.sources
+        }))
+      : status.recentRuns
+  };
+}
+
+function buildRefreshEventKeys(payload = {}) {
+  const seen = new Set();
+  const keys = [];
+  (Array.isArray(payload?.events) ? payload.events : []).forEach(event => {
+    const identity =
+      normalizeShowEventIdentityKey(event) ||
+      [
+        normalizeDatasourceId(event?.source || ''),
+        typeof event?.id === 'string' ? event.id.trim() : '',
+        typeof event?.start?.local === 'string' ? event.start.local : '',
+        typeof event?.start?.utc === 'string' ? event.start.utc : ''
+      ].filter(Boolean).join('::');
+    if (!identity) return;
+    const key = crypto.createHash('sha1').update(identity).digest('hex');
+    if (seen.has(key)) return;
+    seen.add(key);
+    keys.push(key);
+  });
+  return keys.slice(0, 2500);
+}
+
+function getPreviousRefreshEventKeys(previousStatus = {}) {
+  const candidates = [
+    Array.isArray(previousStatus?.eventKeys) ? previousStatus.eventKeys : null,
+    ...(Array.isArray(previousStatus?.recentRuns)
+      ? previousStatus.recentRuns.map(run => Array.isArray(run?.eventKeys) ? run.eventKeys : null)
+      : [])
+  ];
+  const keys = candidates.find(values => Array.isArray(values) && values.length) || [];
+  return new Set(keys.filter(key => typeof key === 'string' && key));
+}
+
 async function writeShowsRefreshStatus({
   context = {},
   payload = null,
@@ -6232,21 +7100,64 @@ async function writeShowsRefreshStatus({
     const updatedAt = new Date().toISOString();
     const generatedAt = typeof payload?.generatedAt === 'string' ? payload.generatedAt : updatedAt;
     const eventCount = Array.isArray(payload?.events) ? payload.events.length : 0;
+    const eventKeys = buildRefreshEventKeys(payload);
+    const previousEventKeys = getPreviousRefreshEventKeys(previous);
+    const newEventCount = previousEventKeys.size
+      ? eventKeys.filter(key => !previousEventKeys.has(key)).length
+      : null;
+    const [approvedEventCount, approvedCountsBySource] = await Promise.all([
+      countApprovedStoredShowEvents(db),
+      countApprovedStoredShowEventsBySource(sources.map(source => source.id || source.key), db)
+    ]);
+    const sourcesWithApprovedCounts = sources.map(source => {
+      const sourceId = normalizeDatasourceId(source.id || source.key || '');
+      return {
+        ...source,
+        approvedEventCount: approvedCountsBySource.has(sourceId) ? approvedCountsBySource.get(sourceId) : null
+      };
+    });
     const normalizedPersistSummary = persistSummary && typeof persistSummary === 'object'
       ? {
           written: Number.isFinite(Number(persistSummary.written)) ? Number(persistSummary.written) : 0,
+          created: Number.isFinite(Number(persistSummary.created)) ? Number(persistSummary.created) : 0,
+          updated: Number.isFinite(Number(persistSummary.updated)) ? Number(persistSummary.updated) : 0,
           unchanged: Number.isFinite(Number(persistSummary.unchanged)) ? Number(persistSummary.unchanged) : 0,
           skipped: Number.isFinite(Number(persistSummary.skipped)) ? Number(persistSummary.skipped) : 0,
           pruned: Number.isFinite(Number(persistSummary.pruned)) ? Number(persistSummary.pruned) : 0,
+          sources: Array.isArray(persistSummary.sources)
+            ? persistSummary.sources.map(source => ({
+                id: normalizeDatasourceId(source?.id || source?.key || ''),
+                written: Number.isFinite(Number(source?.written)) ? Number(source.written) : 0,
+                created: Number.isFinite(Number(source?.created)) ? Number(source.created) : 0,
+                updated: Number.isFinite(Number(source?.updated)) ? Number(source.updated) : 0,
+                unchanged: Number.isFinite(Number(source?.unchanged)) ? Number(source.unchanged) : 0
+              })).filter(source => source.id)
+            : [],
           error: typeof persistSummary.error === 'string' ? persistSummary.error : ''
         }
       : null;
+    const persistCountsBySource = new Map(
+      (Array.isArray(normalizedPersistSummary?.sources) ? normalizedPersistSummary.sources : [])
+        .map(source => [normalizeDatasourceId(source.id), source])
+        .filter(([sourceId]) => sourceId)
+    );
+    const sourcesWithRunPersistCounts = sourcesWithApprovedCounts.map(source => ({
+      ...source,
+      persist: persistCountsBySource.get(normalizeDatasourceId(source.id || source.key || '')) || null
+    }));
+    const failedSourcesWithApprovedCounts = sourcesWithRunPersistCounts.filter(source => !source.ok);
+    const alertSourcesWithApprovedCounts = failedSourcesWithApprovedCounts.filter(
+      source => source.consecutiveFailures >= SHOWS_REFRESH_FAILURE_ALERT_THRESHOLD
+    );
     const runStatus = {
       status: alertSources.length ? 'degraded' : failedSources.length ? 'warning' : 'ok',
       updatedAt,
       reason: typeof reason === 'string' ? reason.slice(0, 100) : '',
       generatedAt,
       eventCount,
+      eventKeys,
+      newEventCount,
+      approvedEventCount: Number.isFinite(Number(approvedEventCount)) ? Number(approvedEventCount) : null,
       cached: cached === true,
       persist: normalizedPersistSummary,
       context: {
@@ -6257,7 +7168,8 @@ async function writeShowsRefreshStatus({
       sourceCount: sources.length,
       failedSourceCount: failedSources.length,
       alertSourceCount: alertSources.length,
-      sources: sources.map(source => ({
+      running: false,
+      sources: sourcesWithRunPersistCounts.map(source => ({
         id: source.id,
         key: source.key,
         name: source.name,
@@ -6265,22 +7177,26 @@ async function writeShowsRefreshStatus({
         ok: source.ok,
         status: source.status,
         total: source.total,
+        approvedEventCount: source.approvedEventCount,
+        persist: source.persist,
         error: source.error,
         consecutiveFailures: source.consecutiveFailures
       })),
-      failedSources: failedSources.map(source => ({
+      failedSources: failedSourcesWithApprovedCounts.map(source => ({
         id: source.id,
         key: source.key,
         name: source.name,
         status: source.status,
+        approvedEventCount: source.approvedEventCount,
         error: source.error,
         consecutiveFailures: source.consecutiveFailures
       })),
-      alertSources: alertSources.map(source => ({
+      alertSources: alertSourcesWithApprovedCounts.map(source => ({
         id: source.id,
         key: source.key,
         name: source.name,
         status: source.status,
+        approvedEventCount: source.approvedEventCount,
         error: source.error,
         consecutiveFailures: source.consecutiveFailures
       }))
@@ -6295,6 +7211,9 @@ async function writeShowsRefreshStatus({
       reason: typeof reason === 'string' ? reason.slice(0, 100) : '',
       generatedAt,
       eventCount,
+      eventKeys,
+      newEventCount,
+      approvedEventCount: Number.isFinite(Number(approvedEventCount)) ? Number(approvedEventCount) : null,
       cached: cached === true,
       radiusMiles: Number.isFinite(context?.radiusMiles) ? context.radiusMiles : null,
       lookaheadDays: Number.isFinite(context?.lookaheadDays) ? context.lookaheadDays : null,
@@ -6302,9 +7221,10 @@ async function writeShowsRefreshStatus({
       sourceCount: sources.length,
       failedSourceCount: failedSources.length,
       alertSourceCount: alertSources.length,
-      sources,
-      failedSources,
-      alertSources,
+      running: false,
+      sources: sourcesWithRunPersistCounts,
+      failedSources: failedSourcesWithApprovedCounts,
+      alertSources: alertSourcesWithApprovedCounts,
       recentRuns,
       updatedAtServer: serverTimestamp()
     };
@@ -6319,6 +7239,49 @@ async function writeShowsRefreshStatus({
   }
 }
 
+async function writeShowsRefreshRunningStatus(context = {}, reason = '') {
+  const db = getFirestore();
+  if (!db) return null;
+  const updatedAt = new Date().toISOString();
+  try {
+    const status = {
+      status: 'running',
+      updatedAt,
+      reason: typeof reason === 'string' ? reason.slice(0, 100) : '',
+      generatedAt: updatedAt,
+      eventCount: 0,
+      cached: false,
+      radiusMiles: Number.isFinite(context?.radiusMiles) ? context.radiusMiles : null,
+      lookaheadDays: Number.isFinite(context?.lookaheadDays) ? context.lookaheadDays : null,
+      persist: {
+        written: 0,
+        created: 0,
+        updated: 0,
+        unchanged: 0,
+        skipped: 0,
+        pruned: 0,
+        error: 'Refresh is running.'
+      },
+      sourceCount: 0,
+      failedSourceCount: 0,
+      alertSourceCount: 0,
+      sources: [],
+      failedSources: [],
+      alertSources: [],
+      running: true,
+      updatedAtServer: serverTimestamp()
+    };
+    await db
+      .collection(SHOWS_REFRESH_STATUS_COLLECTION)
+      .doc(SHOWS_REFRESH_STATUS_DOC_ID)
+      .set(status, { merge: true });
+    return status;
+  } catch (err) {
+    console.warn('Failed to write shows refresh running status', err?.message || err);
+    return null;
+  }
+}
+
 async function refreshStoredShowsFeed(overrides = {}) {
   await primeShowsSettingsCache();
   const context = buildDefaultShowsRefreshContext(overrides);
@@ -6326,13 +7289,25 @@ async function refreshStoredShowsFeed(overrides = {}) {
   const forcePersist = parseBooleanQuery(overrides?.forcePersist);
   const reason = typeof overrides?.reason === 'string' ? overrides.reason.trim() : '';
   if (
+    (reason === 'scheduler' || reason === 'cron-refresh') &&
+    !(Array.isArray(context.sourceIds) && context.sourceIds.length)
+  ) {
+    context.skipImageProcessing = true;
+  }
+  if (
     reason === 'scheduler' &&
     !parseBooleanQuery(overrides?.skipSchedulerDedupe) &&
     !(Array.isArray(context.sourceIds) && context.sourceIds.length)
   ) {
     const previousStatus = await readShowsRefreshStatus();
     const recentSchedulerRun = [previousStatus, ...(Array.isArray(previousStatus?.recentRuns) ? previousStatus.recentRuns : [])]
-      .filter(run => run && typeof run === 'object' && run.reason === 'scheduler')
+      .filter(run =>
+        run &&
+        typeof run === 'object' &&
+        run.reason === 'scheduler' &&
+        run.running !== true &&
+        run.status !== 'running'
+      )
       .map(run => {
         const updatedAtMs = Date.parse(run.updatedAt || run.generatedAt || '');
         return Number.isFinite(updatedAtMs) ? { run, updatedAtMs } : null;
@@ -6367,6 +7342,7 @@ async function refreshStoredShowsFeed(overrides = {}) {
   }
 
   const refreshPromise = (async () => {
+    await writeShowsRefreshRunningStatus(context, overrides?.reason || reason || '');
     const { sources } = await loadDatasources();
     const enabledSources = sources.filter(source => {
       if (!source?.enabled) return false;
@@ -6386,11 +7362,21 @@ async function refreshStoredShowsFeed(overrides = {}) {
     }
 
     const fetchConcurrency = resolveDatasourceRefreshConcurrency(overrides?.sourceConcurrency);
+    console.info('[shows-refresh] fetch phase start', {
+      reason: overrides?.reason || reason || '',
+      sourceCount: scopedSources.length,
+      fetchConcurrency,
+      skipImageProcessing: context.skipImageProcessing === true
+    });
     const results = (
       await mapWithConcurrency(scopedSources, fetchConcurrency, source =>
         getDatasourceFetchResult(source, context)
       )
     ).filter(Boolean);
+    console.info('[shows-refresh] fetch phase complete', {
+      sourceCount: results.length,
+      okCount: results.filter(result => result?.ok).length
+    });
     const db = getFirestore();
     let excludedTitleKeys = new Set();
     if (db) {
@@ -6405,7 +7391,42 @@ async function refreshStoredShowsFeed(overrides = {}) {
     let cached;
     let sourceSummaries;
     try {
-      ({ payload: fetchedPayload, cached, sourceSummaries } = buildShowsPayloadFromResults(filteredResults, context));
+      const skipFetchedPayloadBuild =
+        context.skipImageProcessing === true &&
+        !(Array.isArray(context.sourceIds) && context.sourceIds.length);
+      if (skipFetchedPayloadBuild) {
+        sourceSummaries = filteredResults.map(result => result?.summary).filter(Boolean);
+        const anySuccess = filteredResults.some(result => result?.ok);
+        if (!anySuccess) {
+          const err = new Error('datasource_fetch_failed');
+          err.code = 'datasource_fetch_failed';
+          err.status = 502;
+          err.sourceSummaries = sourceSummaries;
+          throw err;
+        }
+        cached = filteredResults.every(result => result?.ok && Boolean(result.cached));
+        fetchedPayload = {
+          source: 'mixed',
+          generatedAt: new Date().toISOString(),
+          cached,
+          events: [],
+          segments: filteredResults.find(result => Array.isArray(result?.segments) && result.segments.length)?.segments || null
+        };
+        console.info('[shows-refresh] fetched payload build skipped', {
+          reason: 'scheduler-stored-rebuild',
+          sourceCount: sourceSummaries.length
+        });
+      } else {
+        console.info('[shows-refresh] payload build start');
+        ({ payload: fetchedPayload, cached, sourceSummaries } = buildShowsPayloadFromResults(filteredResults, {
+          ...context,
+          skipDuplicateAnnotation: context.skipImageProcessing === true
+        }));
+        console.info('[shows-refresh] payload build complete', {
+          eventCount: Array.isArray(fetchedPayload?.events) ? fetchedPayload.events.length : 0,
+          cached: cached === true
+        });
+      }
     } catch (err) {
       sourceSummaries = Array.isArray(err?.sourceSummaries)
         ? err.sourceSummaries
@@ -6423,15 +7444,34 @@ async function refreshStoredShowsFeed(overrides = {}) {
 
     let persistSummary = null;
     try {
+      console.info('[shows-refresh] persist start');
       persistSummary = await persistStoredShowEvents(filteredResults, {
         force: forcePersist || !cached,
-        sourceIds: Array.isArray(context.sourceIds) ? context.sourceIds : []
+        sourceIds: Array.isArray(context.sourceIds) ? context.sourceIds : [],
+        skipSimilarTitleAutoApproval: context.skipImageProcessing === true,
+        skipLearnedCategoryLabels: context.skipImageProcessing === true
       });
+      console.info('[shows-refresh] persist complete', persistSummary);
       if (
         Number(persistSummary?.written || 0) > 0 ||
         Number(persistSummary?.pruned || 0) > 0
       ) {
         invalidateReviewQueueCaches();
+      }
+      if (reason === 'scheduler' || overrides?.reason === 'scheduler') {
+        try {
+          const materializedSummary = await backfillReviewQueueMaterializedFields({
+            limit: 5000,
+            db
+          });
+          persistSummary.reviewQueueMaterialized = materializedSummary;
+          console.info('[shows-refresh] review queue materialized fields refreshed', materializedSummary);
+        } catch (err) {
+          persistSummary.reviewQueueMaterialized = {
+            error: err?.code || err?.message || 'review_queue_materialization_failed'
+          };
+          console.warn('[shows-refresh] review queue materialized refresh failed', err?.message || err);
+        }
       }
     } catch (err) {
       persistSummary = {
@@ -6439,6 +7479,7 @@ async function refreshStoredShowsFeed(overrides = {}) {
       };
       console.error('Failed to persist normalized show events', err);
     }
+    console.info('[shows-refresh] public payload rebuild start');
     let payload = await buildPublicShowsPayloadFromStoredEvents(context, {
       db,
       sourceSummaries,
@@ -6448,6 +7489,9 @@ async function refreshStoredShowsFeed(overrides = {}) {
           ? context.sourceIds[0]
           : 'stored',
       generatedAt: typeof fetchedPayload?.generatedAt === 'string' ? fetchedPayload.generatedAt : new Date().toISOString()
+    });
+    console.info('[shows-refresh] public payload rebuild complete', {
+      eventCount: Array.isArray(payload?.events) ? payload.events.length : 0
     });
     if (
       (!Array.isArray(payload?.events) || payload.events.length === 0) &&
@@ -6501,6 +7545,9 @@ async function refreshStoredShowsFeed(overrides = {}) {
 }
 
 function refreshStoredShowsFeedInBackground(context, reason, options = {}) {
+  if (!parseBooleanQuery(process.env.SHOWS_BACKGROUND_REFRESH_ENABLED ?? true)) {
+    return;
+  }
   void refreshStoredShowsFeed({ ...context, reason, ...options }).catch(err => {
     console.warn(`[shows-refresh] background ${reason} failed`, err?.message || err);
   });
@@ -7268,6 +8315,7 @@ const TICKETMASTER_SEGMENTS = [
 ];
 const DC_IMPROV_SHOWS_URL = 'https://www.dcimprov.com/index.php/shows';
 const BLACK_CAT_SCHEDULE_URL = 'https://www.blackcatdc.com/schedule.html';
+const DC9_EVENTS_URL = 'https://dc9.club/';
 const SONG_BYRD_SHOWS_URL = 'https://songbyrddc.com/shows/';
 const SOUND_GARDEN_BALTIMORE_URL = 'https://www.sgrecordshop.com/c/2683/the-sound-garden-baltimore';
 const ECHOSTAGE_SONGKICK_URL = 'https://www.songkick.com/venues/1864683-echostage';
@@ -7276,6 +8324,7 @@ const JOES_MOVEMENT_LIST_URL = 'https://www.joesmovement.org/listofevents';
 const THEATRE_WASHINGTON_URL = 'https://theatrewashington.org/upcoming-shows';
 const POLITICS_AND_PROSE_EVENTS_URL = 'https://politics-prose.com/events';
 const GLEN_ECHO_EVENTS_URL = 'https://glenechopark.org/Events';
+const CITY_CAST_DC_EVENTS_URL = 'https://dc.citycast.fm/events';
 const WABA_FUN_URL = 'https://waba.org/fun/';
 const WASHINGTON_GLASS_SCHOOL_CLASSES_URL = 'http://washingtonglassschool.com/school/current-classes';
 const ALL_SOULS_UNITARIAN_CALENDAR_URL = 'https://events.timely.fun/rw9v3rgy';
@@ -7298,6 +8347,10 @@ const DC_IMPROV_CACHE_VERSION = 'v8';
 const BLACK_CAT_CACHE_COLLECTION = 'blackCatCache';
 const BLACK_CAT_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 const BLACK_CAT_CACHE_VERSION = 'v4';
+const DC9_CACHE_COLLECTION = 'dc9Cache';
+const DC9_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
+const DC9_CACHE_VERSION = 'v2';
+const DC9_DEFAULT_IMAGE_URL = 'https://dc9.club/wp-content/uploads/2024/12/DC9_Misc_140504-087-copy-800x534-1-1.jpg';
 const SONG_BYRD_CACHE_COLLECTION = 'songbyrdCache';
 const SONG_BYRD_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 const SONG_BYRD_CACHE_VERSION = 'v1';
@@ -7312,7 +8365,7 @@ const JOES_MOVEMENT_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 const JOES_MOVEMENT_CACHE_VERSION = 'v2';
 const WABA_CACHE_COLLECTION = 'wabaCache';
 const WABA_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
-const WABA_CACHE_VERSION = 'v2';
+const WABA_CACHE_VERSION = 'v3';
 const WASHINGTON_GLASS_SCHOOL_CACHE_COLLECTION = 'washingtonGlassSchoolCache';
 const WASHINGTON_GLASS_SCHOOL_CACHE_TTL_MS = 1000 * 60 * 30;
 const WASHINGTON_GLASS_SCHOOL_CACHE_VERSION = 'v2';
@@ -7322,9 +8375,12 @@ const THEATRE_WASHINGTON_CACHE_VERSION = 'v2';
 const GLEN_ECHO_CACHE_COLLECTION = 'glenEchoCache';
 const GLEN_ECHO_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 const GLEN_ECHO_CACHE_VERSION = 'v1';
+const CITY_CAST_DC_CACHE_COLLECTION = 'cityCastDcCache';
+const CITY_CAST_DC_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
+const CITY_CAST_DC_CACHE_VERSION = 'v1';
 const PG_PARKS_CACHE_COLLECTION = 'pgParksCache';
 const PG_PARKS_CACHE_TTL_MS = 1000 * 60 * 30;
-const PG_PARKS_CACHE_VERSION = 'v6';
+const PG_PARKS_CACHE_VERSION = 'v7';
 const MONTGOMERY_PARKS_CACHE_COLLECTION = 'montgomeryParksCache';
 const MONTGOMERY_PARKS_CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 const MONTGOMERY_PARKS_CACHE_VERSION = 'v3';
@@ -7374,6 +8430,16 @@ const BLACK_CAT_VENUE = {
     city: 'Washington',
     region: 'DC',
     postalCode: '20009',
+    country: 'US'
+  }
+};
+const DC9_VENUE = {
+  name: 'DC9',
+  address: {
+    line1: '1940 9th St NW',
+    city: 'Washington',
+    region: 'DC',
+    postalCode: '20001',
     country: 'US'
   }
 };
@@ -7429,14 +8495,17 @@ const GLEN_ECHO_VENUE = {
 };
 const DC_IMPROV_COORDS = { latitude: 38.9055, longitude: -77.0422 };
 const BLACK_CAT_COORDS = { latitude: 38.9147, longitude: -77.0319 };
+const DC9_COORDS = { latitude: 38.9165, longitude: -77.0241 };
 const SONG_BYRD_COORDS = { latitude: 38.9103, longitude: -76.9964 };
 const GLEN_ECHO_COORDS = { latitude: 38.9681, longitude: -77.1401 };
 const DC_IMPROV_GENRES = ['Comedy'];
 const BLACK_CAT_GENRES = ['Rock & Alternative'];
+const DC9_GENRES = ['Music'];
 const SONG_BYRD_GENRES = ['Music'];
 const SOUND_GARDEN_GENRES = ['Music'];
 const DC_IMPROV_SOURCE_ID = 'dcimprov';
 const BLACK_CAT_SOURCE_ID = 'blackcat';
+const DC9_SOURCE_ID = 'dc9';
 const SONG_BYRD_SOURCE_ID = 'songbyrd';
 const SOUND_GARDEN_SOURCE_ID = 'soundgarden';
 const ECHOSTAGE_SOURCE_ID = 'echostage';
@@ -7448,6 +8517,7 @@ const THEATRE_WASHINGTON_SOURCE_ID = 'theatrewashington';
 const ALL_SOULS_UNITARIAN_SOURCE_ID = 'allsoulsunitarian';
 const POLITICS_AND_PROSE_SOURCE_ID = 'politicsandprose';
 const GLEN_ECHO_SOURCE_ID = 'glenecho';
+const CITY_CAST_DC_SOURCE_ID = 'citycastdc';
 const RECURRING_SOURCE_ID = 'recurring';
 const ESTABLISHED_RECURRING_SOURCE_ID = 'establishedrecurring';
 const ALEXANDRIA_PARKS_SOURCE_ID = 'alexandriaparks';
@@ -7474,6 +8544,7 @@ const POLITICS_AND_PROSE_CACHE_COLLECTION = 'politicsAndProseCache';
 const POLITICS_AND_PROSE_CACHE_TTL_MS = 1000 * 60 * 30;
 const POLITICS_AND_PROSE_CACHE_VERSION = 'v2';
 const DATASOURCE_FETCH_TIMEOUT_MS = 10000;
+const SLOW_DATASOURCE_FETCH_TIMEOUT_MS = 30000;
 const DATASOURCE_REFRESH_CONCURRENCY_DEFAULT = 6;
 const DATASOURCE_REFRESH_CONCURRENCY_MAX = 12;
 const STORED_SHOW_EVENTS_READ_TIMEOUT_MS = 15000;
@@ -7490,8 +8561,8 @@ const RSS_ITEM_LIMIT = 500;
 const RSS_REQUEST_TIMEOUT_MS = 10000;
 const RSS_IMAGE_FETCH_TIMEOUT_MS = 8000;
 const RSS_IMAGE_FETCH_LIMIT_DEFAULT = 25;
-const SMITHSONIAN_DATASOURCE_FETCH_TIMEOUT_MS = 20000;
-const DC_IMPROV_DATASOURCE_FETCH_TIMEOUT_MS = 20000;
+const SMITHSONIAN_DATASOURCE_FETCH_TIMEOUT_MS = 45000;
+const DC_IMPROV_DATASOURCE_FETCH_TIMEOUT_MS = 30000;
 const THEATRE_WASHINGTON_DATASOURCE_FETCH_TIMEOUT_MS = 20000;
 const SIXTH_AND_I_MIRROR_URL = 'https://r.jina.ai/http://www.sixthandi.org/events/';
 const WEEKDAY_CUTOFF_HOUR = 16;
@@ -7681,6 +8752,7 @@ const CATEGORY_LEARNING_MIN_CONFIDENCE = 0.58;
 const CATEGORY_LEARNING_MIN_EVIDENCE_WEIGHT = 2.25;
 const CATEGORY_LEARNING_MIN_MARGIN = 0.08;
 const CATEGORY_LEARNING_MAX_PREDICTIONS = 3;
+const CATEGORY_LEARNING_MAX_IDF_WEIGHT = 2.4;
 const CATEGORY_LEARNING_STOPWORDS = new Set([
   'about',
   'after',
@@ -7715,14 +8787,22 @@ function normalizeDatasourceId(value) {
 }
 
 function resolveDatasourceFetchTimeoutMs(source) {
-  if (normalizeDatasourceId(source?.id || '') === 'smithsonian') {
+  const configuredTimeout = Number(source?.config?.timeoutMs || source?.config?.fetchTimeoutMs);
+  if (Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
+    return Math.min(Math.max(1000, configuredTimeout), 120000);
+  }
+  const sourceId = normalizeDatasourceId(source?.id || '');
+  if (sourceId === 'smithsonian') {
     return SMITHSONIAN_DATASOURCE_FETCH_TIMEOUT_MS;
   }
-  if (normalizeDatasourceId(source?.id || '') === 'dcimprov') {
+  if (sourceId === 'dcimprov') {
     return DC_IMPROV_DATASOURCE_FETCH_TIMEOUT_MS;
   }
-  if (normalizeDatasourceId(source?.id || '') === THEATRE_WASHINGTON_SOURCE_ID) {
+  if (sourceId === THEATRE_WASHINGTON_SOURCE_ID) {
     return THEATRE_WASHINGTON_DATASOURCE_FETCH_TIMEOUT_MS;
+  }
+  if (['montgomeryparks', 'pgparks', 'waba', 'dprevents'].includes(sourceId)) {
+    return SLOW_DATASOURCE_FETCH_TIMEOUT_MS;
   }
   return DATASOURCE_FETCH_TIMEOUT_MS;
 }
@@ -7800,6 +8880,15 @@ function normalizeShowCategoryList(values) {
     if (!byKey.has(key)) byKey.set(key, label);
   });
   return Array.from(byKey.values());
+}
+
+function isDefaultShowCategoryLabel(label) {
+  const key = normalizeShowCategoryLabel(label).toLowerCase();
+  return Boolean(key) && DEFAULT_SHOW_CATEGORY_OPTIONS.some(option => option.toLowerCase() === key);
+}
+
+function normalizeDeletedShowCategoryOptions(values) {
+  return normalizeShowCategoryList(values).filter(isDefaultShowCategoryLabel);
 }
 
 function normalizeShowIgnoredGenreList(values) {
@@ -7905,15 +8994,32 @@ let cachedShowsSettingsAt = 0;
 function normalizeShowsDefaultSettings(raw = {}) {
   const configuredCategoryOptions =
     Array.isArray(raw?.categoryOptions) && raw.categoryOptions.length ? raw.categoryOptions : [];
+  const deletedCategoryOptions = normalizeDeletedShowCategoryOptions(raw?.deletedCategoryOptions);
+  const deletedCategoryOptionKeys = new Set(deletedCategoryOptions.map(label => label.toLowerCase()));
+  const activeDefaultCategoryOptions = DEFAULT_SHOW_CATEGORY_OPTIONS
+    .filter(label => !deletedCategoryOptionKeys.has(label.toLowerCase()));
   const categoryOptions = normalizeShowCategoryList(
     configuredCategoryOptions.length
-      ? [...configuredCategoryOptions, ...DEFAULT_SHOW_CATEGORY_OPTIONS]
-      : DEFAULT_SHOW_CATEGORY_OPTIONS
+      ? [...configuredCategoryOptions, ...activeDefaultCategoryOptions]
+      : activeDefaultCategoryOptions
   );
+  const activeCategoryOptionKeys = new Set(categoryOptions.map(label => label.toLowerCase()));
   const ignoredGenres = normalizeShowIgnoredGenreList(raw?.ignoredGenres);
   const ignoredGenreKeys = new Set(ignoredGenres.map(normalizeFilterToken));
+  const filterMappingCategories = mappedLabels =>
+    normalizeShowCategoryList(mappedLabels).filter(mappedLabel =>
+      activeCategoryOptionKeys.has(mappedLabel.toLowerCase())
+    );
+  const defaultConfirmedCategoryMappings = Object.fromEntries(
+    Object.entries(DEFAULT_CONFIRMED_CATEGORY_MAPPINGS)
+      .map(([rawLabel, mappedLabels]) => [
+        rawLabel,
+        filterMappingCategories(Array.isArray(mappedLabels) ? mappedLabels : [mappedLabels])
+      ])
+      .filter(([, mappedLabels]) => mappedLabels.length)
+  );
   const confirmedCategoryMappings = normalizeShowCategoryMappings({
-    ...DEFAULT_CONFIRMED_CATEGORY_MAPPINGS,
+    ...defaultConfirmedCategoryMappings,
     ...(raw?.confirmedCategoryMappings && typeof raw.confirmedCategoryMappings === 'object'
       ? raw.confirmedCategoryMappings
       : {})
@@ -7925,25 +9031,19 @@ function normalizeShowsDefaultSettings(raw = {}) {
     categoryOptions.some(option => option.toLowerCase() === label.toLowerCase())
   );
   const rawMappings = {
-    ...normalizeShowCategoryMappings(DEFAULT_CONFIRMED_CATEGORY_MAPPINGS),
+    ...normalizeShowCategoryMappings(defaultConfirmedCategoryMappings),
     ...normalizeShowCategoryMappings(raw?.categoryMappings),
     ...confirmedCategoryMappings
   };
   const categoryMappings = Object.fromEntries(
-    Object.entries(rawMappings).filter(([rawLabel, mappedLabels]) =>
-      !ignoredGenreKeys.has(rawLabel) &&
-      normalizeShowCategoryList(mappedLabels).some(mappedLabel =>
-        categoryOptions.some(option => option.toLowerCase() === mappedLabel.toLowerCase())
-      )
-    )
+    Object.entries(rawMappings)
+      .map(([rawLabel, mappedLabels]) => [rawLabel, filterMappingCategories(mappedLabels)])
+      .filter(([rawLabel, mappedLabels]) => !ignoredGenreKeys.has(rawLabel) && mappedLabels.length)
   );
   const confirmedMappings = Object.fromEntries(
-    Object.entries(confirmedCategoryMappings).filter(([rawLabel, mappedLabels]) =>
-      !ignoredGenreKeys.has(rawLabel) &&
-      normalizeShowCategoryList(mappedLabels).some(mappedLabel =>
-        categoryOptions.some(option => option.toLowerCase() === mappedLabel.toLowerCase())
-      )
-    )
+    Object.entries(confirmedCategoryMappings)
+      .map(([rawLabel, mappedLabels]) => [rawLabel, filterMappingCategories(mappedLabels)])
+      .filter(([rawLabel, mappedLabels]) => !ignoredGenreKeys.has(rawLabel) && mappedLabels.length)
   );
   const categoryLearningExamples = normalizeCategoryLearningExamples(
     raw?.categoryLearningExamples,
@@ -7953,6 +9053,7 @@ function normalizeShowsDefaultSettings(raw = {}) {
   return {
     categoryOptions,
     defaultCategoryFilters,
+    deletedCategoryOptions,
     categoryMappings,
     confirmedCategoryMappings: confirmedMappings,
     categoryLearningExamples,
@@ -8258,7 +9359,9 @@ function buildDefaultDatasources() {
       order: 9.4,
       config: {
         feedUrl: RHIZOME_DC_RSS_URL,
-        fetchImageFromLink: false,
+        fetchImageFromLink: true,
+        imageFetchLimit: 30,
+        missingImageFetchLimit: 30,
         timeZone: 'America/New_York',
         venue: {
           name: 'Rhizome DC',
@@ -8281,6 +9384,20 @@ function buildDefaultDatasources() {
       order: 10,
       config: {
         url: BLACK_CAT_SCHEDULE_URL
+      }
+    },
+    {
+      id: DC9_SOURCE_ID,
+      name: 'DC9',
+      type: DC9_SOURCE_ID,
+      enabled: true,
+      description: 'DC9 official events page',
+      order: 10.5,
+      config: {
+        url: DC9_EVENTS_URL,
+        defaultImage: DC9_DEFAULT_IMAGE_URL,
+        fetchImageFromLink: false,
+        missingImageFetchLimit: 0
       }
     },
     {
@@ -9120,7 +10237,7 @@ const GENRE_TAXONOMY_RULES = [
   },
   {
     label: 'Outdoors',
-    patterns: [/\boutdoors?\b/, /\bnature\b/, /\bnaturalist\b/, /\bcampfire\b/, /\bcamping\b/, /\bparks?\b/, /\btrails?\b/, /\bgardens?\b/, /\bforest\b/, /\bwoods?\b/, /\bwildlife\b/, /\bbird(?:ing|watching)?\b/, /\bhik(?:e|ing)\b/, /\bcreek\b/, /\briver\b/, /\blake\b/, /\bstream\b/, /\bvolunteer outdoors\b/]
+    patterns: [/\boutdoors?\b/, /\bnature\b/, /\bnaturalist\b/, /\bcampfire\b/, /\bcamping\b/, /\bparks?\b/, /\btrails?\b/, /\bgardens?\b/, /\bforest\b/, /\bwoods?\b/, /\bwildlife\b/, /\bbird(?:ing|watching)?\b/, /\bhik(?:e|ing)\b/, /\bcreek\b/, /\briver\b/, /\blake\b/, /\bstream\b/, /\bvolunteer outdoors\b/, /\bweed warrior\b/, /\binvasive plants\b/]
   },
   {
     label: 'Fairs & Festivals',
@@ -9151,7 +10268,7 @@ const EVENT_TEXT_TAXONOMY_RULES = [
   },
   {
     label: 'Outdoors',
-    patterns: [/\boutdoors?\b/, /\bnature\b/, /\bnaturalist\b/, /\bcampfire\b/, /\bcamping\b/, /\bparks?\b/, /\btrails?\b/, /\bgardens?\b/, /\bforest\b/, /\bwoods?\b/, /\bwildlife\b/, /\bbird(?:ing|watching)?\b/, /\bhik(?:e|ing)\b/, /\bcreek\b/, /\briver\b/, /\blake\b/, /\bstream\b/, /\bvolunteer outdoors\b/]
+    patterns: [/\boutdoors?\b/, /\bnature\b/, /\bnaturalist\b/, /\bcampfire\b/, /\bcamping\b/, /\bparks?\b/, /\btrails?\b/, /\bgardens?\b/, /\bforest\b/, /\bwoods?\b/, /\bwildlife\b/, /\bbird(?:ing|watching)?\b/, /\bhik(?:e|ing)\b/, /\bcreek\b/, /\briver\b/, /\blake\b/, /\bstream\b/, /\bvolunteer outdoors\b/, /\bweed warrior\b/, /\binvasive plants\b/]
   },
   {
     label: 'Fairs & Festivals',
@@ -9184,12 +10301,20 @@ const AMBIGUOUS_TEXT_CATEGORY_KEYWORDS = new Set([
   'industrial'
 ]);
 const BROAD_TEXT_CATEGORY_MAPPING_KEYWORDS = new Set([
+  'creek',
+  'garden',
+  'gardens',
   'game',
   'games',
   'hike',
   'hiking',
+  'lake',
+  'park',
+  'parks',
+  'river',
   'walk',
-  'walking'
+  'walking',
+  'woods'
 ]);
 
 function textHasMusicCategoryContext(normalizedText) {
@@ -9202,6 +10327,24 @@ function eventHasMusicCategoryContext(event = {}, normalizedText = '') {
   if (segment.includes('music')) return true;
   return getGenreTaxonomyLabels(getShowEventSourceGenreLabels(event), event)
     .some(label => MUSIC_TAXONOMY_LABELS.has(label));
+}
+
+function shouldUseRawGenreTaxonomyLabel(label, rawGenre, event = {}) {
+  if (label !== 'Theater & Musical') return true;
+  const sourceId = normalizeDatasourceId(event?.source || '');
+  if (sourceId === THEATRE_WASHINGTON_SOURCE_ID) return true;
+  const segment = normalizeFilterToken(event?.segment || '');
+  if (segment.includes('music')) return false;
+  const normalizedRawGenre = normalizeFilterToken(rawGenre);
+  return !['theater', 'theatre', 'musical'].includes(normalizedRawGenre);
+}
+
+function shouldUseLearnedCategoryLabel(label, event = {}) {
+  if (label !== 'Theater & Musical') return true;
+  const sourceId = normalizeDatasourceId(event?.source || '');
+  if (sourceId === THEATRE_WASHINGTON_SOURCE_ID) return true;
+  const segment = normalizeFilterToken(event?.segment || '');
+  return !segment.includes('music');
 }
 
 function shouldUseTextCategoryKeyword(rule, matchValue, normalizedText) {
@@ -9290,7 +10433,9 @@ function getGenreTaxonomyLabels(rawGenres = [], event = {}, { categoryMappings =
     if (ignoredGenreKeys.has(normalized)) return;
     if (normalized === 'music') return;
     if (effectiveMappings[normalized]) {
-      getMappedShowCategoryLabels(effectiveMappings, normalized).forEach(add);
+      getMappedShowCategoryLabels(effectiveMappings, normalized)
+        .filter(label => shouldUseRawGenreTaxonomyLabel(label, rawGenre, event))
+        .forEach(add);
       return;
     }
     if (categoryLabelsByKey.has(normalized)) {
@@ -9299,6 +10444,7 @@ function getGenreTaxonomyLabels(rawGenres = [], event = {}, { categoryMappings =
     }
     GENRE_TAXONOMY_RULES.forEach(rule => {
       if (rule.patterns.some(pattern => pattern.test(normalized))) {
+        if (!shouldUseRawGenreTaxonomyLabel(rule.label, rawGenre, event)) return;
         add(rule.label);
       }
     });
@@ -9343,14 +10489,19 @@ function getEventTextTaxonomyLabels(event = {}, { categoryMappings = null, ignor
     const key = normalizeFilterToken(keyword);
     if (!key || ignoredGenreKeys.has(key)) return;
     if (BROAD_TEXT_CATEGORY_MAPPING_KEYWORDS.has(key)) return;
-    getMappedShowCategoryLabels(effectiveMappings, key).forEach(label => labels.add(label));
+    getMappedShowCategoryLabels(effectiveMappings, key)
+      .filter(label => shouldUseRawGenreTaxonomyLabel(label, keyword, event))
+      .forEach(label => labels.add(label));
   });
 
   EVENT_TEXT_TAXONOMY_RULES.forEach(rule => {
     const hasAllowedKeyword = rule.patterns.some(pattern =>
       extractPatternMatches(normalizedText, pattern).some(match => {
         const key = normalizeFilterToken(match);
-        return key && !ignoredGenreKeys.has(key);
+        return key &&
+          !ignoredGenreKeys.has(key) &&
+          !BROAD_TEXT_CATEGORY_MAPPING_KEYWORDS.has(key) &&
+          shouldUseEventTextCategoryKeyword(rule, match, normalizedText, event);
       })
     );
     if (hasAllowedKeyword && !(rule.label === 'Outdoors' && eventHasMusicCategoryContext(event, normalizedText))) {
@@ -9749,7 +10900,17 @@ function getCategoryLearningFeatures(event = {}) {
   return Array.from(getCategoryLearningFeatureWeights(event).keys());
 }
 
-function getCategoryLearningEvidenceWeight(stats, featureWeights) {
+function getCategoryLearningFeatureIdfWeight(model, feature) {
+  const totalExamples = Number(model?.totalExamples) || 0;
+  const documentCount = Number(model?.featureDocumentCounts?.get(feature)) || 0;
+  if (!totalExamples || !documentCount) return 1;
+  return Math.min(
+    CATEGORY_LEARNING_MAX_IDF_WEIGHT,
+    1 + Math.log((totalExamples + 1) / (documentCount + 1))
+  );
+}
+
+function getCategoryLearningEvidenceWeight(stats, featureWeights, model = null) {
   let total = 0;
   featureWeights.forEach((weight, feature) => {
     if (
@@ -9760,7 +10921,26 @@ function getCategoryLearningEvidenceWeight(stats, featureWeights) {
     ) {
       return;
     }
-    if (stats.tokenCounts.get(feature)) total += weight;
+    if (stats.tokenCounts.get(feature)) {
+      total += weight * getCategoryLearningFeatureIdfWeight(model, feature);
+    }
+  });
+  return total;
+}
+
+function getCategoryLearningStrongEvidenceWeight(stats, featureWeights, model = null) {
+  let total = 0;
+  featureWeights.forEach((weight, feature) => {
+    if (
+      !feature.startsWith('title:') &&
+      !feature.startsWith('genre:') &&
+      !feature.startsWith('segment:')
+    ) {
+      return;
+    }
+    if (stats.tokenCounts.get(feature)) {
+      total += weight * getCategoryLearningFeatureIdfWeight(model, feature);
+    }
   });
   return total;
 }
@@ -9780,7 +10960,9 @@ function trainCategoryLearningModel(examples = [], categoryOptions = getActiveSh
 
   const labelStats = new Map(labels.map(label => [label, { docCount: 0, tokenCounts: new Map(), tokenTotal: 0 }]));
   const vocabulary = new Set();
+  const featureDocumentCounts = new Map();
   let totalLabelDocs = 0;
+  let totalExamples = 0;
 
   normalizeCategoryLearningExamples(examples, labels).forEach(example => {
     const event = {
@@ -9793,6 +10975,11 @@ function trainCategoryLearningModel(examples = [], categoryOptions = getActiveSh
     };
     const featureWeights = getCategoryLearningFeatureWeights(event);
     if (!featureWeights.size) return;
+    totalExamples += 1;
+    featureWeights.forEach((weight, feature) => {
+      if (!weight) return;
+      featureDocumentCounts.set(feature, (featureDocumentCounts.get(feature) || 0) + 1);
+    });
     example.categories.forEach(category => {
       const stats = labelStats.get(category);
       if (!stats) return;
@@ -9811,7 +10998,9 @@ function trainCategoryLearningModel(examples = [], categoryOptions = getActiveSh
     labels,
     labelStats,
     totalLabelDocs,
+    totalExamples,
     vocabulary,
+    featureDocumentCounts,
     vocabularySize: vocabulary.size
   };
 }
@@ -9837,11 +11026,12 @@ function predictCategoryLearningLabels(event = {}, {
     const denominator = stats.tokenTotal + learnedModel.vocabularySize;
     const logScore = features.reduce((score, feature) => {
       const count = stats.tokenCounts.get(feature) || 0;
-      const weight = featureWeights.get(feature) || 1;
+      const weight = (featureWeights.get(feature) || 1) * getCategoryLearningFeatureIdfWeight(learnedModel, feature);
       return score + weight * Math.log((count + 1) / denominator);
     }, prior);
-    const evidenceWeight = getCategoryLearningEvidenceWeight(stats, featureWeights);
-    return { label, logScore, evidenceWeight };
+    const evidenceWeight = getCategoryLearningEvidenceWeight(stats, featureWeights, learnedModel);
+    const strongEvidenceWeight = getCategoryLearningStrongEvidenceWeight(stats, featureWeights, learnedModel);
+    return { label, logScore, evidenceWeight, strongEvidenceWeight };
   });
 
   const maxScore = Math.max(...scores.map(score => score.logScore));
@@ -9855,10 +11045,12 @@ function predictCategoryLearningLabels(event = {}, {
     .map(score => ({
       label: score.label,
       confidence: score.probability / totalProbability,
-      evidenceWeight: score.evidenceWeight
+      evidenceWeight: score.evidenceWeight,
+      strongEvidenceWeight: score.strongEvidenceWeight
     }))
     .filter((score, index, allScores) => {
       if (score.evidenceWeight < CATEGORY_LEARNING_MIN_EVIDENCE_WEIGHT) return false;
+      if (score.strongEvidenceWeight < 1) return false;
       if (score.confidence < minConfidence) return false;
       const nextBest = allScores
         .filter(candidate => candidate.label !== score.label)
@@ -9882,7 +11074,7 @@ function getLearnedShowCategoryLabels(event = {}, settings = getCachedShowsDefau
   return predictCategoryLearningLabels(event, {
     examples,
     categoryOptions: normalizedSettings.categoryOptions
-  });
+  }).filter(label => shouldUseLearnedCategoryLabel(label, event));
 }
 
 function getSourceDefaultShowCategoryLabels(event = {}) {
@@ -9901,7 +11093,10 @@ function getVenueDefaultShowCategoryLabels(event = {}) {
   return [];
 }
 
-function normalizeShowEventGenres(event) {
+function normalizeShowEventGenres(event, {
+  skipLearnedCategoryLabels = false,
+  settingsOverride = null
+} = {}) {
   if (!event || typeof event !== 'object') return event;
   const normalizedEvent = event;
   const rawSourceGenres = getShowEventSourceGenreLabels(normalizedEvent);
@@ -9934,7 +11129,9 @@ function normalizeShowEventGenres(event) {
       ...getEventTextTaxonomyLabels(normalizedEvent),
       ...getSourceDefaultShowCategoryLabels(normalizedEvent),
       ...getVenueDefaultShowCategoryLabels(normalizedEvent),
-      ...getLearnedShowCategoryLabels(normalizedEvent)
+      ...(skipLearnedCategoryLabels
+        ? []
+        : getLearnedShowCategoryLabels(normalizedEvent, settingsOverride || getCachedShowsDefaultSettings()))
     ]);
   }
 
@@ -10799,7 +11996,7 @@ async function fetchHtmlFromBrowser(url, { waitForSelector = '', waitMs = HEADLE
 }
 
 const PLACEHOLDER_IMAGE_PATTERN =
-  /Trumba_Event_Actions_Logo|GenericAvatar|eventactions(?:[^?#]*)(?:logo|generic)|(?:^|[\/._-])(logo|logos|icon|icons|favicon|sprite|spacer|pixel|loader|loading)(?:[\/._-]|$)|si\.edu\/.*(?:sunburst|wordmark|smithsonian(?:institution)?)(?:[\/._-]|$)/i;
+  /Trumba_Event_Actions_Logo|GenericAvatar|bookstorelogo|static\.xx\.fbcdn\.net\/images\/emoji|eventactions(?:[^?#]*)(?:logo|generic)|(?:^|[\/._% -])(logo|logos|icon|icons|favicon|sprite|spacer|pixel|loader|loading)(?:[\/._% -]|$)|si\.edu\/.*(?:sunburst|wordmark|smithsonian(?:institution)?)(?:[\/._% -]|$)/i;
 const MONTGOMERY_PARKS_PLACEHOLDER_IMAGE_PATTERN =
   /montgomeryparks\.org\/wp-content\/uploads\/.*(?:MontCo[_-]?Parks[_-]?Social|parks[_-]?social|social[_-]?share|default[_-]?(?:event|parks?)|generic[_-]?(?:event|parks?))[^/]*\.(?:jpe?g|png|webp)(?:[?#]|$)/i;
 const GENERIC_MISSING_IMAGE_FETCH_LIMIT_DEFAULT = 6;
@@ -10808,7 +12005,13 @@ const MIN_ACCEPTABLE_IMAGE_HEIGHT = 180;
 
 function isPlaceholderImage(url) {
   if (!url || typeof url !== 'string') return true;
-  return PLACEHOLDER_IMAGE_PATTERN.test(url);
+  const normalizedUrl = url.trim();
+  if (PLACEHOLDER_IMAGE_PATTERN.test(normalizedUrl)) return true;
+  try {
+    return PLACEHOLDER_IMAGE_PATTERN.test(decodeURIComponent(normalizedUrl));
+  } catch {
+    return false;
+  }
 }
 
 function isMontgomeryParksPlaceholderImage(url) {
@@ -10819,6 +12022,7 @@ function isMontgomeryParksPlaceholderImage(url) {
 function eventImageUrlIsUsable(event, url) {
   const normalizedUrl = typeof url === 'string' ? url.trim() : '';
   if (!normalizedUrl || isPlaceholderImage(normalizedUrl)) return false;
+  if (isFacebookLookasideCrawlerImageUrl(normalizedUrl)) return false;
   const sourceId = normalizeDatasourceId(event?.source || '');
   if (sourceId === DC_IMPROV_SOURCE_ID && isDcImprovDecorativeImage(normalizedUrl)) {
     return false;
@@ -10827,6 +12031,18 @@ function eventImageUrlIsUsable(event, url) {
     return false;
   }
   return true;
+}
+
+function isFacebookLookasideCrawlerImageUrl(url) {
+  try {
+    const parsed = new URL(url.startsWith(IMAGE_PROXY_URL_PREFIX)
+      ? new URL(`http://local${url}`).searchParams.get('url') || ''
+      : url);
+    const hostname = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    return hostname === 'lookaside.fbsbx.com' && parsed.pathname.replace(/\/+$/, '') === '/lookaside/crawler/media';
+  } catch {
+    return /lookaside\.fbsbx\.com\/lookaside\/crawler\/media/i.test(url);
+  }
 }
 
 function stripUnusableImagesFromEvent(event) {
@@ -10903,7 +12119,7 @@ function eventHasStoredReviewImage(event) {
   return [...ticketmasterImages, ...eventImages].some(image => {
     const url = typeof image?.url === 'string' ? image.url.trim() : '';
     if (!eventImageUrlIsUsable(event, url)) return false;
-    return url.startsWith(IMAGE_CACHE_URL_PREFIX) || image?.manual === true;
+    return url.startsWith(IMAGE_CACHE_URL_PREFIX) || url.startsWith(IMAGE_PROXY_URL_PREFIX) || image?.manual === true;
   });
 }
 
@@ -11007,12 +12223,19 @@ async function fetchImageFromEventLinks(event) {
   const candidateUrls = isSmithsonian
     ? [...trumbaActionUrls, ...alternateUrls, ...primaryUrls]
     : [...primaryUrls, ...alternateUrls, ...trumbaActionUrls];
+  const browserFallbackUrls = [];
   for (const candidateUrl of candidateUrls) {
     const isTrumbaEventActionsUrl = Boolean(parseTrumbaEventActionsUrl(candidateUrl));
-    let imageUrl = await fetchImageFromUrl(candidateUrl, event);
-    if (!eventImageUrlIsUsable(event, imageUrl) && !isTrumbaEventActionsUrl) {
-      imageUrl = await fetchImageFromBrowser(candidateUrl, event);
+    const imageUrl = await fetchImageFromUrl(candidateUrl, event);
+    if (eventImageUrlIsUsable(event, imageUrl)) {
+      return imageUrl;
     }
+    if (!isTrumbaEventActionsUrl) {
+      browserFallbackUrls.push(candidateUrl);
+    }
+  }
+  for (const candidateUrl of browserFallbackUrls) {
+    const imageUrl = await fetchImageFromBrowser(candidateUrl, event);
     if (eventImageUrlIsUsable(event, imageUrl)) {
       return imageUrl;
     }
@@ -11398,7 +12621,7 @@ function parseDcImprovShows(html) {
   return events;
 }
 
-async function fetchDcImprovEvents({ latitude, longitude, allowCache = true }) {
+async function fetchDcImprovEvents({ latitude, longitude, allowCache = true, skipImageProcessing = false } = {}) {
   const cacheKey = ['dcimprov', DC_IMPROV_CACHE_VERSION];
   const imageUpgradeSource = {
     id: DC_IMPROV_SOURCE_ID,
@@ -11419,7 +12642,7 @@ async function fetchDcImprovEvents({ latitude, longitude, allowCache = true }) {
         const parsed = JSON.parse(cached.body);
         if (parsed && Array.isArray(parsed.events)) {
           const upgradedEvents = clonePlainJson(parsed.events);
-          if (Array.isArray(upgradedEvents) && upgradedEvents.length) {
+          if (!skipImageProcessing && Array.isArray(upgradedEvents) && upgradedEvents.length) {
             const beforeImages = JSON.stringify(upgradedEvents.map(event => event?.images || []));
             await hydrateMissingEventImages(upgradedEvents, imageUpgradeSource);
             await cacheAllEventImages(upgradedEvents);
@@ -11450,20 +12673,35 @@ async function fetchDcImprovEvents({ latitude, longitude, allowCache = true }) {
     }
   }
 
-  const response = await fetch(DC_IMPROV_SHOWS_URL, {
-    headers: {
-      Accept: 'text/html,application/xhtml+xml',
-      'User-Agent': 'LiveShowsBot/1.0'
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), RSS_REQUEST_TIMEOUT_MS) : null;
+  let html = '';
+  try {
+    const response = await fetch(DC_IMPROV_SHOWS_URL, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'LiveShowsBot/1.0'
+      },
+      signal: controller?.signal
+    });
+    if (timeout) clearTimeout(timeout);
+    html = await response.text();
+    if (!response.ok) {
+      const err = new Error(`DC Improv request failed: ${response.status}`);
+      err.status = response.status;
+      throw err;
     }
-  });
-  const html = await response.text();
-  if (!response.ok) {
-    const err = new Error(`DC Improv request failed: ${response.status}`);
-    err.status = response.status;
+  } catch (err) {
+    if (timeout) clearTimeout(timeout);
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error('DC Improv request timed out');
+      timeoutErr.status = 408;
+      throw timeoutErr;
+    }
     throw err;
   }
   const events = parseDcImprovShows(html);
-  if (Array.isArray(events) && events.length) {
+  if (!skipImageProcessing && Array.isArray(events) && events.length) {
     await hydrateMissingEventImages(events, imageUpgradeSource);
     await cacheAllEventImages(events);
   }
@@ -12110,6 +13348,213 @@ async function fetchGlenEchoEvents(source, { allowCache = true, lookaheadDays, l
     contentType: 'application/json',
     body: JSON.stringify({
       source: source?.id || GLEN_ECHO_SOURCE_ID,
+      generatedAt: new Date().toISOString(),
+      events
+    }),
+    metadata: {
+      count: events.length,
+      cachedAt: new Date().toISOString()
+    }
+  });
+  return { events, cached: false };
+}
+
+function normalizeCityCastDcHref(href, baseUrl = CITY_CAST_DC_EVENTS_URL) {
+  const trimmed = decodeHtmlEntities(href || '').trim();
+  if (!trimmed) return '';
+  try {
+    return new URL(trimmed, baseUrl).toString();
+  } catch {
+    return '';
+  }
+}
+
+function parseCityCastDcHeadingDate(value, today = new Date()) {
+  const cleaned = cleanText(value || '');
+  const match = cleaned.match(/\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*([A-Za-z]+)\s+(\d{1,2})(?:,\s*(\d{4}))?\b/i);
+  if (!match) return '';
+  const monthDate = new Date(`${match[1]} 1, ${match[3] || today.getFullYear()} 12:00:00`);
+  if (Number.isNaN(monthDate.getTime())) return '';
+  let year = Number.parseInt(match[3] || String(today.getFullYear()), 10);
+  if (!match[3]) {
+    const currentMonth = today.getMonth();
+    const parsedMonth = monthDate.getMonth();
+    if (parsedMonth < currentMonth - 6) {
+      year += 1;
+    }
+  }
+  const parsed = new Date(`${match[1]} ${match[2]}, ${year} 12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return `${year}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+}
+
+function parseCityCastDcEventDetail(value) {
+  const cleaned = cleanText(value || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return { venueName: 'Washington, DC', endDateLabel: '' };
+  const throughMatch = cleaned.match(/\bthrough\s+([A-Za-z]+\s+\d{1,2})(?:,\s*(\d{4}))?\s*(?:\(([^)]+)\))?/i);
+  if (throughMatch) {
+    return {
+      venueName: cleanText(throughMatch[3] || cleaned.replace(/^through\s+/i, '')) || 'Washington, DC',
+      endDateLabel: `${throughMatch[1]}${throughMatch[2] ? `, ${throughMatch[2]}` : ''}`
+    };
+  }
+  const venueMatch = cleaned.match(/(?:^|\s)(?:at|in)\s+(.+)$/i);
+  return {
+    venueName: cleanText(venueMatch?.[1] || cleaned) || 'Washington, DC',
+    endDateLabel: ''
+  };
+}
+
+function parseCityCastDcEndDate(label, startDate, today = new Date()) {
+  const cleaned = cleanText(label || '');
+  if (!cleaned || !startDate) return '';
+  const startYear = Number.parseInt(startDate.slice(0, 4), 10);
+  const match = cleaned.match(/^([A-Za-z]+)\s+(\d{1,2})(?:,\s*(\d{4}))?$/);
+  if (!match) return '';
+  const year = Number.parseInt(match[3] || String(startYear || today.getFullYear()), 10);
+  const parsed = new Date(`${match[1]} ${match[2]}, ${year} 12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return `${year}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+}
+
+function normalizeCityCastDcTitle(value) {
+  let title = cleanText(value || '').replace(/\s+/g, ' ').trim();
+  const startsWithQuote = /^[\s"“”„‟]+/.test(title);
+  const endsWithQuote = /["“”„‟]\s*$/.test(title);
+  if (startsWithQuote && endsWithQuote) {
+    title = title
+      .replace(/^[\s"“”„‟]+/, '')
+      .replace(/["“”„‟]\s*$/, '')
+      .trim();
+  } else {
+    title = title.replace(/^[\s"“”„‟]+/, '').trim();
+  }
+  if (title.startsWith('"') && title.endsWith('"')) {
+    title = title.slice(1, -1).trim();
+  }
+  return title.replace(/\s+/g, ' ').trim();
+}
+
+function parseCityCastDcEventsPage(html, source = {}, context = {}) {
+  if (!html || typeof html !== 'string') return [];
+  const today = context.today instanceof Date ? context.today : new Date();
+  const timeZone = source?.config?.timeZone || 'America/New_York';
+  const sourceId = source?.id || CITY_CAST_DC_SOURCE_ID;
+  const events = [];
+  const seen = new Set();
+  const sectionPattern = /<section\b[^>]*>\s*<h2\b[^>]*>([\s\S]*?)<\/h2>[\s\S]*?<ul\b[^>]*>([\s\S]*?)<\/ul>/gi;
+  let sectionMatch;
+  while ((sectionMatch = sectionPattern.exec(html)) !== null) {
+    const eventDate = parseCityCastDcHeadingDate(sectionMatch[1], today);
+    if (!eventDate) continue;
+    const listHtml = sectionMatch[2] || '';
+    const itemPattern = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
+    let itemMatch;
+    while ((itemMatch = itemPattern.exec(listHtml)) !== null) {
+      const itemHtml = itemMatch[1] || '';
+      const linkMatch = itemHtml.match(/<a\b[^>]*href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/i);
+      if (!linkMatch) continue;
+      const title = normalizeCityCastDcTitle(linkMatch[3] || '');
+      const url = normalizeCityCastDcHref(linkMatch[2] || '', source?.config?.url || CITY_CAST_DC_EVENTS_URL);
+      if (!title || !url) continue;
+      const afterLinkHtml = itemHtml.slice(itemHtml.indexOf(linkMatch[0]) + linkMatch[0].length);
+      const detail = parseCityCastDcEventDetail(afterLinkHtml);
+      const startLocal = buildDateOnlyLocalDateTime(eventDate);
+      const endDate = parseCityCastDcEndDate(detail.endDateLabel, eventDate, today);
+      const endLocal = buildDateOnlyLocalDateTime(endDate || eventDate);
+      const key = `${title}|${eventDate}|${url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const event = {
+        id: buildRssEventId(sourceId, url, title, startLocal, url),
+        name: { text: title },
+        start: {
+          local: startLocal,
+          utc: localDateTimeToUtcIso(startLocal, timeZone) || startLocal,
+          noTime: true
+        },
+        end: {
+          local: endLocal,
+          utc: localDateTimeToUtcIso(endLocal, timeZone) || endLocal,
+          noTime: true
+        },
+        url,
+        venue: {
+          name: detail.venueName,
+          address: {
+            city: 'Washington',
+            region: 'DC',
+            country: 'US'
+          }
+        },
+        summary: detail.venueName ? `City Cast DC pick at ${detail.venueName}.` : 'City Cast DC event pick.',
+        source: sourceId,
+        genres: []
+      };
+      events.push(event);
+    }
+  }
+  return events.filter(event =>
+    isEventInLookahead(event?.start?.local, event?.end?.local || null, context.lookaheadDays || TICKETMASTER_DEFAULT_DAYS)
+  );
+}
+
+async function fetchCityCastDcEvents(source, { allowCache = true, lookaheadDays } = {}) {
+  const pageUrl = normalizeCityCastDcHref(source?.config?.url || CITY_CAST_DC_EVENTS_URL, CITY_CAST_DC_EVENTS_URL);
+  const resolvedDays = clampDays(lookaheadDays);
+  const cacheKey = ['citycastdc', source?.id || CITY_CAST_DC_SOURCE_ID, CITY_CAST_DC_CACHE_VERSION, pageUrl, `days:${resolvedDays}`];
+  if (allowCache) {
+    const cached = await safeReadCachedResponse(
+      CITY_CAST_DC_CACHE_COLLECTION,
+      cacheKey,
+      CITY_CAST_DC_CACHE_TTL_MS
+    );
+    if (cached && typeof cached.body === 'string') {
+      try {
+        const parsed = JSON.parse(cached.body);
+        if (parsed && Array.isArray(parsed.events)) {
+          return { events: parsed.events, cached: true };
+        }
+      } catch (err) {
+        console.warn('Unable to parse cached City Cast DC events', err);
+      }
+    }
+  }
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), RSS_REQUEST_TIMEOUT_MS) : null;
+  let html = '';
+  try {
+    const response = await fetch(pageUrl, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'LiveShowsBot/1.0'
+      },
+      signal: controller?.signal
+    });
+    if (timeout) clearTimeout(timeout);
+    html = await response.text();
+    if (!response.ok) {
+      const err = new Error(`City Cast DC request failed: ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
+  } catch (err) {
+    if (timeout) clearTimeout(timeout);
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error('City Cast DC request timed out');
+      timeoutErr.status = 408;
+      throw timeoutErr;
+    }
+    throw err;
+  }
+
+  const events = sortEventsByTimeAndDistance(parseCityCastDcEventsPage(html, source, { lookaheadDays: resolvedDays }));
+  await safeWriteCachedResponse(CITY_CAST_DC_CACHE_COLLECTION, cacheKey, {
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      source: source?.id || CITY_CAST_DC_SOURCE_ID,
       generatedAt: new Date().toISOString(),
       events
     }),
@@ -13099,7 +14544,7 @@ function parseMontgomeryParksAjaxEvents(records, source, { lookaheadDays, occurr
   return Array.from(deduped.values());
 }
 
-async function fetchMontgomeryParksEvents(source, { allowCache = true, lookaheadDays } = {}) {
+async function fetchMontgomeryParksEvents(source, { allowCache = true, lookaheadDays, skipImageProcessing = false } = {}) {
   const cacheKey = ['montgomeryparks', source?.id || MONTGOMERY_PARKS_SOURCE_ID, MONTGOMERY_PARKS_CACHE_VERSION, `days:${lookaheadDays || ''}`];
   if (allowCache) {
     const cached = await safeReadCachedResponse(
@@ -13160,7 +14605,7 @@ async function fetchMontgomeryParksEvents(source, { allowCache = true, lookahead
     }
   }
   const sortedEvents = sortEventsByTimeAndDistance(events);
-  if (Array.isArray(sortedEvents) && sortedEvents.length) {
+  if (!skipImageProcessing && Array.isArray(sortedEvents) && sortedEvents.length) {
     await hydrateMissingEventImages(sortedEvents, {
       id: source?.id || MONTGOMERY_PARKS_SOURCE_ID,
       config: {
@@ -13220,7 +14665,7 @@ async function hydratePgParksEventLocations(events) {
   });
 }
 
-async function fetchPgParksEvents(source, { allowCache = true, lookaheadDays } = {}) {
+async function fetchPgParksEvents(source, { allowCache = true, lookaheadDays, skipImageProcessing = false } = {}) {
   const cacheKey = ['pgparks', source?.id || PG_PARKS_SOURCE_ID, PG_PARKS_CACHE_VERSION];
   if (allowCache) {
     const cached = await safeReadCachedResponse(
@@ -13259,6 +14704,18 @@ async function fetchPgParksEvents(source, { allowCache = true, lookaheadDays } =
     let events = parsePgParksEvents(html, source, { lookaheadDays });
     events = await hydratePgParksEventLocations(events);
     events = sortEventsByTimeAndDistance(events);
+    if (!skipImageProcessing && events.length) {
+      events = await hydrateMissingEventImages(events, {
+        id: source?.id || PG_PARKS_SOURCE_ID,
+        config: {
+          ...(source?.config && typeof source.config === 'object' ? source.config : {}),
+          fetchImageFromLink: true,
+          missingImageFetchLimit: Number.isFinite(Number(source?.config?.missingImageFetchLimit))
+            ? Number(source.config.missingImageFetchLimit)
+            : 8
+        }
+      });
+    }
     if (!events.length) {
       const fallbackSource = {
         ...source,
@@ -13710,6 +15167,455 @@ function applyBlackCatDistance(events, latitude, longitude) {
   );
   if (!Number.isFinite(distance)) return events;
   return events.map(event => ({ ...event, distance }));
+}
+
+function normalizeDc9Href(href) {
+  if (!href || typeof href !== 'string') return '';
+  const decoded = decodeHtmlEntities(href).trim();
+  if (!decoded) return '';
+  if (/^https?:\/\//i.test(decoded)) return decoded;
+  if (decoded.startsWith('//')) return `https:${decoded}`;
+  try {
+    return new URL(decoded, DC9_EVENTS_URL).toString();
+  } catch {
+    return decoded;
+  }
+}
+
+function resolveDc9Year(monthIndex, day, today) {
+  const baseYear = today.getFullYear();
+  const candidate = new Date(baseYear, monthIndex, day);
+  if (
+    candidate.getTime() < today.getTime() - 24 * 60 * 60 * 1000 &&
+    monthIndex < today.getMonth()
+  ) {
+    return baseYear + 1;
+  }
+  return baseYear;
+}
+
+function parseDc9MonthDay(text, today = new Date()) {
+  if (!text || typeof text !== 'string') return null;
+  const match = cleanText(text).match(
+    /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\.?,?\s*(Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+(\d{1,2})\b/i
+  );
+  if (!match) return null;
+  const monthMap = {
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11
+  };
+  const monthIndex = monthMap[match[1].toLowerCase()];
+  const day = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(monthIndex) || !Number.isFinite(day)) return null;
+  const year = resolveDc9Year(monthIndex, day, today);
+  return {
+    year,
+    monthIndex,
+    day,
+    localDateIso: `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  };
+}
+
+function parseDc9Time(value) {
+  if (!value || typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase();
+  const match = normalized.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+  if (!match) return null;
+  let hour = Number.parseInt(match[1], 10);
+  const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (match[3] === 'pm' && hour !== 12) hour += 12;
+  if (match[3] === 'am' && hour === 12) hour = 0;
+  return { hour, minute };
+}
+
+function extractDc9ShowAndDoorTimes(text) {
+  const cleaned = cleanText(text || '');
+  const doorMatch = cleaned.match(/\bdoors?\s*:\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i);
+  const showMatch = cleaned.match(/\bshow\s*:\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i);
+  return {
+    doorTime: doorMatch ? parseDc9Time(doorMatch[1]) : null,
+    showTime: showMatch ? parseDc9Time(showMatch[1]) : null,
+    label: cleaned
+  };
+}
+
+function buildDc9EventId(name, localIso, url) {
+  const base = typeof name === 'string' ? name.toLowerCase() : 'show';
+  const slug = base
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  const datePart = localIso ? localIso.slice(0, 10) : 'date-unknown';
+  const timePart = localIso ? localIso.slice(11, 16).replace(':', '') : 'time-unknown';
+  const urlPart = url ? url.replace(/https?:\/\//, '').slice(0, 40) : '';
+  return `dc9::${slug || 'show'}::${datePart}::${timePart}${urlPart ? `::${urlPart}` : ''}`;
+}
+
+function isDc9DecorativeImage(url, alt = '') {
+  const text = `${url || ''} ${alt || ''}`.toLowerCase();
+  return (
+    !url ||
+    /dc9letters|dc9logo|dc9shield|dc9secondfloor|dc9_misc|newkitchen|combossq|apresbrunch|dcnc|favicon|siteicon|submit-spin|loading/.test(text)
+  );
+}
+
+function scoreDc9ImageCandidate(candidate) {
+  if (!candidate?.src || isDc9DecorativeImage(candidate.src, candidate.alt)) return -Infinity;
+  let score = scoreHtmlImageCandidate(candidate);
+  const combined = `${candidate.src || ''} ${candidate.className || ''} ${candidate.alt || ''}`.toLowerCase();
+  if (/listing|singlelisting|artistblock|event|show|hero|featured/.test(combined)) score += 80;
+  if (/dc9\.club\/wp-content\/uploads\/20\d{2}\//.test(combined)) score += 60;
+  if (/1300x1300|1200x1000|1080x1000/.test(combined)) score += 30;
+  return score;
+}
+
+function extractDc9ImageUrl(html, baseUrl = DC9_EVENTS_URL) {
+  if (!html || typeof html !== 'string') return '';
+  const imgTags = html.match(/<img\b[^>]*>/gi) || [];
+  const imgCandidates = imgTags
+    .map(tag => {
+      const src = extractImageTagSource(tag);
+      if (!src) return null;
+      const width = Number.parseInt(extractImgAttribute(tag, 'width'), 10);
+      const height = Number.parseInt(extractImgAttribute(tag, 'height'), 10);
+      const candidate = {
+        src,
+        className: extractImgAttribute(tag, 'class'),
+        alt: extractImgAttribute(tag, 'alt'),
+        width: Number.isFinite(width) ? width : 0,
+        height: Number.isFinite(height) ? height : 0
+      };
+      const score = scoreDc9ImageCandidate(candidate);
+      if (!Number.isFinite(score)) return null;
+      return { ...candidate, score, area: candidate.width * candidate.height };
+    })
+    .filter(Boolean);
+  const sourceCandidates = extractSourceTagCandidates(html)
+    .map(candidate => {
+      const score = scoreDc9ImageCandidate(candidate);
+      if (!Number.isFinite(score)) return null;
+      return { ...candidate, score };
+    })
+    .filter(Boolean);
+  const candidates = [...imgCandidates, ...sourceCandidates].sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    return (b.area || 0) - (a.area || 0);
+  });
+  const resolved = resolveUrlMaybe(candidates[0]?.src || '', baseUrl);
+  return resolved && !isDc9DecorativeImage(resolved, candidates[0]?.alt) ? resolved : '';
+}
+
+function extractDc9TicketInfo(html, baseUrl = DC9_EVENTS_URL) {
+  if (!html || typeof html !== 'string') return { url: '', label: '', prices: [] };
+  const linkPattern = /<a\b[^>]*href=(['"])(https?:\/\/link\.dice\.fm\/[^'"]+)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  let url = '';
+  let label = '';
+  while ((match = linkPattern.exec(html)) !== null) {
+    const candidateUrl = normalizeDc9Href(match[2] || '');
+    const candidateLabel = cleanText(match[3] || '');
+    if (!candidateUrl) continue;
+    url = candidateUrl;
+    label = candidateLabel;
+    if (!/get tickets/i.test(candidateLabel)) break;
+  }
+  const prices = [];
+  const rowPattern = /<div[^>]+class=(['"])[^'"]*ticketsTable__row[^'"]*\1[^>]*>([\s\S]*?)(?=<div[^>]+class=(['"])[^'"]*ticketsTable__row|\<\/div>\s*\<\/div>\s*\<\/div>)/gi;
+  while ((match = rowPattern.exec(html)) !== null) {
+    const text = cleanText(match[2] || '');
+    if (text && !prices.includes(text)) prices.push(text);
+  }
+  if (!url) {
+    const anyTicket = html.match(/<a\b[^>]*href=(['"])([^'"]*(?:ticket|eventbrite|dice)[^'"]*)\1[^>]*>([\s\S]*?)<\/a>/i);
+    if (anyTicket) {
+      url = normalizeDc9Href(anyTicket[2] || '');
+      label = cleanText(anyTicket[3] || '');
+    }
+  }
+  return { url: resolveUrlMaybe(url, baseUrl) || url, label, prices };
+}
+
+function extractDc9AboutText(html) {
+  if (!html || typeof html !== 'string') return '';
+  const match = html.match(/<h4>\s*About\s*<\/h4>([\s\S]*?)(?=<div[^>]+class=(['"])[^'"]*singleListing__panel|\<h4>|\<\/section>)/i);
+  return cleanText(match?.[1] || '');
+}
+
+function extractDc9Lineup(html) {
+  if (!html || typeof html !== 'string') return [];
+  const names = [];
+  const patterns = [
+    /<h5[^>]+class=(['"])[^'"]*artistBlock__title[^'"]*\1[^>]*>([\s\S]*?)<\/h5>/gi,
+    /<div[^>]+class=(['"])[^'"]*singleListing__lineupListItem[^'"]*\1[^>]*>([\s\S]*?)<\/div>/gi
+  ];
+  patterns.forEach(pattern => {
+    let match;
+    while ((match = pattern.exec(html)) !== null) {
+      const name = cleanText(match[2] || '').replace(/\s+-\s+\d{1,2}:\d{2}\s*[AP]M$/i, '').trim();
+      if (!name || /^doors open/i.test(name) || names.some(existing => existing.toLowerCase() === name.toLowerCase())) continue;
+      names.push(name);
+    }
+  });
+  return names;
+}
+
+function inferDc9Genres(name, summary) {
+  const text = `${cleanText(name || '')} ${cleanText(summary || '')}`.toLowerCase();
+  const genres = [];
+  const add = genre => {
+    if (genre && !genres.includes(genre)) genres.push(genre);
+  };
+  if (/\b(karaoke|sing-along|sing along)\b/.test(text)) add('Karaoke');
+  if (/\b(dance party|dance club|dj|club|house|techno|edm|disco|90s|naughties)\b/.test(text)) add('Dance');
+  if (/\b(indie|alternative|alt-rock)\b/.test(text)) add('Indie Rock');
+  if (/\b(punk|post-punk|hardcore|emo|screamo)\b/.test(text)) add('Punk');
+  if (/\b(hip hop|hip-hop|rap|r&b)\b/.test(text)) add('Hip-Hop & R&B');
+  if (/\b(comedy|standup|stand-up)\b/.test(text)) add('Comedy');
+  if (/\b(watch party|world cup|soccer)\b/.test(text)) add('Sports');
+  return genres.length ? genres : DC9_GENRES;
+}
+
+function buildDc9Event(listing, detail = {}) {
+  const name = cleanText(detail.title || listing.title || '');
+  const url = normalizeDc9Href(detail.url || listing.url || DC9_EVENTS_URL);
+  const dateInfo = detail.dateInfo || listing.dateInfo;
+  if (!name || !dateInfo) return null;
+  const timeInfo =
+    detail.showTime ||
+    listing.showTime ||
+    detail.doorTime ||
+    listing.doorTime ||
+    { hour: 20, minute: 0 };
+  const localIso = `${dateInfo.localDateIso}T${String(timeInfo.hour).padStart(2, '0')}` +
+    `:${String(timeInfo.minute).padStart(2, '0')}:00`;
+  const summaryParts = [];
+  const lineup = Array.isArray(detail.lineup) ? detail.lineup.filter(Boolean) : [];
+  if (lineup.length) summaryParts.push(`Lineup: ${lineup.join(', ')}`);
+  if (detail.about) summaryParts.push(detail.about);
+  const timeLabel = detail.timeLabel || listing.timeLabel;
+  if (timeLabel) summaryParts.push(timeLabel);
+  const ticketInfo = detail.ticketInfo || listing.ticketInfo || {};
+  if (ticketInfo.label || ticketInfo.url) {
+    summaryParts.push(`Tickets: ${[ticketInfo.label, ticketInfo.url].filter(Boolean).join(' - ')}`);
+  }
+  if (Array.isArray(ticketInfo.prices) && ticketInfo.prices.length) {
+    summaryParts.push(ticketInfo.prices.join(' · '));
+  }
+  const summary = Array.from(new Set(summaryParts.map(part => cleanText(part)).filter(Boolean))).join(' · ');
+  const event = {
+    id: buildDc9EventId(name, localIso, url),
+    name: { text: name },
+    start: { local: localIso },
+    url,
+    venue: {
+      ...DC9_VENUE,
+      address: { ...DC9_VENUE.address }
+    },
+    segment: /\b(comedy|standup|stand-up)\b/i.test(`${name} ${summary}`) ? 'comedy' : 'music',
+    summary,
+    source: DC9_SOURCE_ID,
+    genres: inferDc9Genres(name, summary)
+  };
+  const imageUrl = detail.imageUrl || listing.imageUrl || '';
+  if (imageUrl || DC9_DEFAULT_IMAGE_URL) {
+    event.images = [
+      {
+        url: imageUrl || DC9_DEFAULT_IMAGE_URL,
+        ratio: null,
+        width: null,
+        height: null,
+        fallback: !imageUrl
+      }
+    ];
+  }
+  if (ticketInfo.url) {
+    event.ticketUrl = ticketInfo.url;
+  }
+  return event;
+}
+
+function parseDc9ListingBlock(block, today = new Date()) {
+  if (!block || typeof block !== 'string') return null;
+  const linkMatch = block.match(
+    /<a\b[^>]*class=(['"])[^'"]*listing__titleLink[^'"]*\1[^>]*href=(['"])(.*?)\2[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>/i
+  );
+  if (!linkMatch) return null;
+  const url = normalizeDc9Href(linkMatch[3] || '');
+  if (!url || !/dc9\.club\/event\//i.test(url)) return null;
+  const title = cleanText(linkMatch[4] || '');
+  if (!title) return null;
+  const dateText = cleanText((block.match(/<div[^>]+class=(['"])[^'"]*listingDateTime[^'"]*\1[^>]*>[\s\S]*?<span>([\s\S]*?)<\/span>/i) || [])[2] || '');
+  const dateInfo = parseDc9MonthDay(dateText, today);
+  if (!dateInfo) return null;
+  const timeText = cleanText((block.match(/<p[^>]+class=(['"])[^'"]*listing-doors[^'"]*\1[^>]*>([\s\S]*?)<\/p>/i) || [])[2] || '');
+  const { doorTime, showTime, label } = extractDc9ShowAndDoorTimes(timeText);
+  const description = cleanText((block.match(/<div[^>]+class=(['"])[^'"]*listing__description[^'"]*\1[^>]*>([\s\S]*?)<\/div>/i) || [])[2] || '');
+  const ticketInfo = extractDc9TicketInfo(block, url);
+  return {
+    title,
+    url,
+    dateInfo,
+    doorTime,
+    showTime,
+    timeLabel: label,
+    about: description,
+    imageUrl: extractDc9ImageUrl(block, url),
+    ticketInfo
+  };
+}
+
+function extractDc9ListingBlocks(html) {
+  if (!html || typeof html !== 'string') return [];
+  const starts = [];
+  const pattern = /<div[^>]+class=(['"])(?=[^'"]*(?:listing plotCard|listings-block-list__listing))[^'"]*\1[^>]*data-listing-id=(['"])[^'"]+\2[^>]*>/gi;
+  let match;
+  while ((match = pattern.exec(html)) !== null) {
+    starts.push(match.index);
+  }
+  return starts.map((start, index) => {
+    const end = index + 1 < starts.length ? starts[index + 1] : html.length;
+    return html.slice(start, end);
+  });
+}
+
+function parseDc9EventsPage(html, today = new Date()) {
+  if (!html || typeof html !== 'string') return [];
+  const seen = new Map();
+  extractDc9ListingBlocks(html).forEach(block => {
+    const listing = parseDc9ListingBlock(block, today);
+    if (!listing?.url || seen.has(listing.url)) return;
+    seen.set(listing.url, listing);
+  });
+  return Array.from(seen.values());
+}
+
+function parseDc9DetailPage(html, url, fallback = {}, today = new Date()) {
+  if (!html || typeof html !== 'string') return null;
+  const title = cleanText((html.match(/<h1[^>]+class=(['"])[^'"]*singleListing__title[^'"]*\1[^>]*>([\s\S]*?)<\/h1>/i) || [])[2] || '') ||
+    cleanText(extractMetaContent(html, 'og:title') || fallback.title || '');
+  const dateText = cleanText((html.match(/<div[^>]+class=(['"])[^'"]*singleListingGrid__date[^'"]*\1[^>]*>[\s\S]*?<span>([\s\S]*?)<\/span>/i) || [])[2] || '');
+  const dateInfo = parseDc9MonthDay(dateText, today) || fallback.dateInfo || null;
+  const timeText = cleanText((html.match(/<p[^>]+class=(['"])[^'"]*listing-doors[^'"]*\1[^>]*>([\s\S]*?)<\/p>/i) || [])[2] || '');
+  const { doorTime, showTime, label } = extractDc9ShowAndDoorTimes(timeText);
+  return {
+    title,
+    url: normalizeDc9Href(url || fallback.url || ''),
+    dateInfo,
+    doorTime: doorTime || fallback.doorTime || null,
+    showTime: showTime || fallback.showTime || null,
+    timeLabel: label || fallback.timeLabel || '',
+    about: extractDc9AboutText(html) || fallback.about || '',
+    lineup: extractDc9Lineup(html),
+    imageUrl: extractDc9ImageUrl(html, url) || fallback.imageUrl || '',
+    ticketInfo: extractDc9TicketInfo(html, url)
+  };
+}
+
+function filterDc9EventsByLookahead(events, lookaheadDays) {
+  const days = Number.isFinite(Number(lookaheadDays)) ? Number(lookaheadDays) : TICKETMASTER_DEFAULT_DAYS;
+  return events.filter(event => isEventInLookahead(event?.start?.local, null, days));
+}
+
+function applyDc9Distance(events, latitude, longitude) {
+  const distance = distanceMiles(latitude, longitude, DC9_COORDS.latitude, DC9_COORDS.longitude);
+  if (!Number.isFinite(distance)) return events;
+  return events.map(event => ({ ...event, distance }));
+}
+
+async function fetchDc9Events({ latitude, longitude, allowCache = true, lookaheadDays }) {
+  const cacheKey = ['dc9', DC9_CACHE_VERSION];
+  if (allowCache) {
+    const cached = await safeReadCachedResponse(DC9_CACHE_COLLECTION, cacheKey, DC9_CACHE_TTL_MS);
+    if (cached && typeof cached.body === 'string') {
+      try {
+        const parsed = JSON.parse(cached.body);
+        if (parsed && Array.isArray(parsed.events)) {
+          const filtered = filterDc9EventsByLookahead(parsed.events, lookaheadDays);
+          return { events: applyDc9Distance(filtered, latitude, longitude), cached: true };
+        }
+      } catch (err) {
+        console.warn('Unable to parse cached DC9 events', err);
+      }
+    }
+  }
+
+  const response = await fetch(DC9_EVENTS_URL, {
+    headers: {
+      Accept: 'text/html,application/xhtml+xml',
+      'User-Agent': 'LiveShowsBot/1.0'
+    }
+  });
+  const html = await response.text();
+  if (!response.ok) {
+    const err = new Error(`DC9 request failed: ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const listings = parseDc9EventsPage(html, today);
+  const eventGroups = await Promise.all(
+    listings.map(async listing => {
+      try {
+        const detailResponse = await fetch(listing.url, {
+          headers: {
+            Accept: 'text/html,application/xhtml+xml',
+            'User-Agent': 'LiveShowsBot/1.0',
+            Referer: DC9_EVENTS_URL
+          }
+        });
+        const detailHtml = await detailResponse.text();
+        if (!detailResponse.ok) return [];
+        const detail = parseDc9DetailPage(detailHtml, listing.url, listing, today);
+        const event = buildDc9Event(listing, detail || {});
+        if (!event) return [];
+        return [event];
+      } catch (err) {
+        console.warn('Failed to fetch DC9 event detail page', listing.url, err?.message || err);
+        return [];
+      }
+    })
+  );
+  const events = eventGroups.flat();
+  await safeWriteCachedResponse(DC9_CACHE_COLLECTION, cacheKey, {
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      source: DC9_SOURCE_ID,
+      generatedAt: new Date().toISOString(),
+      events
+    }),
+    metadata: {
+      count: events.length,
+      cachedAt: new Date().toISOString()
+    }
+  });
+  const filtered = filterDc9EventsByLookahead(events, lookaheadDays);
+  return { events: applyDc9Distance(filtered, latitude, longitude), cached: false };
 }
 
 function normalizeSongbyrdHref(href) {
@@ -15691,7 +17597,7 @@ function filterWabaEventsByLookahead(events, lookaheadDays) {
   );
 }
 
-async function fetchWabaEvents(source, { allowCache = true, lookaheadDays } = {}) {
+async function fetchWabaEvents(source, { allowCache = true, lookaheadDays, skipImageProcessing = false } = {}) {
   const pageUrl = normalizeWabaHref(source?.config?.url || WABA_FUN_URL, WABA_FUN_URL);
   const cacheKey = ['waba', source?.id || WABA_SOURCE_ID, WABA_CACHE_VERSION];
   if (allowCache) {
@@ -15715,20 +17621,47 @@ async function fetchWabaEvents(source, { allowCache = true, lookaheadDays } = {}
     }
   }
 
-  const response = await fetch(pageUrl, {
-    headers: {
-      Accept: 'text/html,application/xhtml+xml',
-      'User-Agent': 'LiveShowsBot/1.0'
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), RSS_REQUEST_TIMEOUT_MS) : null;
+  let html = '';
+  try {
+    const response = await fetch(pageUrl, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'LiveShowsBot/1.0'
+      },
+      signal: controller?.signal
+    });
+    if (timeout) clearTimeout(timeout);
+    html = await response.text();
+    if (!response.ok) {
+      const err = new Error(`WABA request failed: ${response.status}`);
+      err.status = response.status;
+      throw err;
     }
-  });
-  const html = await response.text();
-  if (!response.ok) {
-    const err = new Error(`WABA request failed: ${response.status}`);
-    err.status = response.status;
+  } catch (err) {
+    if (timeout) clearTimeout(timeout);
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error('WABA request timed out');
+      timeoutErr.status = 408;
+      throw timeoutErr;
+    }
     throw err;
   }
 
-  const events = await enrichWabaEventsWithDetailTimes(parseWabaPage(html, source), source);
+  let events = await enrichWabaEventsWithDetailTimes(parseWabaPage(html, source), source);
+  if (!skipImageProcessing && events.length) {
+    events = await hydrateMissingEventImages(events, {
+      id: source?.id || WABA_SOURCE_ID,
+      config: {
+        ...(source?.config && typeof source.config === 'object' ? source.config : {}),
+        fetchImageFromLink: true,
+        missingImageFetchLimit: Number.isFinite(Number(source?.config?.missingImageFetchLimit))
+          ? Number(source.config.missingImageFetchLimit)
+          : 6
+      }
+    });
+  }
   await safeWriteCachedResponse(WABA_CACHE_COLLECTION, cacheKey, {
     status: 200,
     contentType: 'application/json',
@@ -16696,6 +18629,26 @@ function buildRssVenue(source, locationLabel) {
   return { name, address };
 }
 
+function isSmithsonianOnlineEvent({ title = '', summary = '', locationLabel = '', categories = [] } = {}) {
+  const categoryValues = Array.isArray(categories) ? categories : [];
+  if (categoryValues.some(value => /^(online|virtual|webinars?|webcasts?|livestream|streaming)$/i.test(cleanText(value)))) {
+    return true;
+  }
+
+  const location = cleanText(locationLabel);
+  if (/^(online|virtual|zoom|webinars?|webcasts?|livestream|streaming)$/i.test(location)) {
+    return true;
+  }
+
+  const normalizedText = normalizeFilterToken([title, summary, ...categoryValues].join(' '));
+  if (!normalizedText) return false;
+  return (
+    /\b(virtual|webinars?|webcasts?|livestream|streaming|zoom)\b/.test(normalizedText) ||
+    /\bonline\s+(event|program|talk|lecture|workshop|class|screening|tour|seminar|conversation)\b/.test(normalizedText) ||
+    /\b(watch|join|attend)\s+online\b/.test(normalizedText)
+  );
+}
+
 function extractRssCoordinates(itemXml) {
   const latRaw = extractXmlValue(itemXml, ['geo:lat', 'georss:lat']);
   const lonRaw = extractXmlValue(itemXml, ['geo:long', 'georss:long', 'georss:lon']);
@@ -17242,7 +19195,7 @@ async function fetchIcalEvents(source, context = {}, { limit } = {}) {
             ? parsed.events
             : null;
         if (cachedEvents) {
-          const refreshedEvents = await refreshCachedRssEventsIfNeeded(cachedEvents, source, cacheKeyParts);
+          const refreshedEvents = await refreshCachedRssEventsIfNeeded(cachedEvents, source, cacheKeyParts, normalizedContext);
           return { events: refreshedEvents, cached: true };
         }
       } catch {
@@ -18001,17 +19954,6 @@ function parseRssEventItem(itemXml, source, context) {
       locationLabel = parsedVenue;
     }
   }
-  const imageUrl =
-    extractXmlAttribute(itemXml, 'media:content', 'url') ||
-    extractXmlAttribute(itemXml, 'media:thumbnail', 'url') ||
-    extractXmlAttribute(itemXml, 'enclosure', 'url') ||
-    extractFirstImageUrl(descriptionRaw);
-
-  const alternateLinks = [];
-  const trumbaEalink = extractXmlValue(itemXml, ['x-trumba:ealink']);
-  if (trumbaEalink) alternateLinks.push(trumbaEalink);
-  const trumbaWeblink = extractXmlValue(itemXml, ['x-trumba:weblink']);
-  if (trumbaWeblink) alternateLinks.push(trumbaWeblink);
 
   let descriptionCategories = [];
   if (source?.id === 'smithsonian' || isAlexandriaParks) {
@@ -18027,6 +19969,27 @@ function parseRssEventItem(itemXml, source, context) {
         .filter(Boolean);
     }
   }
+
+  if (isSmithsonian && isSmithsonianOnlineEvent({
+    title,
+    summary,
+    locationLabel,
+    categories: [...categoryTags, ...descriptionCategories]
+  })) {
+    return null;
+  }
+
+  const imageUrl =
+    extractXmlAttribute(itemXml, 'media:content', 'url') ||
+    extractXmlAttribute(itemXml, 'media:thumbnail', 'url') ||
+    extractXmlAttribute(itemXml, 'enclosure', 'url') ||
+    extractFirstImageUrl(descriptionRaw);
+
+  const alternateLinks = [];
+  const trumbaEalink = extractXmlValue(itemXml, ['x-trumba:ealink']);
+  if (trumbaEalink) alternateLinks.push(trumbaEalink);
+  const trumbaWeblink = extractXmlValue(itemXml, ['x-trumba:weblink']);
+  if (trumbaWeblink) alternateLinks.push(trumbaWeblink);
 
   const categoriesForGenres =
     descriptionCategories.length > 0 ? descriptionCategories : categoryTags;
@@ -18132,7 +20095,9 @@ async function parseRssFeed(xml, source, context) {
     .filter(Boolean);
   events = applySourceEventFilters(events, source);
 
-  const shouldFetchImageFromLink = source?.config?.fetchImageFromLink !== false;
+  const shouldFetchImageFromLink =
+    context?.skipImageProcessing !== true &&
+    source?.config?.fetchImageFromLink !== false;
   if (shouldFetchImageFromLink) {
     const limit =
       Number.isFinite(source?.config?.imageFetchLimit) && Number(source.config.imageFetchLimit) >= 0
@@ -18199,7 +20164,7 @@ async function fetchRssEvents(source, context = {}, { limit } = {}) {
             ? parsed.events
             : null;
         if (cachedEvents) {
-          const refreshedEvents = await refreshCachedRssEventsIfNeeded(cachedEvents, source, cacheKeyParts);
+          const refreshedEvents = await refreshCachedRssEventsIfNeeded(cachedEvents, source, cacheKeyParts, normalizedContext);
           return { events: refreshedEvents, cached: true };
         }
       } catch {
@@ -18942,6 +20907,7 @@ const DATASOURCE_HANDLERS = {
       const result = await fetchDcImprovEvents({
         latitude: context.latitude,
         longitude: context.longitude,
+        skipImageProcessing: context.skipImageProcessing === true,
         allowCache: true
       });
       const filteredEvents = applyWeekdayCutoff(result.events);
@@ -19009,6 +20975,47 @@ const DATASOURCE_HANDLERS = {
       const result = await fetchSongbyrdEvents({
         latitude: context.latitude,
         longitude: context.longitude,
+        allowCache: true
+      });
+      const filteredEvents = applyWeekdayCutoff(result.events);
+      const orderedEvents = sortEventsByTimeAndDistance(filteredEvents);
+      const limit = context.limit || 25;
+      const previewEvents = orderedEvents.slice(0, limit);
+      return {
+        sourceId: source.id,
+        type: source.type,
+        ok: true,
+        status: 200,
+        fetchedAt: new Date().toISOString(),
+        preview: {
+          total: orderedEvents.length,
+          truncated: previewEvents.length < orderedEvents.length,
+          events: previewEvents,
+          segments: []
+        }
+      };
+    }
+  },
+  dc9: {
+    fetch: async (source, context) => {
+      const result = await fetchDc9Events({
+        latitude: context.latitude,
+        longitude: context.longitude,
+        lookaheadDays: context.lookaheadDays,
+        allowCache: true
+      });
+      const filteredEvents = applyWeekdayCutoff(result.events);
+      return {
+        events: filteredEvents,
+        cached: result.cached,
+        segments: []
+      };
+    },
+    preview: async (source, context) => {
+      const result = await fetchDc9Events({
+        latitude: context.latitude,
+        longitude: context.longitude,
+        lookaheadDays: context.lookaheadDays,
         allowCache: true
       });
       const filteredEvents = applyWeekdayCutoff(result.events);
@@ -19153,6 +21160,7 @@ const DATASOURCE_HANDLERS = {
     fetch: async (source, context) => {
       const result = await fetchWabaEvents(source, {
         lookaheadDays: context.lookaheadDays,
+        skipImageProcessing: context.skipImageProcessing === true,
         allowCache: true
       });
       const filteredEvents = applyWeekdayCutoff(result.events);
@@ -19342,6 +21350,43 @@ const DATASOURCE_HANDLERS = {
       };
     }
   },
+  citycastdc: {
+    fetch: async (source, context) => {
+      const result = await fetchCityCastDcEvents(source, {
+        lookaheadDays: context.lookaheadDays,
+        allowCache: true
+      });
+      const filteredEvents = applyWeekdayCutoff(result.events);
+      return {
+        events: filteredEvents,
+        cached: result.cached,
+        segments: []
+      };
+    },
+    preview: async (source, context) => {
+      const result = await fetchCityCastDcEvents(source, {
+        lookaheadDays: context.lookaheadDays,
+        allowCache: true
+      });
+      const filteredEvents = applyWeekdayCutoff(result.events);
+      const orderedEvents = sortEventsByTimeAndDistance(filteredEvents);
+      const limit = context.limit || 25;
+      const previewEvents = orderedEvents.slice(0, limit);
+      return {
+        sourceId: source.id,
+        type: source.type,
+        ok: true,
+        status: 200,
+        fetchedAt: new Date().toISOString(),
+        preview: {
+          total: orderedEvents.length,
+          truncated: previewEvents.length < orderedEvents.length,
+          events: previewEvents,
+          segments: []
+        }
+      };
+    }
+  },
   dprevents: {
     fetch: async (source, context) => {
       const result = await fetchDprEvents(source, {
@@ -19383,6 +21428,7 @@ const DATASOURCE_HANDLERS = {
     fetch: async (source, context) => {
       const result = await fetchMontgomeryParksEvents(source, {
         lookaheadDays: context.lookaheadDays,
+        skipImageProcessing: context.skipImageProcessing === true,
         allowCache: true
       });
       const filteredEvents = applyWeekdayCutoff(result.events);
@@ -19420,6 +21466,7 @@ const DATASOURCE_HANDLERS = {
     fetch: async (source, context) => {
       const result = await fetchPgParksEvents(source, {
         lookaheadDays: context.lookaheadDays,
+        skipImageProcessing: context.skipImageProcessing === true,
         allowCache: true
       });
       const filteredEvents = applyWeekdayCutoff(result.events);
@@ -19681,6 +21728,8 @@ const DATASOURCE_HANDLERS = {
 
 async function runDatasourceFetch(source, context) {
   const handler = DATASOURCE_HANDLERS[source.type];
+  const sourceId = normalizeDatasourceId(source?.id || '');
+  const startedAt = Date.now();
   if (!handler || typeof handler.fetch !== 'function') {
     return {
       source,
@@ -19698,21 +21747,40 @@ async function runDatasourceFetch(source, context) {
   }
   try {
     const timeoutMs = resolveDatasourceFetchTimeoutMs(source);
+    console.info('[shows-refresh] source start', {
+      sourceId,
+      type: source?.type || '',
+      timeoutMs,
+      skipImageProcessing: context?.skipImageProcessing === true
+    });
+    let timeoutHandle = null;
     const timeoutPromise = new Promise((_, reject) => {
       const err = new Error(`Datasource fetch timed out after ${timeoutMs}ms`);
       err.status = 504;
-      setTimeout(() => reject(err), timeoutMs);
+      timeoutHandle = setTimeout(() => reject(err), timeoutMs);
     });
-    const fetched = await Promise.race([
-      handler.fetch(source, context),
-      timeoutPromise
-    ]);
+    let fetched;
+    try {
+      fetched = await Promise.race([
+        handler.fetch(source, context),
+        timeoutPromise
+      ]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
     const events = Array.isArray(fetched.events) ? fetched.events : [];
     await enrichEventsWithExternalMusicGenres(events, {
       enabled: source?.config?.enrichMusicGenres !== false
     });
-    await hydrateMissingEventImages(events, source);
-    await cacheAllEventImages(events);
+    if (!context?.skipImageProcessing) {
+      await hydrateMissingEventImages(events, source);
+      await cacheAllEventImages(events);
+    }
+    console.info('[shows-refresh] source complete', {
+      sourceId,
+      total: events.length,
+      elapsedMs: Date.now() - startedAt
+    });
     return {
       source,
       ok: true,
@@ -19728,6 +21796,12 @@ async function runDatasourceFetch(source, context) {
       }
     };
   } catch (err) {
+    console.warn('[shows-refresh] source failed', {
+      sourceId,
+      status: typeof err?.status === 'number' ? err.status : null,
+      error: err?.message || 'Request failed',
+      elapsedMs: Date.now() - startedAt
+    });
     return {
       source,
       ok: false,
@@ -19946,6 +22020,7 @@ app.post('/api/cache/clear', async (req, res) => {
   try {
     const deleted = await clearRssCacheByFeed(feedUrl);
     clearInMemoryCache();
+    invalidateReviewQueueCaches();
     res.json({ status: 'ok', feedUrl, deleted });
   } catch (err) {
     console.error('Failed to clear RSS cache', err);
@@ -19965,6 +22040,7 @@ app.post('/api/cache/clear-all', async (req, res) => {
       songbyrd: 0,
       soundgarden: 0,
       songkickvenue: 0,
+      citycastdc: 0,
       communico: 0,
       youtube: 0,
       images: 0,
@@ -19975,9 +22051,11 @@ app.post('/api/cache/clear-all', async (req, res) => {
       cleared.ticketmaster = await clearFirestoreCollection(db, TICKETMASTER_CACHE_COLLECTION);
       cleared.dcimprov = await clearFirestoreCollection(db, DC_IMPROV_CACHE_COLLECTION);
       cleared.blackcat = await clearFirestoreCollection(db, BLACK_CAT_CACHE_COLLECTION);
+      cleared.dc9 = await clearFirestoreCollection(db, DC9_CACHE_COLLECTION);
       cleared.songbyrd = await clearFirestoreCollection(db, SONG_BYRD_CACHE_COLLECTION);
       cleared.soundgarden = await clearFirestoreCollection(db, SOUND_GARDEN_CACHE_COLLECTION);
       cleared.songkickvenue = await clearFirestoreCollection(db, SONGKICK_VENUE_CACHE_COLLECTION);
+      cleared.citycastdc = await clearFirestoreCollection(db, CITY_CAST_DC_CACHE_COLLECTION);
       cleared.communico = await clearFirestoreCollection(db, COMMUNICO_CACHE_COLLECTION);
       cleared.youtube = await clearFirestoreCollection(db, YOUTUBE_SEARCH_CACHE_COLLECTION);
       cleared.images = await clearFirestoreCollection(db, IMAGE_CACHE_COLLECTION);
@@ -20252,101 +22330,79 @@ app.get('/api/review/show-events', async (req, res) => {
     const maxResults = normalizePositiveInteger(req.query.limit, { min: 1, max: Number.MAX_SAFE_INTEGER });
     const offset = Math.max(0, Number.isFinite(Number(req.query.offset)) ? Math.floor(Number(req.query.offset)) : 0);
     const includeDuplicateMatches = parseBooleanQuery(req.query.includeDuplicates);
-    const cacheKey = buildReviewQueueCacheKey({
-      status,
-      sourceId,
-      category,
-      q,
-      lookaheadDays,
-      limit: maxResults,
-      offset,
-      includeDuplicateMatches
-    });
-    const now = Date.now();
-    const cached = reviewQueueResponseCache.get(cacheKey);
-    if (cached && now - cached.cachedAt < REVIEW_QUEUE_CACHE_TTL_MS) {
-      res.json(cached.payload);
-      return;
+    const startedAt = Date.now();
+    let events;
+    let sourceCounts;
+    if (sourceId && !maxResults && status !== 'excluded') {
+      const baseEvents = await listShowEventsForReview({
+        status,
+        category,
+        q,
+        lookaheadDays,
+        includeDuplicateMatches
+      });
+      sourceCounts = buildReviewSourceCounts(baseEvents);
+      events = filterReviewQueueItemsForRequest(baseEvents, {
+        status,
+        sourceId,
+        category,
+        q
+      });
+    } else {
+      events = await listShowEventsForReview({
+        status,
+        sourceId,
+        category,
+        q,
+        lookaheadDays,
+        limit: maxResults,
+        offset,
+        includeDuplicateMatches
+      });
+      sourceCounts = buildReviewSourceCounts(events);
     }
-
-    let responsePromise = reviewQueueResponsePromises.get(cacheKey);
-    if (!responsePromise) {
-      const cacheEpoch = reviewQueueCacheEpoch;
-      responsePromise = (async () => {
-        const startedAt = Date.now();
-        let events;
-        let sourceCounts;
-        if (sourceId && !maxResults && status !== 'excluded') {
-          const baseEvents = await listShowEventsForReview({
-            status,
-            category,
-            q,
-            lookaheadDays,
-            includeDuplicateMatches
-          });
-          sourceCounts = buildReviewSourceCounts(baseEvents);
-          events = filterReviewQueueItemsForRequest(baseEvents, {
-            status,
-            sourceId,
-            category,
-            q
-          });
-        } else {
-          events = await listShowEventsForReview({
-            status,
-            sourceId,
-            category,
-            q,
-            lookaheadDays,
-            limit: maxResults,
-            offset,
-            includeDuplicateMatches
-          });
-          sourceCounts = buildReviewSourceCounts(events);
-        }
-        const payload = {
-          status: 'ok',
-          reviewRequired: true,
-          sourceCounts,
-          events,
-          limit: Number.isFinite(maxResults) ? maxResults : null,
-          offset,
-          hasMore: Boolean(events?.hasMore)
-        };
-        const elapsedMs = Date.now() - startedAt;
-        if (elapsedMs > 750) {
-          console.info('Review queue request timing', {
-            status,
-            sourceId,
-            category,
-            q,
-            lookaheadDays,
-            limit: maxResults || null,
-            offset,
-            includeDuplicateMatches,
-            count: Array.isArray(events) ? events.length : 0,
-            hasMore: payload.hasMore,
-            timings: events?.timings || null,
-            elapsedMs
-          });
-        }
-        if (cacheEpoch === reviewQueueCacheEpoch) {
-          reviewQueueResponseCache.set(cacheKey, {
-            cachedAt: Date.now(),
-            payload
-          });
-        }
-        return payload;
-      })();
-      reviewQueueResponsePromises.set(cacheKey, responsePromise);
-      responsePromise.finally(() => {
-        if (reviewQueueResponsePromises.get(cacheKey) === responsePromise) {
-          reviewQueueResponsePromises.delete(cacheKey);
-        }
+    let missingImageCount = null;
+    const normalizedStatus = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    if (normalizedStatus === 'pending' || normalizedStatus === 'image-missing' || normalizedStatus === 'all') {
+      const imageMissingEvents = await listShowEventsForReview({
+        status: 'image-missing',
+        sourceId,
+        category,
+        q,
+        lookaheadDays,
+        countOnly: true,
+        includeDuplicateMatches: false
+      });
+      missingImageCount = Array.isArray(imageMissingEvents) ? imageMissingEvents.length : null;
+    }
+    const payload = {
+      status: 'ok',
+      reviewRequired: true,
+      sourceCounts,
+      events,
+      missingImageCount,
+      limit: Number.isFinite(maxResults) ? maxResults : null,
+      offset,
+      hasMore: Boolean(events?.hasMore)
+    };
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs > 750) {
+      console.info('Review queue request timing', {
+        status,
+        sourceId,
+        category,
+        q,
+        lookaheadDays,
+        limit: maxResults || null,
+        offset,
+        includeDuplicateMatches,
+        count: Array.isArray(events) ? events.length : 0,
+        hasMore: payload.hasMore,
+        timings: events?.timings || null,
+        elapsedMs
       });
     }
-
-    res.json(await responsePromise);
+    res.json(payload);
   } catch (err) {
     res.status(typeof err?.status === 'number' ? err.status : 500).json({
       error: err?.code || 'review_list_failed',
@@ -20484,6 +22540,19 @@ app.get('/api/review/show-events/:id/image-candidates', async (req, res) => {
   }
 });
 
+app.post('/api/review/show-events/:id/image-candidates', async (req, res) => {
+  try {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = await getShowEventReviewImageCandidatesFromPayload(req.params.id, payload);
+    res.json({ status: 'ok', ...result });
+  } catch (err) {
+    res.status(typeof err?.status === 'number' ? err.status : 500).json({
+      error: err?.code || 'review_image_candidates_failed',
+      message: err?.message || 'Unable to load image candidates'
+    });
+  }
+});
+
 app.post('/api/review/show-events/:id/categories', async (req, res) => {
   try {
     const payload = req.body && typeof req.body === 'object' ? req.body : {};
@@ -20528,7 +22597,7 @@ app.get('/api/shows-bootstrap', async (req, res) => {
     startDate: dateRangeStart,
     endDate: dateRangeEnd
   };
-  const latestPayload = forceRefresh ? null : getLatestShowsPayload(context);
+  const latestPayload = getLatestShowsPayload(context);
   if (Array.isArray(latestPayload?.events) && latestPayload.events.length) {
     const servedPayload = buildServedShowsPayload(latestPayload, context, {
       source: 'bootstrap',
@@ -20538,21 +22607,22 @@ app.get('/api/shows-bootstrap', async (req, res) => {
       startDate: dateRangeStart,
       endDate: dateRangeEnd
     }).slice(0, limit);
-    if (shouldBackgroundRefreshLatestShowsPayload(latestPayload, bootstrapEvents)) {
-      refreshStoredShowsFeedInBackground(context, 'bootstrap-latest-payload', { forcePersist: true });
+    if (forceRefresh || shouldBackgroundRefreshLatestShowsPayload(latestPayload, bootstrapEvents)) {
+      refreshStoredShowsFeedInBackground(context, forceRefresh ? 'bootstrap-force-refresh-latest-payload' : 'bootstrap-latest-payload', {
+        forcePersist: true
+      });
     }
     if (bootstrapEvents.length) {
       setPublicShowsCacheHeaders(res);
       return res.json({
         ...servedPayload,
-        events: bootstrapEvents
+        events: bootstrapEvents,
+        ...(forceRefresh ? { refreshQueued: true } : {})
       });
     }
   }
 
-  const snapshotResult = forceRefresh
-    ? { payload: null, context: null }
-    : await readReusableShowsPayloadSnapshot(context);
+  const snapshotResult = await readReusableShowsPayloadSnapshot(context);
   const snapshotPayload = snapshotResult.payload;
   if (Array.isArray(snapshotPayload?.events) && snapshotPayload.events.length) {
     if (snapshotResult.context) {
@@ -20567,37 +22637,38 @@ app.get('/api/shows-bootstrap', async (req, res) => {
       startDate: dateRangeStart,
       endDate: dateRangeEnd
     }).slice(0, limit);
-    if (shouldBackgroundRefreshLatestShowsPayload(snapshotPayload, servedPayload?.events || [])) {
-      refreshStoredShowsFeedInBackground(context, 'bootstrap-snapshot-payload', { forcePersist: true });
+    if (forceRefresh || shouldBackgroundRefreshLatestShowsPayload(snapshotPayload, servedPayload?.events || [])) {
+      refreshStoredShowsFeedInBackground(context, forceRefresh ? 'bootstrap-force-refresh-snapshot-payload' : 'bootstrap-snapshot-payload', {
+        forcePersist: true
+      });
     }
     if (bootstrapEvents.length) {
       setPublicShowsCacheHeaders(res);
       return res.json({
         ...servedPayload,
-        events: bootstrapEvents
+        events: bootstrapEvents,
+        ...(forceRefresh ? { refreshQueued: true } : {})
       });
     }
   }
 
-  const storedPayload = await buildCurrentStoredShowsPayload(context, {
-    source: 'bootstrap',
-    cached: true,
-    readTimeoutMs: PUBLIC_SHOWS_BOOTSTRAP_STORED_READ_TIMEOUT_MS,
-    limit: Math.max(limit, 20)
+  const storedFallbackPayload = await buildDmvSparseStoredFallbackPayload(dateRangeContext, {
+    readTimeoutMs: PUBLIC_SHOWS_STORED_READ_TIMEOUT_MS
   });
-  if (Array.isArray(storedPayload?.events) && storedPayload.events.length) {
-    const bootstrapEvents = filterShowEventsForDateRange(storedPayload.events, {
+  if (Array.isArray(storedFallbackPayload?.events) && storedFallbackPayload.events.length) {
+    const bootstrapEvents = filterShowEventsForDateRange(storedFallbackPayload.events, {
       startDate: dateRangeStart,
       endDate: dateRangeEnd
     }).slice(0, limit);
     if (bootstrapEvents.length) {
-      if (shouldBackgroundRefreshLatestShowsPayload(storedPayload, bootstrapEvents)) {
-        refreshStoredShowsFeedInBackground(context, 'bootstrap-stored-payload', { forcePersist: true });
-      }
+      latestShowsPayloads.set(buildShowsRefreshKey(context), storedFallbackPayload);
       setPublicShowsCacheHeaders(res);
+      refreshStoredShowsFeedInBackground(context, 'bootstrap-stored-fallback', { forcePersist: true });
       return res.json({
-        ...storedPayload,
-        events: bootstrapEvents
+        ...storedFallbackPayload,
+        source: 'bootstrap-stored-fallback',
+        events: bootstrapEvents,
+        refreshQueued: true
       });
     }
   }
@@ -20706,16 +22777,18 @@ app.get('/api/shows/refresh/status', requireApprovalQueueAdmin, async (req, res)
   const status = await readShowsRefreshStatus();
   res.set('Cache-Control', 'no-store');
   if (!status) {
+    const approvedEventCount = await countApprovedStoredShowEvents();
     return res.json({
       status: 'unknown',
       updatedAt: null,
       message: 'No refresh status has been recorded yet.',
+      approvedEventCount: Number.isFinite(Number(approvedEventCount)) ? Number(approvedEventCount) : null,
       sources: [],
       failedSources: [],
       alertSources: []
     });
   }
-  return res.json(status);
+  return res.json(await attachApprovedStoredEventCountToRefreshStatus(status));
 });
 
 app.get('/api/shows', async (req, res) => {
@@ -20744,19 +22817,10 @@ app.get('/api/shows', async (req, res) => {
 
   const latestPayload = getLatestShowsPayload(context);
   if (Array.isArray(latestPayload?.events) && latestPayload.events.length) {
-    let servedPayload = buildServedShowsPayload(latestPayload, context, {
+    const servedPayload = buildServedShowsPayload(latestPayload, context, {
       source: 'stored',
       cached: true
     });
-    if (shouldUseDmvSparseStoredFallback(context, servedPayload?.events?.length || 0)) {
-      const fallbackPayload = await buildDmvSparseStoredFallbackPayload(context);
-      if (
-        Array.isArray(fallbackPayload?.events) &&
-        fallbackPayload.events.length > (servedPayload?.events?.length || 0)
-      ) {
-        servedPayload = fallbackPayload;
-      }
-    }
     if (Array.isArray(servedPayload?.events) && servedPayload.events.length) {
       if (forceRefresh || shouldBackgroundRefreshLatestShowsPayload(latestPayload, servedPayload.events || [])) {
         refreshStoredShowsFeedInBackground(context, forceRefresh ? 'shows-force-refresh' : 'shows-latest-payload', {
@@ -20781,16 +22845,7 @@ app.get('/api/shows', async (req, res) => {
       source: 'stored',
       cached: true
     });
-    let servedSnapshotPayload = servedPayload;
-    if (shouldUseDmvSparseStoredFallback(context, servedSnapshotPayload?.events?.length || 0)) {
-      const fallbackPayload = await buildDmvSparseStoredFallbackPayload(context);
-      if (
-        Array.isArray(fallbackPayload?.events) &&
-        fallbackPayload.events.length > (servedSnapshotPayload?.events?.length || 0)
-      ) {
-        servedSnapshotPayload = fallbackPayload;
-      }
-    }
+    const servedSnapshotPayload = servedPayload;
     latestShowsPayloads.set(buildShowsRefreshKey(context), servedSnapshotPayload);
     if (Array.isArray(servedSnapshotPayload?.events) && servedSnapshotPayload.events.length) {
       if (forceRefresh || shouldBackgroundRefreshLatestShowsPayload(snapshotPayload, servedPayload.events || [])) {
@@ -20806,67 +22861,27 @@ app.get('/api/shows', async (req, res) => {
     }
   }
 
-  const storedPayload = await buildCurrentStoredShowsPayload(context, {
-    source: 'stored',
-    cached: true,
-    readTimeoutMs: forceRefresh ? PUBLIC_SHOWS_REFRESH_WAIT_TIMEOUT_MS : PUBLIC_SHOWS_STORED_READ_TIMEOUT_MS
-  });
-  if (Array.isArray(storedPayload?.events) && storedPayload.events.length) {
-    let servedStoredPayload = storedPayload;
-    if (shouldUseDmvSparseStoredFallback(context, storedPayload.events.length)) {
-      const fallbackPayload = await buildDmvSparseStoredFallbackPayload(context);
-      if (
-        Array.isArray(fallbackPayload?.events) &&
-        fallbackPayload.events.length > storedPayload.events.length
-      ) {
-        servedStoredPayload = fallbackPayload;
-      }
-    }
-    latestShowsPayloads.set(buildShowsRefreshKey(context), servedStoredPayload);
-    void writeShowsPayloadSnapshot(context, servedStoredPayload);
-    if (forceRefresh || shouldBackgroundRefreshLatestShowsPayload(storedPayload, servedStoredPayload.events || [])) {
-      refreshStoredShowsFeedInBackground(context, forceRefresh ? 'shows-force-refresh-stored-payload' : 'shows-stored-payload', {
+  if (shouldUseDmvSparseStoredFallback(context, 0)) {
+    const storedFallbackPayload = await buildDmvSparseStoredFallbackPayload(context, {
+      readTimeoutMs: PUBLIC_SHOWS_STORED_READ_TIMEOUT_MS
+    });
+    if (Array.isArray(storedFallbackPayload?.events) && storedFallbackPayload.events.length) {
+      latestShowsPayloads.set(buildShowsRefreshKey(context), storedFallbackPayload);
+      refreshStoredShowsFeedInBackground(context, forceRefresh ? 'shows-force-refresh-stored-fallback' : 'shows-stored-fallback', {
         forcePersist: true
       });
-    }
-    setPublicShowsCacheHeaders(res);
-    return res.json({
-      ...servedStoredPayload,
-      ...(forceRefresh ? { refreshQueued: true } : {})
-    });
-  }
-
-  if (forceRefresh) {
-    const refreshedPayload = await refreshStoredShowsFeedForPublicMiss(context, 'shows-force-refresh-miss');
-    if (Array.isArray(refreshedPayload?.events) && refreshedPayload.events.length) {
-      let servedPayload = buildServedShowsPayload(refreshedPayload, context, {
-        source: refreshedPayload.source || 'live',
-        cached: false
+      setPublicShowsCacheHeaders(res);
+      return res.json({
+        ...storedFallbackPayload,
+        refreshQueued: true
       });
-      if (shouldUseDmvSparseStoredFallback(context, servedPayload?.events?.length || 0)) {
-        const fallbackPayload = await buildDmvSparseStoredFallbackPayload(context);
-        if (
-          Array.isArray(fallbackPayload?.events) &&
-          fallbackPayload.events.length > (servedPayload?.events?.length || 0)
-        ) {
-          servedPayload = fallbackPayload;
-        }
-      }
-      if (Array.isArray(servedPayload?.events) && servedPayload.events.length) {
-        latestShowsPayloads.set(buildShowsRefreshKey(context), servedPayload);
-        setPublicShowsCacheHeaders(res);
-        return res.json(servedPayload);
-      }
     }
-  }
 
-  if (shouldUseDmvSparseStoredFallback(context, 0)) {
     const staticFallbackPayload = buildStaticDmvShowsFallbackPayload(context, {
       source: 'static-dmv-fallback',
       cached: true
     });
     if (Array.isArray(staticFallbackPayload?.events) && staticFallbackPayload.events.length) {
-      latestShowsPayloads.set(buildShowsRefreshKey(context), staticFallbackPayload);
       refreshStoredShowsFeedInBackground(context, forceRefresh ? 'shows-force-refresh-static-fallback' : 'shows-static-fallback', {
         forcePersist: true
       });
@@ -21177,6 +23192,9 @@ if (require.main === module) {
   module.exports.parseRssFeed = parseRssFeed;
   module.exports.parseRssEventItem = parseRssEventItem;
   module.exports.parseBlackCatSchedule = parseBlackCatSchedule;
+  module.exports.parseDc9EventsPage = parseDc9EventsPage;
+  module.exports.parseDc9DetailPage = parseDc9DetailPage;
+  module.exports.buildDc9Event = buildDc9Event;
   module.exports.extractSoundGardenEventLinks = extractSoundGardenEventLinks;
   module.exports.extractSoundGardenImageFromHtml = extractSoundGardenImageFromHtml;
   module.exports.extractSoundGardenProductLinks = extractSoundGardenProductLinks;
@@ -21201,6 +23219,8 @@ if (require.main === module) {
   module.exports.parseRhizomeEventDate = parseRhizomeEventDate;
   module.exports.parsePoliticsAndProseMonthPage = parsePoliticsAndProseMonthPage;
   module.exports.parseGlenEchoPage = parseGlenEchoPage;
+  module.exports.parseCityCastDcEventsPage = parseCityCastDcEventsPage;
+  module.exports.fetchCityCastDcEvents = fetchCityCastDcEvents;
   module.exports.extractDprCampaignLinks = extractDprCampaignLinks;
   module.exports.parseDprSplashCampaign = parseDprSplashCampaign;
   module.exports.expandTheatreWashingtonEvents = expandTheatreWashingtonEvents;
@@ -21222,6 +23242,7 @@ if (require.main === module) {
   module.exports.predictCategoryLearningLabels = predictCategoryLearningLabels;
   module.exports.getLearnedShowCategoryLabels = getLearnedShowCategoryLabels;
   module.exports.normalizeShowEventGenres = normalizeShowEventGenres;
+  module.exports.normalizeShowsDefaultSettings = normalizeShowsDefaultSettings;
   module.exports.listUnmappedStoredShowGenres = listUnmappedStoredShowGenres;
   module.exports.applySourceEventFilters = applySourceEventFilters;
   module.exports.applyAutomaticRecurringByName = applyAutomaticRecurringByName;
@@ -21240,16 +23261,24 @@ if (require.main === module) {
   module.exports.applyAutomaticRecurringByNameToReviewItems = applyAutomaticRecurringByNameToReviewItems;
   module.exports.listShowEventsForReview = listShowEventsForReview;
   module.exports.listReviewSourceCounts = listReviewSourceCounts;
+  module.exports.backfillReviewQueueMaterializedFields = backfillReviewQueueMaterializedFields;
+  module.exports.repairCityCastDcStoredTitles = repairCityCastDcStoredTitles;
   module.exports.updateShowEventReviewStatus = updateShowEventReviewStatus;
   module.exports.approveRecurringSeries = approveRecurringSeries;
   module.exports.excludeShowEventTitle = excludeShowEventTitle;
   module.exports.updateShowEventReviewCategories = updateShowEventReviewCategories;
   module.exports.updateShowEventReviewImage = updateShowEventReviewImage;
+  module.exports.getShowEventReviewImageCandidatesFromPayload = getShowEventReviewImageCandidatesFromPayload;
   module.exports.hydrateMissingEventImages = hydrateMissingEventImages;
   module.exports.cacheImageEntries = cacheImageEntries;
   module.exports.cacheAllEventImages = cacheAllEventImages;
   module.exports.buildClientDiagnosticLog = buildClientDiagnosticLog;
   module.exports.eventNeedsImageUpgrade = eventNeedsImageUpgrade;
+  module.exports.countApprovedStoredShowEvents = countApprovedStoredShowEvents;
+  module.exports.countApprovedStoredShowEventsForSource = countApprovedStoredShowEventsForSource;
+  module.exports.countApprovedStoredShowEventsBySource = countApprovedStoredShowEventsBySource;
+  module.exports.buildRefreshEventKeys = buildRefreshEventKeys;
+  module.exports.getPreviousRefreshEventKeys = getPreviousRefreshEventKeys;
   module.exports.refreshStoredShowsFeed = refreshStoredShowsFeed;
   module.exports.startStoredShowsRefreshTimer = startStoredShowsRefreshTimer;
   module.exports.buildPublicShowsPayloadFromStoredEvents = buildPublicShowsPayloadFromStoredEvents;
@@ -21260,6 +23289,9 @@ if (require.main === module) {
   module.exports.parseRssFeed = parseRssFeed;
   module.exports.parseRssEventItem = parseRssEventItem;
   module.exports.parseBlackCatSchedule = parseBlackCatSchedule;
+  module.exports.parseDc9EventsPage = parseDc9EventsPage;
+  module.exports.parseDc9DetailPage = parseDc9DetailPage;
+  module.exports.buildDc9Event = buildDc9Event;
   module.exports.extractSoundGardenEventLinks = extractSoundGardenEventLinks;
   module.exports.extractSoundGardenImageFromHtml = extractSoundGardenImageFromHtml;
   module.exports.extractSoundGardenProductLinks = extractSoundGardenProductLinks;
@@ -21284,6 +23316,8 @@ if (require.main === module) {
   module.exports.parseRhizomeEventDate = parseRhizomeEventDate;
   module.exports.parsePoliticsAndProseMonthPage = parsePoliticsAndProseMonthPage;
   module.exports.parseGlenEchoPage = parseGlenEchoPage;
+  module.exports.parseCityCastDcEventsPage = parseCityCastDcEventsPage;
+  module.exports.fetchCityCastDcEvents = fetchCityCastDcEvents;
   module.exports.extractDprCampaignLinks = extractDprCampaignLinks;
   module.exports.parseDprSplashCampaign = parseDprSplashCampaign;
   module.exports.expandTheatreWashingtonEvents = expandTheatreWashingtonEvents;
@@ -21305,6 +23339,7 @@ if (require.main === module) {
   module.exports.predictCategoryLearningLabels = predictCategoryLearningLabels;
   module.exports.getLearnedShowCategoryLabels = getLearnedShowCategoryLabels;
   module.exports.normalizeShowEventGenres = normalizeShowEventGenres;
+  module.exports.normalizeShowsDefaultSettings = normalizeShowsDefaultSettings;
   module.exports.listUnmappedStoredShowGenres = listUnmappedStoredShowGenres;
   module.exports.applySourceEventFilters = applySourceEventFilters;
   module.exports.applyAutomaticRecurringByName = applyAutomaticRecurringByName;
@@ -21323,16 +23358,24 @@ if (require.main === module) {
   module.exports.applyAutomaticRecurringByNameToReviewItems = applyAutomaticRecurringByNameToReviewItems;
   module.exports.listShowEventsForReview = listShowEventsForReview;
   module.exports.listReviewSourceCounts = listReviewSourceCounts;
+  module.exports.backfillReviewQueueMaterializedFields = backfillReviewQueueMaterializedFields;
+  module.exports.repairCityCastDcStoredTitles = repairCityCastDcStoredTitles;
   module.exports.updateShowEventReviewStatus = updateShowEventReviewStatus;
   module.exports.approveRecurringSeries = approveRecurringSeries;
   module.exports.excludeShowEventTitle = excludeShowEventTitle;
   module.exports.updateShowEventReviewCategories = updateShowEventReviewCategories;
   module.exports.updateShowEventReviewImage = updateShowEventReviewImage;
+  module.exports.getShowEventReviewImageCandidatesFromPayload = getShowEventReviewImageCandidatesFromPayload;
   module.exports.hydrateMissingEventImages = hydrateMissingEventImages;
   module.exports.cacheImageEntries = cacheImageEntries;
   module.exports.cacheAllEventImages = cacheAllEventImages;
   module.exports.buildClientDiagnosticLog = buildClientDiagnosticLog;
   module.exports.eventNeedsImageUpgrade = eventNeedsImageUpgrade;
+  module.exports.countApprovedStoredShowEvents = countApprovedStoredShowEvents;
+  module.exports.countApprovedStoredShowEventsForSource = countApprovedStoredShowEventsForSource;
+  module.exports.countApprovedStoredShowEventsBySource = countApprovedStoredShowEventsBySource;
+  module.exports.buildRefreshEventKeys = buildRefreshEventKeys;
+  module.exports.getPreviousRefreshEventKeys = getPreviousRefreshEventKeys;
   module.exports.refreshStoredShowsFeed = refreshStoredShowsFeed;
   module.exports.startStoredShowsRefreshTimer = startStoredShowsRefreshTimer;
   module.exports.buildPublicShowsPayloadFromStoredEvents = buildPublicShowsPayloadFromStoredEvents;

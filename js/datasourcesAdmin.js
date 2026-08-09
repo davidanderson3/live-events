@@ -24,9 +24,10 @@ const DEFAULT_COORDS = { lat: 38.9055, lon: -77.0422 };
 const DEFAULT_RADIUS = 50;
 const DEFAULT_DAYS = 14;
 const REVIEW_QUEUE_PAGE_SIZE = 10;
+const REVIEW_QUEUE_ACTIVE_PAGE_SIZE = 50;
 const REVIEW_QUEUE_MAX_LOOKAHEAD_DAYS = 100;
 const REVIEW_QUEUE_DEFAULT_DAYS = REVIEW_QUEUE_MAX_LOOKAHEAD_DAYS;
-const REVIEW_QUEUE_AUTO_LOAD_STATUSES = new Set(['pending', 'all', 'image-missing']);
+const REVIEW_QUEUE_AUTO_LOAD_STATUSES = new Set(['pending', 'image-missing']);
 const TARGET_IMAGE_RATIO = '4_3';
 const TARGET_IMAGE_WIDTH = 305;
 const TARGET_IMAGE_HEIGHT = 225;
@@ -195,6 +196,21 @@ const MEDIA_LINK_CATEGORY_LABELS = new Set([
   'Classical & Opera',
   'Metal & Punk'
 ]);
+const MUSIC_ACT_SOURCE_IDS = new Set([
+  'blackcat',
+  'dc9',
+  'rhizomedc',
+  'songbyrd',
+  'soundgarden'
+]);
+function isMusicEventSegment(event) {
+  const segment = typeof event?.segment === 'string' ? event.segment.trim().toLowerCase() : '';
+  return segment.includes('music');
+}
+function isCityCastTunesEvent(event) {
+  const sourceId = typeof event?.source === 'string' ? event.source.trim().toLowerCase() : '';
+  return sourceId === 'citycastdc' && /\btunes\b/i.test(getEventTitle(event));
+}
 const CATEGORY_LABEL_ALIASES = new Map([
   ['family & kids', 'Kids & Family'],
   ['kids & family', 'Kids & Family']
@@ -258,11 +274,15 @@ const state = {
   pendingReviewQueuePayload: null,
   reviewQueueBaseCache: new Map(),
   reviewQueueLastAppliedParams: null,
+  reviewQueueLoaded: false,
+  reviewQueueMissingImageCount: null,
+  reviewQueueError: null,
   reviewQueueLimit: REVIEW_QUEUE_PAGE_SIZE,
   reviewQueueOffset: 0,
   reviewQueueHasMore: false,
   defaultCategoryOptions: [...DEFAULT_CATEGORY_OPTIONS],
   defaultCategoryFilters: new Set(DEFAULT_CATEGORY_OPTIONS),
+  deletedCategoryOptions: new Set(),
   categoryMappings: {},
   confirmedCategoryMappings: {},
   ignoredGenres: [],
@@ -335,6 +355,16 @@ function resolveShowsSettingsEndpoint() {
   if (!base) return '/api/shows/settings';
   if (base.endsWith('/api')) return `${base}/shows/settings`;
   return `${base}/api/shows/settings`;
+}
+
+function buildShowsSettingsUrl(params = {}) {
+  const url = new URL(endpoints.settings, window.location.href);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  return url.toString();
 }
 
 function resolveRefreshStatusEndpoint() {
@@ -420,6 +450,7 @@ function cacheElements() {
   elements.reviewStatus = document.getElementById('reviewStatus');
   elements.reviewOutput = document.getElementById('reviewOutput');
   elements.reviewLabel = document.getElementById('reviewLabel');
+  elements.reviewMissingImageCount = document.getElementById('reviewMissingImageCount');
   elements.clearCacheBtn = document.getElementById('cacheClearBtn');
   elements.defaultCategoryStatus = document.getElementById('defaultCategoryStatus');
   elements.defaultCategoryOptions = document.getElementById('defaultCategoryOptions');
@@ -655,7 +686,7 @@ function syncShowsSettingsControlState() {
   syncReviewFilterControlsForStatus();
 }
 
-function syncReviewFilterControlsForStatus(status = elements.reviewStatusFilter?.value || 'pending') {
+function syncReviewFilterControlsForStatus(status = elements.reviewStatusFilter?.value || 'approved') {
   if (!elements.reviewCategoryFilter) return;
   elements.reviewCategoryFilter.disabled = false;
 }
@@ -721,14 +752,38 @@ function isConfirmedCategoryMapping(key, categoryLabel = '') {
 function isConfiguredCategoryLabel(label) {
   const normalized = normalizeCategoryLabel(label);
   if (!normalized) return false;
-  return state.defaultCategoryOptions.some(option => option.toLowerCase() === normalized.toLowerCase());
+  return getAvailableCategoryOptions().some(option => option.toLowerCase() === normalized.toLowerCase());
 }
 
-function mergeCategoryOptionsWithDefaults(options = []) {
-  return normalizeCategoryList([
+function isBuiltInCategoryLabel(label) {
+  const key = normalizeCategoryLabel(label).toLowerCase();
+  return Boolean(key) && DEFAULT_CATEGORY_OPTIONS.some(option => option.toLowerCase() === key);
+}
+
+function getDeletedCategoryOptionsList() {
+  return normalizeCategoryList(Array.from(state.deletedCategoryOptions || []))
+    .filter(isBuiltInCategoryLabel);
+}
+
+function sortCategoryLabels(labels) {
+  return [...labels].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function mergeCategoryOptionsWithDefaults(options = [], deletedOptions = getDeletedCategoryOptionsList()) {
+  const deletedKeys = new Set(normalizeCategoryList(deletedOptions).map(label => label.toLowerCase()));
+  return sortCategoryLabels(normalizeCategoryList([
     ...(Array.isArray(options) ? options : []),
-    ...DEFAULT_CATEGORY_OPTIONS
-  ]);
+    ...DEFAULT_CATEGORY_OPTIONS.filter(label => !deletedKeys.has(label.toLowerCase()))
+  ]));
+}
+
+function getAvailableCategoryOptions(...categoryGroups) {
+  const deletedKeys = new Set(getDeletedCategoryOptionsList().map(label => label.toLowerCase()));
+  return sortCategoryLabels(normalizeCategoryList([
+    ...(Array.isArray(state.defaultCategoryOptions) ? state.defaultCategoryOptions : []),
+    ...DEFAULT_CATEGORY_OPTIONS.filter(label => !deletedKeys.has(label.toLowerCase())),
+    ...categoryGroups.flatMap(group => Array.isArray(group) ? group : [])
+  ]));
 }
 
 function keywordHasMusicCategoryContext(key) {
@@ -749,7 +804,7 @@ function resolveKeywordCategoryLabel(rawLabel) {
 }
 
 function normalizeMappingCategories(value) {
-  return normalizeCategoryList(Array.isArray(value) ? value : [value]);
+  return sortCategoryLabels(normalizeCategoryList(Array.isArray(value) ? value : [value]));
 }
 
 function getMappingCategories(map, key) {
@@ -897,16 +952,141 @@ function normalizeCategoryList(values) {
 }
 
 function mergeDefaultCategoryOptions(...categoryGroups) {
-  const merged = normalizeCategoryList([
+  const deletedKeys = new Set(getDeletedCategoryOptionsList().map(label => label.toLowerCase()));
+  const merged = sortCategoryLabels(normalizeCategoryList([
     ...state.defaultCategoryOptions,
     ...categoryGroups.flatMap(group => Array.isArray(group) ? group : [])
-  ]);
-  state.defaultCategoryOptions = merged.length ? merged : [...DEFAULT_CATEGORY_OPTIONS];
+  ]).filter(label => !deletedKeys.has(label.toLowerCase())));
+  state.defaultCategoryOptions = merged.length ? merged : mergeCategoryOptionsWithDefaults();
   state.defaultCategoryFilters = new Set(
     Array.from(state.defaultCategoryFilters || [])
       .map(normalizeCategoryLabel)
       .filter(label => state.defaultCategoryOptions.some(option => option.toLowerCase() === label.toLowerCase()))
   );
+}
+
+function remapCategoryLabels(labels, oldLabel, newLabel = '') {
+  const oldKey = normalizeCategoryLabel(oldLabel).toLowerCase();
+  const replacement = normalizeCategoryLabel(newLabel);
+  if (!oldKey) return sortCategoryLabels(normalizeCategoryList(labels));
+  return sortCategoryLabels(normalizeCategoryList(
+    (Array.isArray(labels) ? labels : []).flatMap(label => {
+      const normalized = normalizeCategoryLabel(label);
+      if (!normalized) return [];
+      if (normalized.toLowerCase() !== oldKey) return [normalized];
+      return replacement ? [replacement] : [];
+    })
+  ));
+}
+
+function remapCategoryMappingValues(map, oldLabel, newLabel = '') {
+  if (!map || typeof map !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(map)
+      .map(([key, labels]) => [key, remapCategoryLabels(labels, oldLabel, newLabel)])
+      .filter(([, labels]) => labels.length)
+  );
+}
+
+function remapLoadedReviewCategories(oldLabel, newLabel = '') {
+  state.reviewItems.forEach(item => {
+    if (Array.isArray(item?.event?.genres)) {
+      item.event.genres = remapCategoryLabels(item.event.genres, oldLabel, newLabel);
+    }
+    if (Array.isArray(item?._reviewOriginalCategories)) {
+      item._reviewOriginalCategories = remapCategoryLabels(item._reviewOriginalCategories, oldLabel, newLabel);
+    }
+  });
+  state.reviewCategoryDrafts = new Map(
+    Array.from(state.reviewCategoryDrafts.entries()).map(([id, labels]) => [
+      id,
+      remapCategoryLabels(labels, oldLabel, newLabel)
+    ])
+  );
+}
+
+function replaceDefaultCategoryOption(oldLabel, newLabel) {
+  const current = normalizeCategoryLabel(oldLabel);
+  const next = normalizeCategoryLabel(newLabel);
+  if (!current || !next) return false;
+  const currentKey = current.toLowerCase();
+  const nextKey = next.toLowerCase();
+  const existing = state.defaultCategoryOptions.find(option => option.toLowerCase() === nextKey);
+  if (existing && existing.toLowerCase() !== currentKey) {
+    setDefaultCategoryStatus(`"${next}" already exists.`, 'warning');
+    return false;
+  }
+  if (isBuiltInCategoryLabel(current) && currentKey !== nextKey) {
+    state.deletedCategoryOptions.add(current);
+  }
+  if (isBuiltInCategoryLabel(next)) {
+    state.deletedCategoryOptions = new Set(
+      getDeletedCategoryOptionsList().filter(label => label.toLowerCase() !== nextKey)
+    );
+  }
+  state.defaultCategoryOptions = sortCategoryLabels(normalizeCategoryList(
+    state.defaultCategoryOptions.map(option => option.toLowerCase() === currentKey ? next : option)
+  ));
+  const wasDefault = Array.from(state.defaultCategoryFilters || [])
+    .some(label => normalizeCategoryLabel(label).toLowerCase() === currentKey);
+  state.defaultCategoryFilters = new Set(remapCategoryLabels(
+    Array.from(state.defaultCategoryFilters || []),
+    current,
+    next
+  ));
+  if (wasDefault) state.defaultCategoryFilters.add(next);
+  state.categoryMappings = remapCategoryMappingValues(state.categoryMappings, current, next);
+  state.confirmedCategoryMappings = remapCategoryMappingValues(state.confirmedCategoryMappings, current, next);
+  remapLoadedReviewCategories(current, next);
+  renderDefaultCategorySettings();
+  renderUnmappedGenreMappings();
+  renderMappedGenreMappings();
+  renderReviewQueue();
+  setDefaultCategoryStatus(`Renamed "${current}" to "${next}". Save category options to persist it.`, 'success');
+  return true;
+}
+
+function removeDefaultCategoryOption(label) {
+  const current = normalizeCategoryLabel(label);
+  if (!current) return false;
+  const currentKey = current.toLowerCase();
+  if (isBuiltInCategoryLabel(current)) {
+    state.deletedCategoryOptions.add(current);
+  }
+  state.defaultCategoryOptions = state.defaultCategoryOptions
+    .filter(option => normalizeCategoryLabel(option).toLowerCase() !== currentKey);
+  state.defaultCategoryFilters = new Set(remapCategoryLabels(
+    Array.from(state.defaultCategoryFilters || []),
+    current,
+    ''
+  ));
+  state.categoryMappings = remapCategoryMappingValues(state.categoryMappings, current, '');
+  state.confirmedCategoryMappings = remapCategoryMappingValues(state.confirmedCategoryMappings, current, '');
+  remapLoadedReviewCategories(current, '');
+  renderDefaultCategorySettings();
+  renderUnmappedGenreMappings();
+  renderMappedGenreMappings();
+  renderReviewQueue();
+  setDefaultCategoryStatus(`Deleted "${current}". Save category options to persist it.`, 'success');
+  return true;
+}
+
+function promptRenameDefaultCategory(label) {
+  if (state.savingDefaultCategories) return;
+  const current = normalizeCategoryLabel(label);
+  if (!current || typeof window === 'undefined' || typeof window.prompt !== 'function') return;
+  const next = normalizeCategoryLabel(window.prompt('Edit category name', current));
+  if (!next || next === current) return;
+  replaceDefaultCategoryOption(current, next);
+}
+
+function confirmDeleteDefaultCategory(label) {
+  if (state.savingDefaultCategories) return;
+  const current = normalizeCategoryLabel(label);
+  if (!current) return;
+  const message = `Delete "${current}" from category options and remove it from keyword mappings?`;
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(message)) return;
+  removeDefaultCategoryOption(current);
 }
 
 function collectReviewItemCategories(items = []) {
@@ -947,7 +1127,12 @@ function addDefaultCategory() {
     elements.newCategoryInput.value = '';
     return;
   }
-  state.defaultCategoryOptions = [...state.defaultCategoryOptions, label];
+  if (isBuiltInCategoryLabel(label)) {
+    state.deletedCategoryOptions = new Set(
+      getDeletedCategoryOptionsList().filter(deletedLabel => deletedLabel.toLowerCase() !== label.toLowerCase())
+    );
+  }
+  state.defaultCategoryOptions = sortCategoryLabels([...state.defaultCategoryOptions, label]);
   state.defaultCategoryFilters.add(label);
   elements.newCategoryInput.value = '';
   renderDefaultCategorySettings();
@@ -979,6 +1164,9 @@ function renderRefreshStatus() {
 
   const updatedAt = status.updatedAt ? formatEventDate(status.updatedAt) : 'not recorded';
   const eventCount = Number.isFinite(Number(status.eventCount)) ? Number(status.eventCount) : 0;
+  const approvedEventCount = Number.isFinite(Number(status.approvedEventCount))
+    ? Number(status.approvedEventCount)
+    : null;
   const failedCount = Number.isFinite(Number(status.failedSourceCount)) ? Number(status.failedSourceCount) : 0;
   const alertSources = Array.isArray(status.alertSources) ? status.alertSources : [];
   const rawRecentRuns = Array.isArray(status.recentRuns) ? status.recentRuns : [];
@@ -995,6 +1183,8 @@ function renderRefreshStatus() {
       : [];
   const persist = status.persist && typeof status.persist === 'object' ? status.persist : null;
   const written = Number.isFinite(Number(persist?.written)) ? Number(persist.written) : 0;
+  const created = Number.isFinite(Number(persist?.created)) ? Number(persist.created) : 0;
+  const updated = Number.isFinite(Number(persist?.updated)) ? Number(persist.updated) : Math.max(0, written - created);
   const unchanged = Number.isFinite(Number(persist?.unchanged)) ? Number(persist.unchanged) : 0;
   const pruned = Number.isFinite(Number(persist?.pruned)) ? Number(persist.pruned) : 0;
   const sourceRows = getRefreshRunSourceRows(recentRuns);
@@ -1005,8 +1195,8 @@ function renderRefreshStatus() {
     ? `persistence failed: ${persist.error}`
     : persist
       ? written
-        ? `${written} event record${written === 1 ? '' : 's'} changed in storage; ${unchanged} were already current`
-        : `no event records changed; ${unchanged} were already current`
+        ? `${created} new event record${created === 1 ? '' : 's'}, ${updated} updated; ${unchanged} were already current`
+        : `no new event records; ${unchanged} were already current`
       : 'storage changes were not recorded';
   const updatedRuns = recentRuns.filter(run => Number(run?.persist?.written || 0) > 0).length;
   const trendLabel = recentRuns.length
@@ -1017,19 +1207,43 @@ function renderRefreshStatus() {
     : failedCount
       ? ` ${failedCount} source${failedCount === 1 ? '' : 's'} failed; source success history starts after the next refresh.`
       : '';
+  const approvedSummary = approvedEventCount == null
+    ? ''
+    : ` ${approvedEventCount} stored event${approvedEventCount === 1 ? ' is' : 's are'} approved.`;
   const health = buildRefreshSourceHealth(status, recentRuns);
   const messageState = health.actionNeeded.length || persist?.error ? 'error' : health.watch.length ? 'warning' : 'success';
   const message = health.actionNeeded.length
-    ? `Action needed: ${health.actionNeeded.length} source${health.actionNeeded.length === 1 ? '' : 's'} have repeated failures and no recent success in the retained log. Latest refresh ${updatedAt}: ${eventCount} events.${sourceSummary} ${persistLabel}.${trendLabel}`
+    ? `Action needed: ${health.actionNeeded.length} source${health.actionNeeded.length === 1 ? '' : 's'} have repeated failures and no recent success in the retained log. Latest refresh ${updatedAt}: ${eventCount} events.${approvedSummary}${sourceSummary} ${persistLabel}.${trendLabel}`
     : health.watch.length
-      ? `Watch: ${health.watch.length} source${health.watch.length === 1 ? '' : 's'} failed repeatedly but has a recent success in the retained log. Latest refresh ${updatedAt}: ${eventCount} events.${sourceSummary} ${persistLabel}.${trendLabel}`
-      : `No action needed: latest refresh ${updatedAt} returned ${eventCount} events.${sourceSummary} ${persistLabel}.${trendLabel}`;
+      ? `Watch: ${health.watch.length} source${health.watch.length === 1 ? '' : 's'} failed repeatedly but has a recent success in the retained log. Latest refresh ${updatedAt}: ${eventCount} events.${approvedSummary}${sourceSummary} ${persistLabel}.${trendLabel}`
+      : `No action needed: latest refresh ${updatedAt} returned ${eventCount} events.${approvedSummary}${sourceSummary} ${persistLabel}.${trendLabel}`;
   setRefreshStatus(message, messageState);
 
-  const persistChip = document.createElement('span');
-  persistChip.className = 'review-source-count';
-  persistChip.textContent = `Storage changes · ${written} changed · ${unchanged} already current`;
-  elements.refreshStatusOutput.appendChild(persistChip);
+  if (approvedEventCount != null) {
+    const approvedChip = document.createElement('span');
+    approvedChip.className = 'review-source-count';
+    approvedChip.textContent = `Approved in storage · ${approvedEventCount}`;
+    elements.refreshStatusOutput.appendChild(approvedChip);
+  }
+
+  const discoveredChip = document.createElement('span');
+  discoveredChip.className = 'review-source-count';
+  discoveredChip.textContent = persist
+    ? `New discovered · ${created}`
+    : 'New discovered · not recorded';
+  elements.refreshStatusOutput.appendChild(discoveredChip);
+
+  const returnedNewChip = document.createElement('span');
+  returnedNewChip.className = 'review-source-count';
+  returnedNewChip.textContent = `Returned new · ${
+    Number.isFinite(Number(status.newEventCount)) ? Number(status.newEventCount) : 'not comparable yet'
+  }`;
+  elements.refreshStatusOutput.appendChild(returnedNewChip);
+
+  const changedChip = document.createElement('span');
+  changedChip.className = 'review-source-count';
+  changedChip.textContent = `Storage updates · ${updated} updated · ${unchanged} already current`;
+  elements.refreshStatusOutput.appendChild(changedChip);
 
   if (pruned > 0) {
     const pruneChip = document.createElement('span');
@@ -1105,6 +1319,11 @@ function getRefreshRunSourceRows(recentRuns = []) {
         : [];
     runSources.forEach(source => {
       const sourceId = normalizeSourceId(source?.id || source?.key || '');
+      const sourcePersist = source?.persist && typeof source.persist === 'object' ? source.persist : null;
+      const runWritten = Number.isFinite(Number(run?.persist?.written)) ? Number(run.persist.written) : 0;
+      const runCreated = Number.isFinite(Number(run?.persist?.created)) ? Number(run.persist.created) : 0;
+      const sourceWritten = Number.isFinite(Number(sourcePersist?.written)) ? Number(sourcePersist.written) : 0;
+      const sourceCreated = Number.isFinite(Number(sourcePersist?.created)) ? Number(sourcePersist.created) : 0;
       rows.push({
         updatedAt: run?.updatedAt || '',
         reason: run?.reason || 'unknown',
@@ -1113,13 +1332,28 @@ function getRefreshRunSourceRows(recentRuns = []) {
         ok: source?.ok === true,
         status: Number.isFinite(Number(source?.status)) ? Number(source.status) : null,
         total: Number.isFinite(Number(source?.total)) ? Number(source.total) : null,
+        approvedEventCount: Number.isFinite(Number(source?.approvedEventCount))
+          ? Number(source.approvedEventCount)
+          : null,
         error: typeof source?.error === 'string' ? source.error : '',
         consecutiveFailures: Number.isFinite(Number(source?.consecutiveFailures))
           ? Number(source.consecutiveFailures)
           : 0,
         eventCount: Number.isFinite(Number(run?.eventCount)) ? Number(run.eventCount) : 0,
-        written: Number.isFinite(Number(run?.persist?.written)) ? Number(run.persist.written) : 0,
-        unchanged: Number.isFinite(Number(run?.persist?.unchanged)) ? Number(run.persist.unchanged) : 0,
+        written: sourcePersist ? sourceWritten : runSources.length === 1 ? runWritten : 0,
+        created: sourcePersist ? sourceCreated : runSources.length === 1 ? runCreated : 0,
+        updated: sourcePersist
+          ? Number.isFinite(Number(sourcePersist?.updated))
+            ? Number(sourcePersist.updated)
+            : Math.max(0, sourceWritten - sourceCreated)
+          : runSources.length === 1
+            ? Number.isFinite(Number(run?.persist?.updated))
+              ? Number(run.persist.updated)
+              : Math.max(0, runWritten - runCreated)
+            : 0,
+        unchanged: sourcePersist
+          ? Number.isFinite(Number(sourcePersist?.unchanged)) ? Number(sourcePersist.unchanged) : 0
+          : runSources.length === 1 && Number.isFinite(Number(run?.persist?.unchanged)) ? Number(run.persist.unchanged) : 0,
         pruned: Number.isFinite(Number(run?.persist?.pruned)) ? Number(run.persist.pruned) : 0
       });
     });
@@ -1127,11 +1361,82 @@ function getRefreshRunSourceRows(recentRuns = []) {
   return rows;
 }
 
+function getRefreshRunSummaryRows(recentRuns = []) {
+  return (Array.isArray(recentRuns) ? recentRuns : []).map(run => {
+    const persist = run?.persist && typeof run.persist === 'object' ? run.persist : null;
+    const written = Number.isFinite(Number(persist?.written)) ? Number(persist.written) : 0;
+    const created = Number.isFinite(Number(persist?.created)) ? Number(persist.created) : 0;
+    const updated = Number.isFinite(Number(persist?.updated)) ? Number(persist.updated) : Math.max(0, written - created);
+    const unchanged = Number.isFinite(Number(persist?.unchanged)) ? Number(persist.unchanged) : 0;
+    const pruned = Number.isFinite(Number(persist?.pruned)) ? Number(persist.pruned) : 0;
+    const sources = Array.isArray(run?.sources) ? run.sources : [];
+    return {
+      updatedAt: run?.updatedAt || '',
+      reason: run?.reason || 'unknown',
+      eventCount: Number.isFinite(Number(run?.eventCount)) ? Number(run.eventCount) : 0,
+      created,
+      newEventCount: Number.isFinite(Number(run?.newEventCount)) ? Number(run.newEventCount) : null,
+      updated,
+      unchanged,
+      pruned,
+      sourceCount: Number.isFinite(Number(run?.sourceCount)) ? Number(run.sourceCount) : sources.length,
+      failedSourceCount: Number.isFinite(Number(run?.failedSourceCount))
+        ? Number(run.failedSourceCount)
+        : sources.filter(source => source?.ok !== true).length
+    };
+  });
+}
+
+function appendRefreshRunSummaryTable(wrapper, recentRuns = []) {
+  const summaryRows = getRefreshRunSummaryRows(recentRuns);
+  if (!summaryRows.length) return;
+
+  const heading = document.createElement('h3');
+  heading.className = 'refresh-log__heading';
+  heading.textContent = 'Runs';
+  wrapper.appendChild(heading);
+
+  const table = document.createElement('table');
+  table.className = 'refresh-log__table refresh-log__table--runs';
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  ['Run', 'Trigger', 'Returned', 'New discovered', 'Returned new', 'Updated', 'Already current', 'Expired removed', 'Sources', 'Failed'].forEach(text => {
+    const th = document.createElement('th');
+    th.textContent = text;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  const tbody = document.createElement('tbody');
+  summaryRows.slice(0, 40).forEach(row => {
+    const tr = document.createElement('tr');
+    [
+      row.updatedAt ? formatEventDate(row.updatedAt) : 'not recorded',
+      row.reason,
+      String(row.eventCount),
+      String(row.created),
+      row.newEventCount == null ? '-' : String(row.newEventCount),
+      String(row.updated),
+      String(row.unchanged),
+      String(row.pruned),
+      String(row.sourceCount),
+      String(row.failedSourceCount)
+    ].forEach(text => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.append(thead, tbody);
+  wrapper.appendChild(table);
+}
+
 function renderRefreshRunLog(recentRuns = []) {
   if (!elements.refreshStatusOutput) return;
   const rows = getRefreshRunSourceRows(recentRuns);
   const wrapper = document.createElement('div');
   wrapper.className = 'refresh-log';
+  appendRefreshRunSummaryTable(wrapper, recentRuns);
 
   const sourceOptions = Array.from(
     new Map(rows.map(row => [row.sourceId, row.sourceName]).filter(([id]) => id)).entries()
@@ -1161,6 +1466,11 @@ function renderRefreshRunLog(recentRuns = []) {
     control.append(label, select);
     return control;
   };
+
+  const detailHeading = document.createElement('h3');
+  detailHeading.className = 'refresh-log__heading';
+  detailHeading.textContent = 'Source detail';
+  wrapper.appendChild(detailHeading);
 
   controls.append(
     buildSelect(
@@ -1223,7 +1533,7 @@ function renderRefreshRunLog(recentRuns = []) {
   table.className = 'refresh-log__table';
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
-  ['Run', 'Trigger', 'Source', 'Outcome', 'Source total', 'Storage result', 'Detail'].forEach(text => {
+  ['Run', 'Trigger', 'Source', 'Outcome', 'Fetched this run', 'Approved in storage', 'New', 'Storage result', 'Detail'].forEach(text => {
     const th = document.createElement('th');
     th.textContent = text;
     headerRow.appendChild(th);
@@ -1238,7 +1548,9 @@ function renderRefreshRunLog(recentRuns = []) {
       row.sourceName,
       row.ok ? 'success' : 'failure',
       row.total == null ? '-' : String(row.total),
-      `${row.written} changed, ${row.unchanged} already current${row.pruned > 0 ? `, ${row.pruned} expired removed` : ''}`,
+      row.approvedEventCount == null ? '-' : String(row.approvedEventCount),
+      String(row.created),
+      `${row.updated} updated, ${row.unchanged} already current${row.pruned > 0 ? `, ${row.pruned} expired removed` : ''}`,
       row.ok
         ? (row.status ? `HTTP ${row.status}` : 'OK')
         : `${row.status ? `HTTP ${row.status}` : row.error || 'failed'}${row.consecutiveFailures ? ` (${row.consecutiveFailures}x)` : ''}`
@@ -1258,11 +1570,13 @@ async function loadShowsSettings() {
   setDefaultCategoryStatus('Loading default categories…', 'info');
   setUnmappedGenreStatus('Loading extracted keywords…', 'info');
   try {
-    const data = await fetchJson(endpoints.settings);
+    const data = await fetchJson(buildShowsSettingsUrl({ includeUnmapped: 0 }));
     const categoryOptions = normalizeCategoryList(data?.settings?.categoryOptions);
     const rawDefaultCategoryFilters = Array.isArray(data?.settings?.defaultCategoryFilters)
       ? normalizeCategoryList(data.settings.defaultCategoryFilters)
       : null;
+    const deletedCategoryOptions = normalizeCategoryList(data?.settings?.deletedCategoryOptions)
+      .filter(isBuiltInCategoryLabel);
     const rawMappings =
       data?.settings?.categoryMappings && typeof data.settings.categoryMappings === 'object'
         ? data.settings.categoryMappings
@@ -1271,7 +1585,8 @@ async function loadShowsSettings() {
       data?.settings?.confirmedCategoryMappings && typeof data.settings.confirmedCategoryMappings === 'object'
         ? data.settings.confirmedCategoryMappings
         : {};
-    state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults(categoryOptions);
+    state.deletedCategoryOptions = new Set(deletedCategoryOptions);
+    state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults(categoryOptions, deletedCategoryOptions);
     mergeDefaultCategoryOptions(
       rawDefaultCategoryFilters || [],
       Object.values(rawMappings).flatMap(value => Array.isArray(value) ? value : [value]),
@@ -1329,10 +1644,12 @@ async function loadShowsSettings() {
         : 'No automatic keyword mappings are active.',
       Object.keys(state.categoryMappings).length ? 'success' : 'info'
     );
+    void refreshUnmappedGenres();
   } catch (err) {
     console.error(err);
     state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults();
     state.defaultCategoryFilters = new Set(DEFAULT_CATEGORY_OPTIONS);
+    state.deletedCategoryOptions = new Set();
     state.categoryMappings = {};
     state.confirmedCategoryMappings = {};
     state.ignoredGenres = [];
@@ -1351,26 +1668,55 @@ async function loadShowsSettings() {
 function renderDefaultCategorySettings() {
   if (!elements.defaultCategoryOptions) return;
   elements.defaultCategoryOptions.innerHTML = '';
+  elements.defaultCategoryOptions.classList.add('category-option-list');
   const options = Array.isArray(state.defaultCategoryOptions) && state.defaultCategoryOptions.length
     ? state.defaultCategoryOptions
     : [...DEFAULT_CATEGORY_OPTIONS];
-  options.forEach(label => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'review-source-count';
-    chip.dataset.active = state.defaultCategoryFilters.has(label) ? 'true' : 'false';
-    chip.textContent = label;
-    chip.disabled = state.savingDefaultCategories;
-    chip.addEventListener('click', () => {
+  sortCategoryLabels(options).forEach(label => {
+    const row = document.createElement('div');
+    row.className = 'category-option-row';
+
+    const defaultLabel = document.createElement('label');
+    defaultLabel.className = 'category-option-row__label';
+
+    const defaultCheckbox = document.createElement('input');
+    defaultCheckbox.type = 'checkbox';
+    defaultCheckbox.checked = state.defaultCategoryFilters.has(label);
+    defaultCheckbox.disabled = state.savingDefaultCategories;
+    defaultCheckbox.addEventListener('change', () => {
       if (state.savingDefaultCategories) return;
-      if (state.defaultCategoryFilters.has(label)) {
-        state.defaultCategoryFilters.delete(label);
-      } else {
+      if (defaultCheckbox.checked) {
         state.defaultCategoryFilters.add(label);
+      } else {
+        state.defaultCategoryFilters.delete(label);
       }
       renderDefaultCategorySettings();
     });
-    elements.defaultCategoryOptions.appendChild(chip);
+
+    const labelText = document.createElement('span');
+    labelText.textContent = label;
+    defaultLabel.append(defaultCheckbox, labelText);
+
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'category-option-row__icon secondary';
+    editButton.innerHTML = '<span aria-hidden="true">✎</span>';
+    editButton.setAttribute('aria-label', `Edit ${label}`);
+    editButton.title = `Edit ${label}`;
+    editButton.disabled = state.savingDefaultCategories;
+    editButton.addEventListener('click', () => promptRenameDefaultCategory(label));
+
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'category-option-row__icon secondary';
+    deleteButton.innerHTML = '<span aria-hidden="true">×</span>';
+    deleteButton.setAttribute('aria-label', `Delete ${label}`);
+    deleteButton.title = `Delete ${label}`;
+    deleteButton.disabled = state.savingDefaultCategories;
+    deleteButton.addEventListener('click', () => confirmDeleteDefaultCategory(label));
+
+    row.append(defaultLabel, editButton, deleteButton);
+    elements.defaultCategoryOptions.appendChild(row);
   });
   if (elements.newCategoryInput) {
     elements.newCategoryInput.disabled = state.savingDefaultCategories;
@@ -1388,7 +1734,7 @@ function renderManualKeywordCategoryOptions() {
   const selected = getSelectedCategoryOptions(elements.manualKeywordCategories);
   const selectedKeys = new Set(selected.map(label => label.toLowerCase()));
   elements.manualKeywordCategories.innerHTML = '';
-  state.defaultCategoryOptions.forEach(option => {
+  getAvailableCategoryOptions(selected).forEach(option => {
     const category = normalizeCategoryLabel(option);
     if (!category) return;
     const choice = document.createElement('option');
@@ -1470,12 +1816,13 @@ function getSelectedCategoryOptions(selectEl) {
 
 function buildKeywordCategorySelect(selectedCategories = [], ariaLabel = 'Categories') {
   const selectedKeys = new Set(normalizeMappingCategories(selectedCategories).map(label => label.toLowerCase()));
+  const options = getAvailableCategoryOptions(selectedCategories);
   const select = document.createElement('select');
   select.multiple = true;
-  select.size = Math.min(6, Math.max(3, state.defaultCategoryOptions.length || 3));
+  select.size = Math.min(6, Math.max(3, options.length || 3));
   select.className = 'keyword-mapping-row__category';
   select.setAttribute('aria-label', ariaLabel);
-  state.defaultCategoryOptions.forEach(option => {
+  options.forEach(option => {
     const category = normalizeCategoryLabel(option);
     if (!category) return;
     const choice = document.createElement('option');
@@ -1712,7 +2059,7 @@ function scheduleGenreMappingAutosave(delayMs = 200) {
 async function refreshUnmappedGenres() {
   if (!state.isAuthorized) return;
   try {
-    const data = await fetchJson(endpoints.settings);
+    const data = await fetchJson(buildShowsSettingsUrl({ includeUnmapped: 1 }));
     state.unmappedGenres = filterResolvedUnmappedGenres(
       data?.unmappedGenres,
       state.categoryMappings,
@@ -1764,6 +2111,7 @@ async function saveShowsSettings({
     const payload = {
       categoryOptions: state.defaultCategoryOptions,
       defaultCategoryFilters: state.defaultCategoryOptions.filter(label => state.defaultCategoryFilters.has(label)),
+      deletedCategoryOptions: getDeletedCategoryOptionsList(),
       categoryMappings: state.categoryMappings,
       confirmedCategoryMappings: state.confirmedCategoryMappings,
       ignoredGenres: state.ignoredGenres,
@@ -1779,7 +2127,10 @@ async function saveShowsSettings({
     const savedDefaults = Array.isArray(data?.settings?.defaultCategoryFilters)
       ? normalizeCategoryList(data.settings.defaultCategoryFilters)
       : null;
-    state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults(savedOptions);
+    const savedDeletedOptions = normalizeCategoryList(data?.settings?.deletedCategoryOptions)
+      .filter(isBuiltInCategoryLabel);
+    state.deletedCategoryOptions = new Set(savedDeletedOptions);
+    state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults(savedOptions, savedDeletedOptions);
     state.defaultCategoryFilters = new Set(savedDefaults || state.defaultCategoryOptions);
     state.ignoredGenres = normalizeRawGenreList(data?.settings?.ignoredGenres);
     const ignoredKeys = new Set(state.ignoredGenres.map(normalizeRawGenreKey));
@@ -1829,7 +2180,10 @@ async function saveShowsSettings({
       const savedDefaults = Array.isArray(err.details.settings.defaultCategoryFilters)
         ? normalizeCategoryList(err.details.settings.defaultCategoryFilters)
         : null;
-      state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults(savedOptions);
+      const savedDeletedOptions = normalizeCategoryList(err.details.settings.deletedCategoryOptions)
+        .filter(isBuiltInCategoryLabel);
+      state.deletedCategoryOptions = new Set(savedDeletedOptions);
+      state.defaultCategoryOptions = mergeCategoryOptionsWithDefaults(savedOptions, savedDeletedOptions);
       state.defaultCategoryFilters = new Set(savedDefaults || state.defaultCategoryOptions);
       state.ignoredGenres = normalizeRawGenreList(err.details.settings.ignoredGenres);
       const ignoredKeys = new Set(state.ignoredGenres.map(normalizeRawGenreKey));
@@ -1903,7 +2257,7 @@ async function loadFeed({ force = false, fromAuto = false } = {}) {
 
 async function loadReviewQueue({ force = false, fromAuto = false, background = false, preferLocal = false, append = false } = {}) {
   if (!state.isAuthorized) {
-    setReviewStatus('Sign in with the authorized account to load the approval queue.', 'error');
+    setReviewStatus('Sign in with the authorized account to load the review list.', 'error');
     return;
   }
   const params = buildReviewParams();
@@ -1920,8 +2274,14 @@ async function loadReviewQueue({ force = false, fromAuto = false, background = f
 
   const url = new URL(endpoints.review, window.location.href);
   Object.entries(requestParams).forEach(([key, value]) => url.searchParams.set(key, value));
+  url.searchParams.set('_cb', String(Date.now()));
 
-  if (!background) {
+    if (!background) {
+      if (!append) {
+        state.reviewQueueLoaded = false;
+        state.reviewQueueMissingImageCount = null;
+        updateReviewMissingImageCount();
+      }
     const loadingLabel = requestParams.category
       ? 'Loading filtered review queue...'
       : 'Loading review queue...';
@@ -1930,30 +2290,8 @@ async function loadReviewQueue({ force = false, fromAuto = false, background = f
   }
 
   try {
-    let data = await fetchJson(url.toString());
-    let effectiveParams = requestParams;
-    if (
-      Array.isArray(data?.events) &&
-      data.events.length === 0 &&
-      requestParams.status === 'pending' &&
-      requestParams.days &&
-      Number(requestParams.days) < REVIEW_QUEUE_MAX_LOOKAHEAD_DAYS &&
-      !requestParams.category &&
-      !requestParams.q &&
-      !append
-    ) {
-      const fallbackParams = {
-        ...requestParams,
-        days: REVIEW_QUEUE_MAX_LOOKAHEAD_DAYS
-      };
-      const fallbackUrl = new URL(endpoints.review, window.location.href);
-      Object.entries(fallbackParams).forEach(([key, value]) => fallbackUrl.searchParams.set(key, value));
-      const fallbackData = await fetchJson(fallbackUrl.toString());
-      if (Array.isArray(fallbackData?.events) && fallbackData.events.length > 0) {
-        data = fallbackData;
-        effectiveParams = fallbackParams;
-      }
-    }
+    const data = await fetchJson(url.toString());
+    const effectiveParams = requestParams;
     rememberReviewQueueBaseResponse(requestParams, data);
     if (effectiveParams !== requestParams) {
       rememberReviewQueueBaseResponse(effectiveParams, data);
@@ -1978,18 +2316,21 @@ async function loadReviewQueue({ force = false, fromAuto = false, background = f
       const statusParams = getReviewParamsCacheParts(effectiveParams);
       const label = getReviewStatusLabel(statusParams.status);
       const count = state.reviewItems.length;
+      const rawCount = Array.isArray(data?.events) ? data.events.length : 0;
       const windowLabel = getReviewWindowLabel(statusParams);
       setReviewStatus(
         `Loaded ${count}${state.reviewQueueHasMore ? '+' : ''} ${label.toLowerCase()} event${count === 1 ? '' : 's'}${windowLabel}.`,
         'success'
       );
-      if (shouldAutoLoadReviewQueue(statusParams) && count > 0) {
-        state.reviewQueueOffset = state.reviewItems.length;
-        setReviewStatus(`Loaded ${count}+ ${label.toLowerCase()} events. Loading next ${REVIEW_QUEUE_PAGE_SIZE}...`, 'info');
-        await loadReviewQueue({ force: true, background: true, append: true });
+      if (shouldAutoLoadReviewQueue(statusParams) && (count > 0 || rawCount > 0)) {
+        const skippedLabel = count === 0 && rawCount > 0
+          ? `Skipped ${rawCount} ${label.toLowerCase()} event${rawCount === 1 ? '' : 's'} missing images.`
+          : `Loaded ${count}+ ${label.toLowerCase()} events.`;
+        setReviewStatus(`${skippedLabel} Loading next ${statusParams.limit || REVIEW_QUEUE_PAGE_SIZE}...`, 'info');
+        scheduleReviewQueueAutoLoad(statusParams);
       } else if (state.reviewQueueHasMore && count === 0) {
         setReviewStatus(
-          `Loaded 0 ${label.toLowerCase()} events${windowLabel}; more pages may exist. Use "Load ${REVIEW_QUEUE_PAGE_SIZE} more" to continue.`,
+          `Loaded 0 ${label.toLowerCase()} events${windowLabel}; more pages may exist. Use "Load ${statusParams.limit || REVIEW_QUEUE_PAGE_SIZE} more" to continue.`,
           'info'
         );
       }
@@ -2002,6 +2343,10 @@ async function loadReviewQueue({ force = false, fromAuto = false, background = f
     if (!background) {
       state.reviewItems = [];
       state.reviewQueueHasMore = false;
+      state.reviewQueueLoaded = false;
+      state.reviewQueueError = err.status === 401 || err.status === 403
+        ? err.message || 'Sign in with the authorized account to load the review list.'
+        : `The review list did not load: ${err.message}`;
       renderReviewQueue();
     }
     setReviewStatus(`Failed to load review queue: ${err.message}`, 'error');
@@ -2015,6 +2360,27 @@ async function loadReviewQueue({ force = false, fromAuto = false, background = f
 function shouldAutoLoadReviewQueue(params = {}) {
   const { status } = getReviewParamsCacheParts(params);
   return REVIEW_QUEUE_AUTO_LOAD_STATUSES.has(status) && state.reviewQueueHasMore;
+}
+
+function reviewParamsCachePartsEqual(left = {}, right = {}) {
+  const leftParts = getReviewParamsCacheParts(left);
+  const rightParts = getReviewParamsCacheParts(right);
+  return (
+    leftParts.status === rightParts.status &&
+    leftParts.days === rightParts.days &&
+    leftParts.limit === rightParts.limit &&
+    leftParts.category === rightParts.category &&
+    leftParts.q === rightParts.q
+  );
+}
+
+function scheduleReviewQueueAutoLoad(expectedParams = {}) {
+  const expectedParts = getReviewParamsCacheParts(expectedParams);
+  setTimeout(() => {
+    if (!state.reviewQueueHasMore) return;
+    if (!reviewParamsCachePartsEqual(buildReviewParams(), expectedParts)) return;
+    void loadReviewQueue({ force: true, background: true, append: true });
+  }, 0);
 }
 
 function getUnfilteredReviewBaseParams(params = {}) {
@@ -2112,6 +2478,7 @@ function restoreReviewQueueState() {
     if (!params || !shouldPreserveReviewQueueForParams(params) || !items.length) return false;
     state.reviewItems = filterStaleReviewQueueItems(items);
     state.reviewQueueLastAppliedParams = getReviewParamsCacheParts(params);
+    state.reviewQueueLoaded = true;
     state.reviewQueueOffset = state.reviewItems.length;
     state.reviewQueueHasMore = Boolean(parsed?.hasMore);
     return true;
@@ -2275,14 +2642,43 @@ function reviewItemMatchesStatus(item, status) {
   if (status === 'all') return true;
   const itemStatus = normalizeReviewStatus(item?.reviewStatus || 'pending');
   const storedStatus = normalizeReviewStatus(item?.storedReviewStatus || item?.reviewStatus || 'pending');
-  const event = item?.event && typeof item.event === 'object' ? item.event : item;
   if (status === 'image-missing') {
-    return storedStatus === 'pending' && !reviewEventHasUsableImage(event);
+    return storedStatus === 'pending' && itemStatus === 'image-missing';
   }
   if (status === 'pending') {
-    return storedStatus === 'pending';
+    return storedStatus === 'pending' && itemStatus !== 'image-missing';
   }
   return itemStatus === status;
+}
+
+function countPendingReviewItemsMissingImages(items = []) {
+  return (Array.isArray(items) ? items : []).filter(item => {
+    const storedStatus = normalizeReviewStatus(item?.storedReviewStatus || item?.reviewStatus || 'pending');
+    if (storedStatus !== 'pending') return false;
+    return normalizeReviewStatus(item?.reviewStatus || 'pending') === 'image-missing';
+  }).length;
+}
+
+function updateReviewMissingImageCount(data = null, params = null, { append = false } = {}) {
+  const cacheParts = params ? getReviewParamsCacheParts(params) : null;
+  const rawItems = Array.isArray(data?.events) ? data.events : null;
+  const responseCount = Number(data?.missingImageCount);
+  if (Number.isFinite(responseCount)) {
+    state.reviewQueueMissingImageCount = responseCount;
+  } else if (rawItems) {
+    const count = countPendingReviewItemsMissingImages(rawItems);
+    if (!cacheParts || cacheParts.status === 'pending' || cacheParts.status === 'image-missing' || cacheParts.status === 'all') {
+      state.reviewQueueMissingImageCount = append && Number.isFinite(state.reviewQueueMissingImageCount)
+        ? state.reviewQueueMissingImageCount + count
+        : count;
+    }
+  }
+  if (!elements.reviewMissingImageCount) return;
+  const count = state.reviewQueueMissingImageCount;
+  elements.reviewMissingImageCount.textContent = Number.isFinite(count)
+    ? `Missing images: ${count}`
+    : 'Missing images: -';
+  elements.reviewMissingImageCount.classList.toggle('review-queue-count--alert', Number(count) > 0);
 }
 
 function reviewItemHasReviewedPublicCategories(item) {
@@ -2314,16 +2710,22 @@ function reviewEventHasUsableImage(event) {
 }
 
 function buildReviewParams() {
-  const days = elements.previewDays?.value ? Number(elements.previewDays.value) : REVIEW_QUEUE_DEFAULT_DAYS;
-  const status = elements.reviewStatusFilter?.value || 'pending';
+  const status = elements.reviewStatusFilter?.value || 'approved';
   syncReviewFilterControlsForStatus(status);
+  const normalizedStatus = normalizeReviewFilterStatus(status);
+  const shouldLoadActiveQueue = normalizedStatus === 'pending' || normalizedStatus === 'image-missing';
+  const days = shouldLoadActiveQueue
+    ? null
+    : elements.previewDays?.value ? Number(elements.previewDays.value) : REVIEW_QUEUE_DEFAULT_DAYS;
   const category = normalizeCategoryLabel(elements.reviewCategoryFilter?.value || '');
   const q = getReviewSearchQuery();
-  const params = { status };
+  const params = { status, includeDuplicates: true };
   if (Number.isFinite(days) && days > 0) params.days = Math.min(days, REVIEW_QUEUE_MAX_LOOKAHEAD_DAYS);
   if (category) params.category = category;
   if (q) params.q = q;
-  params.limit = state.reviewQueueLimit || REVIEW_QUEUE_PAGE_SIZE;
+  params.limit = shouldLoadActiveQueue
+    ? REVIEW_QUEUE_ACTIVE_PAGE_SIZE
+    : state.reviewQueueLimit || REVIEW_QUEUE_PAGE_SIZE;
   return params;
 }
 
@@ -2345,8 +2747,8 @@ function setReviewButtonsDisabled(disabled) {
 }
 
 function getReviewStatusLabel(status) {
-  if (status === 'approved') return 'Approved';
-  if (status === 'rejected') return 'Rejected';
+  if (status === 'approved') return 'Auto-approved';
+  if (status === 'rejected') return 'Struck';
   if (status === 'image-missing') return 'Image missing';
   if (status === 'excluded') return 'Hidden forever';
   if (status === 'all') return 'All review';
@@ -2408,14 +2810,19 @@ function applyReviewQueueResponse(data, appliedParams = null, { append = false }
     rememberReviewQueueBaseResponse(resolvedParams, data);
   }
   const rawItems = Array.isArray(data?.events) ? data.events : [];
-  const nextItems = filterStaleReviewQueueItems(rawItems);
+  const nextItems = filterStaleReviewQueueItems(filterReviewItemsLocally(rawItems, resolvedParams));
   mergeDefaultCategoryOptions(collectReviewItemCategories(nextItems));
   renderDefaultCategorySettings();
+  state.reviewQueueError = null;
+  state.reviewQueueLoaded = true;
   state.reviewItems = append
     ? mergeReviewQueueItems(state.reviewItems, nextItems)
     : nextItems;
-  state.reviewQueueOffset = state.reviewItems.length;
+  state.reviewQueueOffset = append
+    ? state.reviewQueueOffset + rawItems.length
+    : rawItems.length;
   state.reviewQueueHasMore = Boolean(data?.hasMore);
+  updateReviewMissingImageCount(data, resolvedParams, { append });
   persistReviewQueueState();
   const visibleIds = new Set(state.reviewItems.map(item => String(item?.id || '').trim()).filter(Boolean));
   state.reviewCategoryDrafts = new Map(
@@ -2461,6 +2868,7 @@ function renderReviewQueue() {
   if (!elements.reviewOutput) return;
   elements.reviewOutput.innerHTML = '';
   elements.reviewOutput.classList.add('shows-results__list');
+  updateReviewMissingImageCount();
 
   const status = elements.reviewStatusFilter?.value || 'pending';
   const category = normalizeCategoryLabel(elements.reviewCategoryFilter?.value || '');
@@ -2469,18 +2877,21 @@ function renderReviewQueue() {
   const categoryLabel = category || 'All categories';
   const windowLabel = getReviewWindowLabel();
   if (elements.reviewLabel) {
-    elements.reviewLabel.textContent = `${label} events · ${categoryLabel}${query ? ` · "${query}"` : ''} · ${state.reviewItems.length}`;
+    const countLabel = state.reviewQueueError ? 'error' : state.reviewQueueLoaded ? state.reviewItems.length : '-';
+    elements.reviewLabel.textContent = `${label} events · ${categoryLabel}${query ? ` · "${query}"` : ''} · ${countLabel}`;
   }
 
   if (!state.reviewItems.length) {
     const empty = document.createElement('p');
     empty.className = 'datasources-empty';
-    empty.textContent = state.reviewQueueHasMore
+    empty.textContent = state.reviewQueueError
+      ? state.reviewQueueError
+      : state.reviewQueueHasMore
       ? `No ${label.toLowerCase()} events were returned in this page${windowLabel}. More results may exist.`
       : category || query
       ? `No ${label.toLowerCase()} events found${windowLabel}${category ? ` in ${categoryLabel}` : ''}${query ? ` matching "${query}"` : ''}.`
       : status === 'pending'
-        ? `No events are waiting for approval${windowLabel}.`
+        ? `No events are waiting for manual review${windowLabel}.`
         : status === 'image-missing'
           ? `No events are currently missing images${windowLabel}.`
           : status === 'excluded'
@@ -2506,10 +2917,10 @@ function buildReviewQueueLoadMoreButton() {
   const loadMore = document.createElement('button');
   loadMore.type = 'button';
   loadMore.className = 'secondary review-card__button';
-  loadMore.textContent = `Load ${REVIEW_QUEUE_PAGE_SIZE} more`;
+  const { limit } = getReviewParamsCacheParts(buildReviewParams());
+  loadMore.textContent = `Load ${limit || REVIEW_QUEUE_PAGE_SIZE} more`;
   loadMore.disabled = Boolean(state.reviewControlsBusy);
   loadMore.addEventListener('click', () => {
-    state.reviewQueueOffset = state.reviewItems.length;
     loadReviewQueue({ force: true, append: true });
   });
   return loadMore;
@@ -2595,7 +3006,7 @@ function buildReviewEvent(item) {
   const approveButton = document.createElement('button');
   approveButton.type = 'button';
   approveButton.className = 'review-card__button review-card__button--approve';
-  approveButton.textContent = isWorking ? 'Working...' : 'Approve';
+  approveButton.textContent = isWorking ? 'Working...' : 'Restore';
   approveButton.disabled =
     isWorking || currentStatus === 'approved';
   approveButton.addEventListener('click', () => updateReviewItem(item, 'approved'));
@@ -2603,7 +3014,7 @@ function buildReviewEvent(item) {
   const rejectButton = document.createElement('button');
   rejectButton.type = 'button';
   rejectButton.className = 'review-card__button review-card__button--reject';
-  rejectButton.textContent = isWorking ? 'Working...' : 'Reject';
+  rejectButton.textContent = isWorking ? 'Working...' : 'Strike';
   rejectButton.disabled =
     isWorking || currentStatus === 'rejected';
   rejectButton.addEventListener('click', () => updateReviewItem(item, 'rejected'));
@@ -2633,7 +3044,7 @@ function buildReviewEvent(item) {
     actions.append(approveSeriesButton);
   }
 
-  actions.append(approveButton, rejectButton, returnToPendingButton, excludeButton);
+  actions.append(rejectButton, approveButton, returnToPendingButton, excludeButton);
   const detailsColumn = card.querySelector('.show-card__details-column');
   const highlights = detailsColumn?.querySelector('.show-card__highlights');
   if (detailsColumn && highlights) {
@@ -2682,9 +3093,14 @@ function getReviewItemOccurrences(item) {
     .map(occurrence => {
       const startIso = occurrence?.start?.local || occurrence?.start?.utc || '';
       const fallbackDate = typeof occurrence?.eventDate === 'string' ? occurrence.eventDate : '';
+      const dateValue = occurrence?.start && typeof occurrence.start === 'object'
+        ? occurrence.start
+        : fallbackDate
+          ? { local: fallbackDate, noTime: true }
+          : '';
       return {
         ...occurrence,
-        label: formatEventDate(startIso || fallbackDate),
+        label: formatEventDate(dateValue),
         sortValue: Number.isFinite(occurrence?.eventStartMs)
           ? occurrence.eventStartMs
           : Date.parse(startIso || fallbackDate)
@@ -2808,7 +3224,13 @@ async function loadReviewImageCandidates(item, event, container, button) {
   loading.textContent = 'Searching for images...';
   container.appendChild(loading);
   try {
-    const data = await fetchJson(`${endpoints.review}/${encodeURIComponent(id)}/image-candidates?limit=12`);
+    const data = await fetchJson(`${endpoints.review}/${encodeURIComponent(id)}/image-candidates`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ event, limit: 12 })
+    });
     const images = Array.isArray(data?.images) ? data.images : [];
     renderReviewImageCandidates(item, event, images, container);
     if (!images.length) {
@@ -3020,7 +3442,6 @@ function scheduleReviewQueueRefresh(delayMs = 900) {
   }
   state.reviewQueueRefreshTimer = setTimeout(() => {
     state.reviewQueueRefreshTimer = null;
-    state.reviewQueueOffset = state.reviewItems.length;
     loadReviewQueue({ force: true, fromAuto: true, background: true, append: true });
   }, Math.max(0, Number(delayMs) || 0));
 }
@@ -3208,9 +3629,9 @@ async function updateReviewItem(item, status) {
   ids.forEach(reviewId => state.reviewingIds.add(reviewId));
   const actionLabel =
     status === 'approved'
-      ? 'Approving'
+      ? 'Restoring'
       : status === 'rejected'
-        ? 'Rejecting'
+        ? 'Striking'
         : 'Returning';
   setReviewStatus(`${actionLabel} ${item.eventName || 'event'}...`, 'info');
   const idSet = new Set(ids);
@@ -3246,15 +3667,15 @@ async function updateReviewItem(item, status) {
     clearReviewQueueBaseCache();
     const successMessage =
       status === 'approved'
-        ? ids.length > 1 ? `${ids.length} dates approved.` : 'Event approved.'
+        ? ids.length > 1 ? `${ids.length} dates restored.` : 'Event restored.'
         : status === 'rejected'
-          ? ids.length > 1 ? `${ids.length} dates rejected.` : 'Event rejected.'
+          ? ids.length > 1 ? `${ids.length} dates struck.` : 'Event struck.'
           : ids.length > 1 ? `${ids.length} dates returned to pending.` : 'Event returned to pending.';
     void refreshReviewQueueAfterMutation(successMessage);
     if (status === 'approved') {
       removeBrowserStorageItem(FEED_CACHE_KEY);
       removeBrowserStorageItem('shows.cachedEvents');
-      setPreviewStatus('Event approved. Reload the feed to include newly published items.', 'success');
+      setPreviewStatus('Event restored. Reload the feed to include it again.', 'success');
     }
     ids.forEach(clearPendingReviewCategoryState);
   } catch (err) {
@@ -3278,7 +3699,7 @@ async function excludeReviewTitle(item) {
     return;
   }
   const confirmed = window.confirm(
-    `Exclude "${title}" forever?\n\nThis rejects current and future approval items from the same source with the exact same title.`
+    `Exclude "${title}" forever?\n\nThis strikes current and future review items from the same source with the exact same title.`
   );
   if (!confirmed) return;
 
@@ -3907,8 +4328,12 @@ function buildPreviewEvent(event, { allowInferredGenres = true } = {}) {
   const meta = document.createElement('p');
   meta.className = 'show-card__meta';
 
-  const startIso = event?.start?.local || event?.start?.utc || '';
-  const dateText = formatEventDate(startIso);
+  const startValue = event?.start;
+  const rawStartValue =
+    startValue && typeof startValue === 'object'
+      ? (typeof startValue.local === 'string' && startValue.local) || (typeof startValue.utc === 'string' && startValue.utc) || ''
+      : '';
+  const dateText = formatEventDate(startValue);
   if (dateText) {
     const dateSpan = document.createElement('span');
     dateSpan.className = 'show-card__date';
@@ -3974,7 +4399,7 @@ function buildPreviewEvent(event, { allowInferredGenres = true } = {}) {
     onPresent: () => removeMissingLabel('Image')
   });
   if (!gallery) addMissingLabel('Image');
-  if (!startIso) addMissingLabel('Date/Time');
+  if (!rawStartValue) addMissingLabel('Date/Time');
   if (!event?.venue?.name) addMissingLabel('Venue');
 
   const grid = document.createElement('div');
@@ -4094,17 +4519,22 @@ function parseKeywordList(raw) {
 
 function formatEventDate(value) {
   if (!value) return '';
+  const rawValue =
+    value && typeof value === 'object'
+      ? (typeof value.local === 'string' && value.local) || (typeof value.utc === 'string' && value.utc) || ''
+      : value;
+  if (!rawValue) return '';
   try {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    const formatted = new Intl.DateTimeFormat(undefined, {
-      dateStyle: 'medium',
-      timeStyle: 'short'
-    }).format(date);
+    const date = new Date(rawValue);
+    if (Number.isNaN(date.getTime())) return String(rawValue);
+    const formatOptions = value && typeof value === 'object' && value.noTime
+      ? { dateStyle: 'medium' }
+      : { dateStyle: 'medium', timeStyle: 'short' };
+    const formatted = new Intl.DateTimeFormat(undefined, formatOptions).format(date);
     const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date);
     return `${formatted} (${weekday})`;
   } catch {
-    return String(value);
+    return String(rawValue);
   }
 }
 
@@ -4310,13 +4740,20 @@ function resolveApiAssetUrl(url) {
   }
   if (/^(?:https?:)?\/\//i.test(raw)) {
     const base = API_BASE || '/api';
-    const normalized = raw.replace(/^http:\/\//i, 'https://');
+    const normalized = decodeHtmlAttribute(raw).replace(/^http:\/\//i, 'https://');
     return `${base}/image-proxy?url=${encodeURIComponent(normalized)}`;
   }
   if (!raw.startsWith('/')) return raw;
   if (!API_BASE) return raw;
   const origin = API_BASE.endsWith('/api') ? API_BASE.slice(0, -4) : API_BASE;
   return origin ? `${origin}${raw}` : raw;
+}
+
+function decodeHtmlAttribute(value) {
+  return String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'");
 }
 
 function renderEventImages(event, { onMissing = null, onPresent = null } = {}) {
@@ -4419,7 +4856,12 @@ function createArtistLinkRow(event) {
   }
 
   const primaryName = getPrimaryArtistName(event);
-  const showMediaLinks = getEventGenres(event).some(genre => MEDIA_LINK_CATEGORY_LABELS.has(genre));
+  const sourceId = typeof event?.source === 'string' ? event.source.trim().toLowerCase() : '';
+  const showMediaLinks =
+    MUSIC_ACT_SOURCE_IDS.has(sourceId) ||
+    isMusicEventSegment(event) ||
+    isCityCastTunesEvent(event) ||
+    getEventGenres(event).some(genre => MEDIA_LINK_CATEGORY_LABELS.has(genre));
   if (primaryName && showMediaLinks) {
     const searchQuery = primaryName;
     const youtubeUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(
@@ -4935,9 +5377,9 @@ async function handleCacheClear() {
           state.reviewQueueOffset = 0;
           state.reviewQueueHasMore = false;
           renderReviewQueue();
-          setReviewStatus('Caches cleared. Reloading approval queue from the database…', 'info');
+          setReviewStatus('Caches cleared. Reloading review list from the database…', 'info');
           await loadReviewQueue({ force: true });
-          setReviewStatus('Caches cleared and approval queue reloaded from the database.', 'success');
+          setReviewStatus('Caches cleared and review list reloaded from the database.', 'success');
         } else if (elements.previewOutput || elements.sourcesList) {
           if (btn) btn.textContent = 'Reloading feed…';
           setReviewStatus('Caches cleared. Reloading feed from stored events…', 'info');

@@ -341,6 +341,25 @@ describe('shows settings API', () => {
     expect(source).toContain('const unmappedGenres = shouldRefreshUnmapped');
     expect(source).toContain(': null;');
   });
+
+  it('keeps deleted built-in categories out of normalized settings and default mappings', async () => {
+    const module = await import('../functions/backend/server.js');
+    const settings = module.normalizeShowsDefaultSettings({
+      categoryOptions: ['Stand-Up'],
+      defaultCategoryFilters: ['Comedy', 'Stand-Up'],
+      deletedCategoryOptions: ['Comedy'],
+      categoryMappings: {
+        funny: ['Comedy', 'Stand-Up']
+      }
+    });
+
+    expect(settings.categoryOptions).toContain('Stand-Up');
+    expect(settings.categoryOptions).not.toContain('Comedy');
+    expect(settings.defaultCategoryFilters).toEqual(['Stand-Up']);
+    expect(settings.deletedCategoryOptions).toEqual(['Comedy']);
+    expect(settings.categoryMappings.comedy).toBeUndefined();
+    expect(settings.categoryMappings.funny).toEqual(['Stand-Up']);
+  });
 });
 
 describe('shows refresh efficiency', () => {
@@ -350,6 +369,7 @@ describe('shows refresh efficiency', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     restoreEnv();
     vi.resetModules();
   });
@@ -399,6 +419,7 @@ describe('static DMV shows fallback', () => {
     expect(payload.filterIndex.records.length).toBe(payload.events.length);
     expect(new Set(payload.filterIndex.records.map(record => record.id)).size).toBe(payload.events.length);
   });
+
 });
 
 describe('established recurring shows', () => {
@@ -546,6 +567,110 @@ describe('fetchStoredShowEvents', () => {
     expect(source).toContain("reviewQueue: 'memory'");
   });
 
+  it('counts already-approved stored events for backend refresh status', async () => {
+    const firestore = buildFirestoreMock([
+      { id: 'approved-a', sourceId: 'ticketmaster', reviewStatus: 'approved' },
+      { id: 'pending-a', sourceId: 'ticketmaster', reviewStatus: 'pending' },
+      { id: 'approved-b', sourceId: 'smithsonian', reviewStatus: 'approved' },
+      { id: 'rejected-a', sourceId: 'smithsonian', reviewStatus: 'rejected' }
+    ]);
+    const module = await import('../functions/backend/server.js');
+
+    await expect(module.countApprovedStoredShowEvents(firestore)).resolves.toBe(2);
+    await expect(module.countApprovedStoredShowEventsForSource('ticketmaster', firestore)).resolves.toBe(1);
+    const countsBySource = await module.countApprovedStoredShowEventsBySource(['ticketmaster', 'smithsonian'], firestore);
+    expect(Object.fromEntries(countsBySource)).toEqual({
+      ticketmaster: 1,
+      smithsonian: 1
+    });
+  });
+
+  it('builds stable event keys for comparing new events between refresh runs', async () => {
+    const module = await import('../functions/backend/server.js');
+    const previousPayload = {
+      events: [
+        {
+          id: 'event-1',
+          source: 'ticketmaster',
+          name: { text: 'Shared Event' },
+          start: { local: '2026-07-12T20:00:00' }
+        }
+      ]
+    };
+    const currentPayload = {
+      events: [
+        {
+          id: 'event-1',
+          source: 'ticketmaster',
+          name: { text: 'Shared Event' },
+          start: { local: '2026-07-12T20:00:00' }
+        },
+        {
+          id: 'event-2',
+          source: 'ticketmaster',
+          name: { text: 'New Event' },
+          start: { local: '2026-07-13T20:00:00' }
+        }
+      ]
+    };
+
+    const previousKeys = module.buildRefreshEventKeys(previousPayload);
+    const currentKeys = module.buildRefreshEventKeys(currentPayload);
+    const previousSet = module.getPreviousRefreshEventKeys({ eventKeys: previousKeys });
+
+    expect(previousKeys).toHaveLength(1);
+    expect(currentKeys).toHaveLength(2);
+    expect(currentKeys.filter(key => !previousSet.has(key))).toHaveLength(1);
+  });
+
+  it('builds review image candidates from the posted event payload without reading Firestore', async () => {
+    const fetchCalls = [];
+    global.fetch = vi.fn(async url => {
+      fetchCalls.push(String(url));
+      if (String(url).startsWith('https://duckduckgo.com/?')) {
+        return {
+          ok: true,
+          text: async () => '<script>var vqd="test-vqd";</script>'
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          results: [
+            {
+              image: 'https://example.com/poster.jpg',
+              thumbnail: 'https://example.com/thumb.jpg',
+              title: 'Poster',
+              url: 'https://example.com/event'
+            }
+          ]
+        })
+      };
+    });
+    const module = await import('../functions/backend/server.js');
+
+    const result = await module.getShowEventReviewImageCandidatesFromPayload(
+      '0123456789abcdef0123456789abcdef01234567',
+      {
+        limit: 12,
+        event: {
+          name: { text: 'Missing Poster Event' },
+          venue: { name: 'Club Example', address: { city: 'Washington', region: 'DC' } }
+        }
+      }
+    );
+
+    expect(result.query).toBe('Missing Poster Event Club Example Washington DC event poster');
+    expect(result.images).toEqual([
+      expect.objectContaining({
+        url: 'https://example.com/poster.jpg',
+        thumbnailUrl: 'https://example.com/thumb.jpg',
+        title: 'Poster'
+      })
+    ]);
+    expect(fetchCalls).toHaveLength(2);
+  });
+
   it('returns precomputed stored events without requiring a live datasource refresh', async () => {
     const now = Date.now();
     const firestore = buildFirestoreMock([
@@ -622,7 +747,7 @@ describe('fetchStoredShowEvents', () => {
     expect(events).toEqual([]);
   });
 
-  it('does not auto-approve non-recurring WABA events from title-based rules during persistence', async () => {
+  it('auto-approves non-recurring WABA events by default during persistence', async () => {
     const firestore = buildFirestoreMock([], [], ['title::adult learn to ride']);
     const module = await import('../functions/backend/server.js');
     const source = { id: 'waba', name: 'WABA', type: 'waba' };
@@ -630,8 +755,8 @@ describe('fetchStoredShowEvents', () => {
       id: 'waba-1',
       source: 'waba',
       name: { text: 'Adult Learn to Ride' },
-      start: { local: '2026-06-10T12:00:00', noTime: true },
-      end: { local: '2026-06-10T12:00:00', noTime: true },
+      start: { local: '2026-09-10T12:00:00', noTime: true },
+      end: { local: '2026-09-10T12:00:00', noTime: true },
       venue: { name: 'Anacostia Boat Ramp Lot', address: {} },
       genres: ['Classes & Workshops'],
       url: 'https://waba.org/event/adult-learn-to-ride/'
@@ -648,11 +773,13 @@ describe('fetchStoredShowEvents', () => {
     const record = module.buildStoredShowEventRecord(source, event, new Date().toISOString());
     const storedDoc = firestore.getDoc(record.docId);
     expect(storedDoc).toBeTruthy();
-    expect(storedDoc.reviewStatus).toBe('pending');
-    expect(storedDoc.publishedAt).toBeNull();
+    expect(storedDoc.reviewStatus).toBe('approved');
+    expect(storedDoc.reviewedBy).toBe('auto-approval');
+    expect(storedDoc.autoApprovalRuleId).toBe('default:auto-approve-all');
+    expect(storedDoc.publishedAt).toBeTruthy();
   });
 
-  it('stores new non-approved events with pending review status during persistence', async () => {
+  it('stores new events with approved review status during persistence', async () => {
     const firestore = buildFirestoreMock();
     const module = await import('../functions/backend/server.js');
     const source = { id: 'dclibrary', name: 'DC Library', type: 'communico' };
@@ -660,10 +787,103 @@ describe('fetchStoredShowEvents', () => {
       id: 'library-1',
       source: 'dclibrary',
       name: { text: 'Library Story Time' },
-      start: { local: '2026-06-12T10:00:00' },
-      end: { local: '2026-06-12T11:00:00' },
+      start: { local: '2026-09-12T10:00:00' },
+      end: { local: '2026-09-12T11:00:00' },
       venue: { name: 'Library Branch', address: {} },
       genres: ['Kids & Family'],
+      url: 'https://example.com/library-1'
+    };
+
+    const result = await module.persistStoredShowEvents([
+      {
+        ok: true,
+        source,
+        events: [event]
+      }
+    ], { force: true, db: firestore });
+
+    const record = module.buildStoredShowEventRecord(source, event, new Date().toISOString());
+    const storedDoc = firestore.getDoc(record.docId);
+    expect(result).toMatchObject({ written: 1, created: 1, updated: 0, unchanged: 0 });
+    expect(result.sources).toContainEqual({
+      id: 'dclibrary',
+      written: 1,
+      created: 1,
+      updated: 0,
+      unchanged: 0
+    });
+    expect(storedDoc).toBeTruthy();
+    expect(storedDoc.reviewStatus).toBe('approved');
+    expect(storedDoc.reviewNotes).toContain('Auto-approved by default');
+    expect(storedDoc.reviewedAt).toBeTruthy();
+    expect(storedDoc.reviewedBy).toBe('auto-approval');
+    expect(storedDoc.publishedAt).toBeTruthy();
+    expect(storedDoc.autoApprovalRuleId).toBe('default:auto-approve-all');
+    expect(storedDoc).toMatchObject({
+      reviewQueueSchemaVersion: 1,
+      reviewQueueStatus: 'approved',
+      reviewQueueVisible: false,
+      reviewQueueSourceDisabled: true,
+      reviewQueueNeedsImage: false,
+      reviewQueueNeedsCategories: false
+    });
+  });
+
+  it('preserves struck events during persistence', async () => {
+    const module = await import('../functions/backend/server.js');
+    const source = { id: 'dclibrary', name: 'DC Library', type: 'communico' };
+    const event = {
+      id: 'library-struck-1',
+      source: 'dclibrary',
+      name: { text: 'Struck Library Event' },
+      start: { local: '2026-09-12T10:00:00' },
+      end: { local: '2026-09-12T11:00:00' },
+      venue: { name: 'Library Branch', address: {} },
+      genres: ['Kids & Family'],
+      url: 'https://example.com/library-struck-1'
+    };
+    const record = module.buildStoredShowEventRecord(source, event, new Date().toISOString());
+    const firestore = buildFirestoreMock([
+      {
+        id: record.docId,
+        ...record.data,
+        reviewStatus: 'rejected',
+        reviewNotes: 'Struck during review',
+        reviewedBy: 'reviewer@example.com',
+        reviewedAt: { seconds: 1 },
+        publishedAt: null
+      }
+    ]);
+
+    await module.persistStoredShowEvents([
+      {
+        ok: true,
+        source,
+        events: [event]
+      }
+    ], { force: true, db: firestore });
+
+    const storedDoc = firestore.getDoc(record.docId);
+    expect(storedDoc).toBeTruthy();
+    expect(storedDoc.reviewStatus).toBe('rejected');
+    expect(storedDoc.reviewNotes).toBe('Struck during review');
+    expect(storedDoc.reviewedBy).toBe('reviewer@example.com');
+    expect(storedDoc.publishedAt).toBeNull();
+  });
+
+  it('reports existing stored event rewrites separately from new records during persistence', async () => {
+    const firestore = buildFirestoreMock();
+    const module = await import('../functions/backend/server.js');
+    const source = { id: 'dclibrary', name: 'DC Library', type: 'communico' };
+    const event = {
+      id: 'library-1',
+      source: 'dclibrary',
+      name: { text: 'Library Story Time' },
+      start: { local: '2026-07-12T10:00:00' },
+      end: { local: '2026-07-12T11:00:00' },
+      venue: { name: 'Library Branch', address: {} },
+      genres: ['Kids & Family'],
+      summary: 'Original description',
       url: 'https://example.com/library-1'
     };
 
@@ -674,15 +894,22 @@ describe('fetchStoredShowEvents', () => {
         events: [event]
       }
     ], { force: true, db: firestore });
+    const updatedResult = await module.persistStoredShowEvents([
+      {
+        ok: true,
+        source,
+        events: [{ ...event, summary: 'Updated description' }]
+      }
+    ], { force: true, db: firestore });
 
-    const record = module.buildStoredShowEventRecord(source, event, new Date().toISOString());
-    const storedDoc = firestore.getDoc(record.docId);
-    expect(storedDoc).toBeTruthy();
-    expect(storedDoc.reviewStatus).toBe('pending');
-    expect(storedDoc.reviewNotes).toBeNull();
-    expect(storedDoc.reviewedAt).toBeNull();
-    expect(storedDoc.reviewedBy).toBeNull();
-    expect(storedDoc.publishedAt).toBeNull();
+    expect(updatedResult).toMatchObject({ written: 1, created: 0, updated: 1, unchanged: 0 });
+    expect(updatedResult.sources).toContainEqual({
+      id: 'dclibrary',
+      written: 1,
+      created: 0,
+      updated: 1,
+      unchanged: 0
+    });
   });
 
   it('auto-approves complete events from trusted review sources with audit metadata', async () => {
@@ -728,7 +955,7 @@ describe('fetchStoredShowEvents', () => {
     expect(storedDoc.categoriesUpdatedAt).toBeTruthy();
   });
 
-  it('keeps trusted source events pending when required auto-approval fields are missing', async () => {
+  it('auto-approves trusted source events by default when trusted-rule fields are missing', async () => {
     const firestore = buildFirestoreMock();
     const module = await import('../functions/backend/server.js');
     const source = {
@@ -741,8 +968,8 @@ describe('fetchStoredShowEvents', () => {
       id: 'trusted-library-2',
       source: 'trustedlibrary',
       name: { text: 'Trusted Story Time Without Image' },
-      start: { utc: '2026-07-13T14:00:00.000Z' },
-      end: { utc: '2026-07-13T15:00:00.000Z' },
+      start: { utc: '2026-09-13T14:00:00.000Z' },
+      end: { utc: '2026-09-13T15:00:00.000Z' },
       venue: { name: 'Trusted Branch', address: { city: 'Washington', region: 'DC' } },
       genres: ['Kids & Family'],
       url: 'https://example.com/trusted-library-2'
@@ -759,13 +986,13 @@ describe('fetchStoredShowEvents', () => {
     const record = module.buildStoredShowEventRecord(source, event, new Date().toISOString());
     const storedDoc = firestore.getDoc(record.docId);
     expect(storedDoc).toBeTruthy();
-    expect(storedDoc.reviewStatus).toBe('pending');
-    expect(storedDoc.reviewedBy).toBeNull();
-    expect(storedDoc.autoApprovalRuleId).toBeUndefined();
-    expect(storedDoc.publishedAt).toBeNull();
+    expect(storedDoc.reviewStatus).toBe('approved');
+    expect(storedDoc.reviewedBy).toBe('auto-approval');
+    expect(storedDoc.autoApprovalRuleId).toBe('default:auto-approve-all');
+    expect(storedDoc.publishedAt).toBeTruthy();
   });
 
-  it('keeps trusted source events pending when categories only come from unapproved text inference', async () => {
+  it('auto-approves trusted source events by default when categories only come from text inference', async () => {
     const firestore = buildFirestoreMock();
     const module = await import('../functions/backend/server.js');
     const source = {
@@ -779,8 +1006,8 @@ describe('fetchStoredShowEvents', () => {
       source: 'trustedlibrary',
       name: { text: 'Friday Jazz Night' },
       summary: 'A live quartet performs standards.',
-      start: { utc: '2026-07-14T23:00:00.000Z' },
-      end: { utc: '2026-07-15T00:00:00.000Z' },
+      start: { utc: '2026-09-14T23:00:00.000Z' },
+      end: { utc: '2026-09-15T00:00:00.000Z' },
       venue: { name: 'Trusted Branch', address: { city: 'Washington', region: 'DC' } },
       genres: [],
       images: [{ url: '/api/images/abcdefabcdefabcdefabcdefabcdefabcdefabcd' }],
@@ -799,13 +1026,13 @@ describe('fetchStoredShowEvents', () => {
     const storedDoc = firestore.getDoc(record.docId);
     expect(storedDoc).toBeTruthy();
     expect(storedDoc.event.genres).toContain('Jazz & Blues');
-    expect(storedDoc.reviewStatus).toBe('pending');
-    expect(storedDoc.reviewedBy).toBeNull();
-    expect(storedDoc.autoApprovalRuleId).toBeUndefined();
-    expect(storedDoc.publishedAt).toBeNull();
+    expect(storedDoc.reviewStatus).toBe('approved');
+    expect(storedDoc.reviewedBy).toBe('auto-approval');
+    expect(storedDoc.autoApprovalRuleId).toBe('default:auto-approve-all');
+    expect(storedDoc.publishedAt).toBeTruthy();
   });
 
-  it('keeps persisting non-excluded pending events when title exclusions exist', async () => {
+  it('keeps persisting non-excluded auto-approved events when title exclusions exist', async () => {
     const firestore = buildFirestoreMock([], [
       { sourceId: 'dclibrary', titleKey: 'archived lecture', title: 'Archived Lecture' }
     ]);
@@ -815,8 +1042,8 @@ describe('fetchStoredShowEvents', () => {
       id: 'library-2',
       source: 'dclibrary',
       name: { text: 'Fresh Story Time' },
-      start: { local: '2026-06-13T10:00:00' },
-      end: { local: '2026-06-13T11:00:00' },
+      start: { local: '2026-09-13T10:00:00' },
+      end: { local: '2026-09-13T11:00:00' },
       venue: { name: 'Library Branch', address: {} },
       genres: ['Kids & Family'],
       url: 'https://example.com/library-2'
@@ -833,18 +1060,19 @@ describe('fetchStoredShowEvents', () => {
     const record = module.buildStoredShowEventRecord(source, event, new Date().toISOString());
     const storedDoc = firestore.getDoc(record.docId);
     expect(storedDoc).toBeTruthy();
-    expect(storedDoc.reviewStatus).toBe('pending');
+    expect(storedDoc.reviewStatus).toBe('approved');
+    expect(storedDoc.autoApprovalRuleId).toBe('default:auto-approve-all');
   });
 
-  it('resets legacy auto-approved WABA one-offs back to pending during persistence', async () => {
+  it('keeps legacy auto-approved WABA one-offs approved by default during persistence', async () => {
     const module = await import('../functions/backend/server.js');
     const source = { id: 'waba', name: 'WABA', type: 'waba' };
     const event = {
       id: 'waba-2',
       source: 'waba',
       name: { text: 'Adult Learn to Ride' },
-      start: { local: '2026-06-11T12:00:00', noTime: true },
-      end: { local: '2026-06-11T12:00:00', noTime: true },
+      start: { local: '2026-09-11T12:00:00', noTime: true },
+      end: { local: '2026-09-11T12:00:00', noTime: true },
       venue: { name: 'Anacostia Boat Ramp Lot', address: {} },
       genres: ['Classes & Workshops'],
       url: 'https://waba.org/event/adult-learn-to-ride-2/'
@@ -869,9 +1097,10 @@ describe('fetchStoredShowEvents', () => {
 
     const storedDoc = firestore.getDoc(record.docId);
     expect(storedDoc).toBeTruthy();
-    expect(storedDoc.reviewStatus).toBe('pending');
-    expect(storedDoc.publishedAt).toBeNull();
-    expect(storedDoc.reviewedAt).toBeNull();
+    expect(storedDoc.reviewStatus).toBe('approved');
+    expect(storedDoc.publishedAt).toBeTruthy();
+    expect(storedDoc.reviewedAt).toBeTruthy();
+    expect(storedDoc.autoApprovalRuleId).toBe('default:auto-approve-all');
   });
 
   it('does not truncate the full stored feed to 400 events', async () => {
@@ -1960,12 +2189,13 @@ describe('fetchStoredShowEvents', () => {
     });
 
     expect(reviewItems).toHaveLength(1);
-    expect(reviewItems[0].event.images?.[0]?.url).toBe('https://www.trumba.com/i/DgBaEy%2AnRf6y3%2AeRlcm5fNiQ.jpg');
+    expect(reviewItems[0].event.images?.[0]?.url)
+      .toBe('/api/image-proxy?url=https%3A%2F%2Fwww.trumba.com%2Fi%2FDgBaEy%252AnRf6y3%252AeRlcm5fNiQ.jpg');
     expect(firestore.getDoc('img-missing-1')?.event?.images?.[0]?.url)
-      .toBe('https://www.trumba.com/i/DgBaEy%2AnRf6y3%2AeRlcm5fNiQ.jpg');
+      .toBe('/api/image-proxy?url=https%3A%2F%2Fwww.trumba.com%2Fi%2FDgBaEy%252AnRf6y3%252AeRlcm5fNiQ.jpg');
   });
 
-  it('keeps image-less pending events in pending and image-missing queues', async () => {
+  it('keeps image-less pending events out of pending and in the image-missing queue', async () => {
     const now = Date.now();
     const firestore = buildFirestoreMock([
       {
@@ -2000,10 +2230,78 @@ describe('fetchStoredShowEvents', () => {
       db: firestore
     });
 
-    expect(pendingItems).toHaveLength(1);
-    expect(pendingItems[0].eventName).toBe('Pending Event Without Image');
+    expect(pendingItems).toEqual([]);
     expect(imageMissingItems).toHaveLength(1);
     expect(imageMissingItems[0].eventName).toBe('Pending Event Without Image');
+  });
+
+  it('keeps proxied DC9 images in pending review items', async () => {
+    const now = Date.now();
+    const firestore = buildFirestoreMock([
+      {
+        id: 'review-doc-dc9-image',
+        sourceId: 'dc9',
+        sourceName: 'DC9',
+        reviewStatus: 'pending',
+        eventId: 'dc9-image',
+        eventName: 'DC9 Event With Image',
+        eventStartMs: now + 60 * 60 * 1000,
+        eventEndMs: now + 2 * 60 * 60 * 1000,
+        event: {
+          id: 'dc9-image',
+          source: 'dc9',
+          name: { text: 'DC9 Event With Image' },
+          start: { utc: new Date(now + 60 * 60 * 1000).toISOString() },
+          end: { utc: new Date(now + 2 * 60 * 60 * 1000).toISOString() },
+          venue: { name: 'DC9' },
+          images: [
+            {
+              url: '/api/image-proxy?url=https%3A%2F%2Fdc9.club%2Fwp-content%2Fuploads%2F2026%2F03%2FThe-Bug-Club-1300x1300.jpg',
+              originalUrl: 'https://dc9.club/wp-content/uploads/2026/03/The-Bug-Club-1300x1300.jpg',
+              fallback: false
+            }
+          ]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const pendingItems = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 14,
+      db: firestore
+    });
+    const imageMissingItems = await module.listShowEventsForReview({
+      status: 'image-missing',
+      lookaheadDays: 14,
+      db: firestore
+    });
+
+    expect(pendingItems).toHaveLength(1);
+    expect(pendingItems[0]).toMatchObject({
+      eventName: 'DC9 Event With Image',
+      reviewStatus: 'pending',
+      storedReviewStatus: 'pending'
+    });
+    expect(pendingItems[0].event.images?.[0]?.url).toContain('/api/image-proxy?url=');
+    expect(imageMissingItems).toEqual([]);
+  });
+
+  it('does not count encoded logos or emoji assets as review images', async () => {
+    const module = await import('../functions/backend/server.js');
+    const event = {
+      id: 'waba-placeholder-image',
+      source: 'waba',
+      name: { text: 'WABA Placeholder Image' },
+      images: [
+        { url: 'https://waba.org/wp-content/themes/WABA2024/WABA%20Logo%20Color.svg' },
+        { url: 'https://static.xx.fbcdn.net/images/emoji.php/v9/t4c/1/16/1f367.png' },
+        { url: 'https://politics-prose.com/sites/default/files/2024-08/squarebookstorelogothinborder.png' }
+      ]
+    };
+
+    expect(module.eventNeedsImageUpgrade(event)).toBe(true);
+    expect(event.images).toBeUndefined();
   });
 
   it('keeps pending events visible when top-level eventStartMs is missing', async () => {
@@ -2121,6 +2419,10 @@ describe('fetchStoredShowEvents', () => {
       sourceId: index % 2 === 0 ? 'dclibrary' : 'mcpllibraries',
       sourceName: 'Disabled Library Source',
       reviewStatus: 'pending',
+      reviewQueueVisible: false,
+      reviewQueueStatus: 'pending',
+      reviewQueueNeedsImage: false,
+      reviewQueueSortMs: now + (index + 1) * 60 * 1000,
       eventId: `disabled-pending-${index}`,
       eventName: `Disabled Pending ${index}`,
       eventStartMs: now + (index + 1) * 60 * 1000,
@@ -2140,6 +2442,10 @@ describe('fetchStoredShowEvents', () => {
       sourceId: 'smithsonian',
       sourceName: 'Smithsonian',
       reviewStatus: 'pending',
+      reviewQueueVisible: true,
+      reviewQueueStatus: 'pending',
+      reviewQueueNeedsImage: false,
+      reviewQueueSortMs: now + (index + 1) * 60 * 1000,
       eventId: `active-pending-${index}`,
       eventName: `Active Pending ${index}`,
       eventStartMs: now + (index + 1) * 60 * 1000,
@@ -2165,10 +2471,10 @@ describe('fetchStoredShowEvents', () => {
     });
 
     expect(pendingItems.map(item => item.eventId)).toEqual(
-      Array.from({ length: 10 }, (_, index) => `active-pending-${11 - index}`)
+      Array.from({ length: 10 }, (_, index) => `active-pending-${index}`)
     );
     expect(pendingItems.hasMore).toBe(true);
-    expect(firestore.query.get.mock.calls.length).toBeGreaterThan(1);
+    expect(firestore.query._history.map(entry => entry.limit)).toEqual([11]);
   });
 
   it('loads the full unpaginated pending review queue even when disabled sources dominate stored rows', async () => {
@@ -2832,7 +3138,7 @@ describe('fetchStoredShowEvents', () => {
         expect.objectContaining({ field: 'eventStartMs', op: '<=' })
       ])
     );
-    expect(firestore.query._history[0].orderBy).toEqual({ field: 'eventStartMs', direction: 'desc' });
+    expect(firestore.query._history[0].orderBy).toEqual({ field: 'eventStartMs', direction: 'asc' });
   });
 
   it('returns pending review queue pages by offset and reports hasMore', async () => {
@@ -2842,6 +3148,10 @@ describe('fetchStoredShowEvents', () => {
       sourceId: 'smithsonian',
       sourceName: 'Smithsonian',
       reviewStatus: 'pending',
+      reviewQueueVisible: true,
+      reviewQueueStatus: 'pending',
+      reviewQueueNeedsImage: false,
+      reviewQueueSortMs: now + (index + 1) * 60 * 60 * 1000,
       eventId: `pending-${index}`,
       eventName: `Pending ${index}`,
       eventStartMs: now + (index + 1) * 60 * 60 * 1000,
@@ -2874,14 +3184,222 @@ describe('fetchStoredShowEvents', () => {
     });
 
     expect(firstPage.map(item => item.eventId)).toEqual(
-      Array.from({ length: 10 }, (_, index) => `pending-${24 - index}`)
+      Array.from({ length: 10 }, (_, index) => `pending-${index}`)
     );
     expect(firstPage.hasMore).toBe(true);
     expect(secondPage.map(item => item.eventId)).toEqual(
-      Array.from({ length: 10 }, (_, index) => `pending-${14 - index}`)
+      Array.from({ length: 10 }, (_, index) => `pending-${index + 10}`)
     );
     expect(secondPage.hasMore).toBe(true);
     expect(firestore.query._history.map(entry => entry.limit)).toEqual([11, 21]);
+  });
+
+  it('uses materialized review queue fields for pending review pages', async () => {
+    const now = Date.now();
+    const docs = Array.from({ length: 12 }, (_, index) => ({
+      id: `materialized-review-doc-${index}`,
+      sourceId: 'smithsonian',
+      sourceName: 'Smithsonian',
+      reviewStatus: 'pending',
+      reviewQueueSchemaVersion: 1,
+      reviewQueueVisible: true,
+      reviewQueueStatus: 'pending',
+      reviewQueueNeedsImage: false,
+      reviewQueueNeedsCategories: false,
+      reviewQueueSortMs: now + (index + 1) * 60 * 60 * 1000,
+      eventId: `materialized-pending-${index}`,
+      eventName: `Materialized Pending ${index}`,
+      eventStartMs: now + (index + 1) * 60 * 60 * 1000,
+      eventEndMs: now + (index + 2) * 60 * 60 * 1000,
+      event: {
+        id: `materialized-pending-${index}`,
+        source: 'smithsonian',
+        name: { text: `Materialized Pending ${index}` },
+        start: { utc: new Date(now + (index + 1) * 60 * 60 * 1000).toISOString() },
+        end: { utc: new Date(now + (index + 2) * 60 * 60 * 1000).toISOString() },
+        venue: { name: 'Venue' },
+        genres: ['Kids & Family'],
+        images: [{ url: `/api/images/materialized-${index}` }]
+      }
+    }));
+    const firestore = buildFirestoreMock(docs);
+
+    const module = await import('../functions/backend/server.js');
+    const page = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 14,
+      limit: 10,
+      db: firestore
+    });
+
+    expect(page.map(item => item.eventId)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `materialized-pending-${index}`)
+    );
+    expect(page.hasMore).toBe(true);
+    expect(firestore.query._history).toHaveLength(1);
+    expect(firestore.query._history[0].filters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'reviewQueueVisible', op: '==', value: true }),
+        expect.objectContaining({ field: 'reviewQueueStatus', op: '==', value: 'pending' }),
+        expect.objectContaining({ field: 'reviewQueueSortMs', op: '>=' })
+      ])
+    );
+    expect(firestore.query._history[0].orderBy).toEqual({ field: 'reviewQueueSortMs', direction: 'asc' });
+    expect(firestore.query._history[0].limit).toBe(11);
+  });
+
+  it('loads the bulk pending review queue from materialized fields with one read', async () => {
+    const now = Date.now();
+    const docs = Array.from({ length: 25 }, (_, index) => ({
+      id: `bulk-materialized-review-doc-${index}`,
+      sourceId: 'smithsonian',
+      sourceName: 'Smithsonian',
+      reviewStatus: 'pending',
+      reviewQueueSchemaVersion: 1,
+      reviewQueueVisible: true,
+      reviewQueueStatus: 'pending',
+      reviewQueueNeedsImage: false,
+      reviewQueueNeedsCategories: false,
+      reviewQueueSortMs: now + (index + 1) * 60 * 60 * 1000,
+      eventId: `bulk-materialized-pending-${index}`,
+      eventName: `Bulk Materialized Pending ${index}`,
+      eventStartMs: now + (index + 1) * 60 * 60 * 1000,
+      eventEndMs: now + (index + 2) * 60 * 60 * 1000,
+      event: {
+        id: `bulk-materialized-pending-${index}`,
+        source: 'smithsonian',
+        name: { text: `Bulk Materialized Pending ${index}` },
+        start: { utc: new Date(now + (index + 1) * 60 * 60 * 1000).toISOString() },
+        end: { utc: new Date(now + (index + 2) * 60 * 60 * 1000).toISOString() },
+        venue: { name: 'Venue' },
+        genres: ['Kids & Family'],
+        images: [{ url: `/api/images/bulk-materialized-${index}` }]
+      }
+    }));
+    const firestore = buildFirestoreMock(docs);
+
+    const module = await import('../functions/backend/server.js');
+    const page = await module.listShowEventsForReview({
+      status: 'pending',
+      limit: 5000,
+      db: firestore
+    });
+
+    expect(page.map(item => item.eventId)).toEqual(
+      Array.from({ length: 25 }, (_, index) => `bulk-materialized-pending-${index}`)
+    );
+    expect(page.hasMore).toBe(false);
+    expect(firestore.query._history).toHaveLength(1);
+    expect(firestore.query._history[0].filters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'reviewQueueVisible', op: '==', value: true }),
+        expect.objectContaining({ field: 'reviewQueueStatus', op: '==', value: 'pending' }),
+        expect.objectContaining({ field: 'reviewQueueSortMs', op: '>=' })
+      ])
+    );
+    expect(firestore.query._history[0].orderBy).toEqual({ field: 'reviewQueueSortMs', direction: 'asc' });
+    expect(firestore.query._history[0].limit).toBe(5001);
+  });
+
+  it('does not require materialized review queue fields for image-missing review pages', async () => {
+    const now = Date.now();
+    const firestore = buildFirestoreMock([
+      {
+        id: 'materialized-image-missing-doc',
+        sourceId: 'smithsonian',
+        sourceName: 'Smithsonian',
+        reviewStatus: 'pending',
+        reviewQueueVisible: true,
+        reviewQueueStatus: 'pending',
+        reviewQueueNeedsImage: true,
+        reviewQueueSortMs: now + 60 * 60 * 1000,
+        eventId: 'materialized-image-missing',
+        eventName: 'Materialized Image Missing',
+        eventStartMs: now + 60 * 60 * 1000,
+        event: {
+          id: 'materialized-image-missing',
+          source: 'smithsonian',
+          name: { text: 'Materialized Image Missing' },
+          start: { utc: new Date(now + 60 * 60 * 1000).toISOString() }
+        }
+      },
+      {
+        id: 'materialized-image-present-doc',
+        sourceId: 'smithsonian',
+        sourceName: 'Smithsonian',
+        reviewStatus: 'pending',
+        reviewQueueVisible: true,
+        reviewQueueStatus: 'pending',
+        reviewQueueNeedsImage: false,
+        reviewQueueSortMs: now + 2 * 60 * 60 * 1000,
+        eventId: 'materialized-image-present',
+        eventName: 'Materialized Image Present',
+        eventStartMs: now + 2 * 60 * 60 * 1000,
+        event: {
+          id: 'materialized-image-present',
+          source: 'smithsonian',
+          name: { text: 'Materialized Image Present' },
+          start: { utc: new Date(now + 2 * 60 * 60 * 1000).toISOString() },
+          images: [{ url: '/api/images/materialized-image-present' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const page = await module.listShowEventsForReview({
+      status: 'image-missing',
+      limit: 10,
+      db: firestore
+    });
+
+    expect(page.map(item => item.eventId)).toEqual(['materialized-image-missing']);
+    expect(
+      firestore.query._history.some(entry =>
+        entry.filters.some(filter => filter.field === 'reviewQueueNeedsImage')
+      )
+    ).toBe(false);
+  });
+
+  it('backfills materialized review queue fields for existing stored events', async () => {
+    const now = Date.now();
+    const firestore = buildFirestoreMock([
+      {
+        id: 'existing-review-doc',
+        sourceId: 'smithsonian',
+        reviewStatus: 'pending',
+        eventId: 'existing-pending',
+        eventName: 'Existing Pending',
+        eventStartMs: now + 60 * 60 * 1000,
+        eventEndMs: now + 2 * 60 * 60 * 1000,
+        event: {
+          id: 'existing-pending',
+          source: 'smithsonian',
+          name: { text: 'Existing Pending' },
+          start: { utc: new Date(now + 60 * 60 * 1000).toISOString() },
+          end: { utc: new Date(now + 2 * 60 * 60 * 1000).toISOString() },
+          venue: { name: 'Venue' },
+          genres: ['Kids & Family'],
+          images: [{ url: '/api/images/existing' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const result = await module.backfillReviewQueueMaterializedFields({
+      limit: 20,
+      db: firestore
+    });
+
+    expect(result).toMatchObject({ scanned: 1, updated: 1, dryRun: false });
+    expect(firestore.getDoc('existing-review-doc')).toMatchObject({
+      reviewQueueSchemaVersion: 1,
+      reviewQueueVisible: true,
+      reviewQueueStatus: 'pending',
+      reviewQueueNeedsImage: false,
+      reviewQueueNeedsCategories: true,
+      reviewQueueSourceDisabled: false,
+      reviewQueueTitleExcluded: false
+    });
   });
 
   it('caps oversized pending review queue lookahead reads', async () => {
@@ -2934,7 +3452,7 @@ describe('fetchStoredShowEvents', () => {
       db: firestore
     });
 
-    expect(reviewItems.map(item => item.eventId)).toEqual(['pending-later', 'pending-soon']);
+    expect(reviewItems.map(item => item.eventId)).toEqual(['pending-soon', 'pending-later']);
     const upperBound = firestore.query._history[0].filters.find(filter => filter.field === 'eventStartMs' && filter.op === '<=');
     expect(upperBound.value).toBeLessThanOrEqual(now + 101 * 24 * 60 * 60 * 1000);
   });
@@ -3315,41 +3833,67 @@ describe('fetchStoredShowEvents', () => {
   it('publishes one stored event per approved recurring series', async () => {
     const now = Date.now();
     const seriesId = 'theatrewashington::series::recurring-show';
+    const firstDate = new Date(now + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const secondDate = new Date(now + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const rangeEndDate = new Date(now + 12 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const formatDateLabel = value =>
+      new Intl.DateTimeFormat('en-US', { dateStyle: 'long' }).format(new Date(`${value}T12:00:00`));
+    const rangeLabel = `${formatDateLabel(firstDate)} - ${formatDateLabel(rangeEndDate)}`;
     const firestore = buildFirestoreMock([
       {
         sourceId: 'theatrewashington',
         reviewStatus: 'approved',
+        categoriesUpdatedAt: new Date(now).toISOString(),
+        taxonomyGenres: ['Theater & Musical'],
         recurringSeriesId: seriesId,
-        recurringOccurrenceDate: '2026-05-01',
+        recurringOccurrenceDate: firstDate,
         isRecurring: true,
         eventStartMs: now + 24 * 60 * 60 * 1000,
         eventEndMs: now + 24 * 60 * 60 * 1000,
         event: {
-          id: `${seriesId}::2026-05-01`,
+          id: `${seriesId}::${firstDate}`,
           name: { text: 'Recurring Show' },
+          genres: ['Theater & Musical'],
           start: { utc: new Date(now + 24 * 60 * 60 * 1000).toISOString() },
           end: { utc: new Date(now + 24 * 60 * 60 * 1000).toISOString() },
           venue: { name: 'Recurring Venue' },
           distance: 5,
-          recurring: { isRecurring: true, seriesId, occurrenceDate: '2026-05-01' }
+          recurring: {
+            isRecurring: true,
+            seriesId,
+            occurrenceDate: firstDate,
+            startDate: firstDate,
+            endDate: rangeEndDate,
+            rangeLabel
+          }
         }
       },
       {
         sourceId: 'theatrewashington',
         reviewStatus: 'approved',
+        categoriesUpdatedAt: new Date(now).toISOString(),
+        taxonomyGenres: ['Theater & Musical'],
         recurringSeriesId: seriesId,
-        recurringOccurrenceDate: '2026-05-02',
+        recurringOccurrenceDate: secondDate,
         isRecurring: true,
         eventStartMs: now + 2 * 24 * 60 * 60 * 1000,
         eventEndMs: now + 2 * 24 * 60 * 60 * 1000,
         event: {
-          id: `${seriesId}::2026-05-02`,
+          id: `${seriesId}::${secondDate}`,
           name: { text: 'Recurring Show' },
+          genres: ['Theater & Musical'],
           start: { utc: new Date(now + 2 * 24 * 60 * 60 * 1000).toISOString() },
           end: { utc: new Date(now + 2 * 24 * 60 * 60 * 1000).toISOString() },
           venue: { name: 'Recurring Venue' },
           distance: 5,
-          recurring: { isRecurring: true, seriesId, occurrenceDate: '2026-05-02' }
+          recurring: {
+            isRecurring: true,
+            seriesId,
+            occurrenceDate: secondDate,
+            startDate: firstDate,
+            endDate: rangeEndDate,
+            rangeLabel
+          }
         }
       }
     ]);
@@ -3362,8 +3906,11 @@ describe('fetchStoredShowEvents', () => {
     });
 
     expect(events).toHaveLength(1);
-    expect(events[0].id).toBe(`${seriesId}::2026-05-01`);
-    expect(events[0].recurring?.occurrenceDates).toEqual(['2026-05-01', '2026-05-02']);
+    expect(events[0].id).toBe(`${seriesId}::${firstDate}`);
+    expect(events[0].recurring?.occurrenceDates).toEqual([firstDate, secondDate]);
+    expect(events[0].recurring?.startDate).toBe(firstDate);
+    expect(events[0].recurring?.endDate).toBe(rangeEndDate);
+    expect(events[0].recurring?.rangeLabel).toBe(rangeLabel);
   });
 
   it('strips externally linked images from stored events and keeps only local cached image urls', async () => {
@@ -3517,6 +4064,208 @@ describe('fetchStoredShowEvents', () => {
     expect(approvedItems[0].reviewStatus).toBe('approved');
   });
 
+  it('detects an approved cross-source duplicate by canonical event URL', async () => {
+    const now = Date.now();
+    const eventUrl = 'https://www.rhizomedc.org/new-events/2026/7/11/heroic-measures-a-rhizome-larp';
+    const firestore = buildFirestoreMock([
+      {
+        id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        sourceId: 'rhizomedc',
+        sourceName: 'Rhizome DC',
+        eventId: 'rhizome-heroic',
+        eventName: 'Heroic Measures - A Rhizome LARP',
+        reviewStatus: 'approved',
+        eventStartMs: now + 60 * 60 * 1000,
+        eventEndMs: now + 3 * 60 * 60 * 1000,
+        eventUrl,
+        event: {
+          id: 'rhizome-heroic',
+          source: 'rhizomedc',
+          name: { text: 'Heroic Measures - A Rhizome LARP' },
+          url: eventUrl,
+          start: { utc: new Date(now + 60 * 60 * 1000).toISOString() },
+          end: { utc: new Date(now + 3 * 60 * 60 * 1000).toISOString() },
+          genres: ['Games & Competitions'],
+          images: [{ url: '/api/images/heroic' }]
+        }
+      },
+      {
+        id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        sourceId: 'citycastdc',
+        sourceName: 'City Cast DC',
+        eventId: 'citycast-heroic',
+        eventName: 'Heroic Measures - A Rhizome LARP',
+        reviewStatus: 'pending',
+        eventStartMs: now,
+        eventEndMs: now + 2 * 60 * 60 * 1000,
+        eventUrl,
+        event: {
+          id: 'citycast-heroic',
+          source: 'citycastdc',
+          name: { text: 'Heroic Measures - A Rhizome LARP' },
+          url: `${eventUrl}?utm_source=citycast`,
+          start: { utc: new Date(now).toISOString() },
+          end: { utc: new Date(now + 2 * 60 * 60 * 1000).toISOString() },
+          genres: ['Games & Competitions'],
+          images: [{ url: '/api/images/heroic' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const pendingItems = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 14,
+      includeDuplicateMatches: true,
+      db: firestore
+    });
+
+    expect(pendingItems).toHaveLength(1);
+    expect(pendingItems[0].eventName).toBe('Heroic Measures - A Rhizome LARP');
+    expect(pendingItems[0].possibleDuplicates).toEqual([
+      expect.objectContaining({
+        id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        sourceId: 'rhizomedc',
+        reviewStatus: 'approved'
+      })
+    ]);
+  });
+
+  it('detects an approved cross-source duplicate by title alias, date, and venue', async () => {
+    const eventStartMs = new Date('2026-07-11T16:00:00.000Z').getTime();
+    const eventEndMs = eventStartMs;
+    const firestore = buildFirestoreMock([
+      {
+        id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        sourceId: 'theatrewashington',
+        sourceName: 'Theatre Washington',
+        eventId: 'theatre-beetlejuice',
+        eventName: 'Beetlejuice',
+        reviewStatus: 'approved',
+        eventStartMs,
+        eventEndMs,
+        event: {
+          id: 'theatre-beetlejuice',
+          source: 'theatrewashington',
+          name: { text: 'Beetlejuice' },
+          url: 'https://theatrewashington.org/shows/beetlejuice-1',
+          start: { local: '2026-07-11T12:00:00', noTime: true },
+          end: { local: '2026-07-11T12:00:00', noTime: true },
+          venue: { name: 'Broadway at The National' },
+          genres: ['Theater & Musical'],
+          images: [{ url: '/api/images/beetlejuice' }]
+        }
+      },
+      {
+        id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        sourceId: 'citycastdc',
+        sourceName: 'City Cast DC',
+        eventId: 'citycast-beetlejuice',
+        eventName: '“Beetlejuice: The Musical”',
+        reviewStatus: 'pending',
+        eventStartMs,
+        eventEndMs,
+        event: {
+          id: 'citycast-beetlejuice',
+          source: 'citycastdc',
+          name: { text: '“Beetlejuice: The Musical”' },
+          url: 'https://www.facebook.com/events/1540962483580282/',
+          start: { local: '2026-07-11T12:00:00', noTime: true },
+          end: { local: '2026-07-11T12:00:00', noTime: true },
+          venue: { name: 'Broadway at the National (Downtwon)' },
+          genres: ['Theater & Musical'],
+          images: [{ url: '/api/images/beetlejuice' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const pendingItems = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 14,
+      includeDuplicateMatches: true,
+      db: firestore
+    });
+
+    expect(pendingItems).toHaveLength(1);
+    expect(pendingItems[0].eventName).toBe('“Beetlejuice: The Musical”');
+    expect(pendingItems[0].possibleDuplicates).toEqual([
+      expect.objectContaining({
+        id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        sourceId: 'theatrewashington',
+        reviewStatus: 'approved'
+      })
+    ]);
+  });
+
+  it('detects an approved Smithsonian duplicate by Trumba event id despite URL and time differences', async () => {
+    const cityCastStartMs = new Date('2026-07-11T16:00:00.000Z').getTime();
+    const smithsonianStartMs = new Date('2026-07-11T14:00:00.000Z').getTime();
+    const smithsonianEndMs = new Date('2026-07-11T16:00:00.000Z').getTime();
+    const firestore = buildFirestoreMock([
+      {
+        id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        sourceId: 'smithsonian',
+        sourceName: 'Smithsonian',
+        eventId: 'smithsonian-198299635',
+        eventName: 'Growing Community: How Does Our Garden Grow?',
+        reviewStatus: 'approved',
+        eventStartMs: smithsonianStartMs,
+        eventEndMs: smithsonianEndMs,
+        event: {
+          id: 'smithsonian-198299635',
+          source: 'smithsonian',
+          name: { text: 'Growing Community: How Does Our Garden Grow?' },
+          url: 'https://www.si.edu/events?trumbaEmbed=view%3Devent%26eventid%3D198299635',
+          start: { utc: new Date(smithsonianStartMs).toISOString(), local: '2026-07-11T10:00:00' },
+          end: { utc: new Date(smithsonianEndMs).toISOString(), local: '2026-07-11T12:00:00' },
+          venue: { name: 'Anacostia Community Museum' },
+          genres: ['Outdoors'],
+          images: [{ url: '/api/images/garden' }]
+        }
+      },
+      {
+        id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        sourceId: 'citycastdc',
+        sourceName: 'City Cast DC',
+        eventId: 'citycast-garden',
+        eventName: 'Growing Community: How Does Our Garden Grow?',
+        reviewStatus: 'pending',
+        eventStartMs: cityCastStartMs,
+        eventEndMs: cityCastStartMs,
+        event: {
+          id: 'citycast-garden',
+          source: 'citycastdc',
+          name: { text: 'Growing Community: How Does Our Garden Grow?' },
+          url: 'https://www.si.edu/events/detail?trumbaEmbed=view%3Devent%26eventid%3D198299635',
+          start: { utc: new Date(cityCastStartMs).toISOString(), local: '2026-07-11T12:00:00', noTime: true },
+          end: { utc: new Date(cityCastStartMs).toISOString(), local: '2026-07-11T12:00:00', noTime: true },
+          venue: { name: 'Anacostia Community Museum' },
+          genres: ['Outdoors'],
+          images: [{ url: '/api/images/garden' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const pendingItems = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 14,
+      includeDuplicateMatches: true,
+      db: firestore
+    });
+
+    expect(pendingItems).toHaveLength(1);
+    expect(pendingItems[0].eventName).toBe('Growing Community: How Does Our Garden Grow?');
+    expect(pendingItems[0].possibleDuplicates).toEqual([
+      expect.objectContaining({
+        id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        sourceId: 'smithsonian',
+        reviewStatus: 'approved'
+      })
+    ]);
+  });
+
   it('saves a manual image URL while approving an event', async () => {
     const docId = '0123456789abcdef0123456789abcdef01234567';
     const firestore = buildSingleDocFirestoreMock({
@@ -3544,6 +4293,152 @@ describe('fetchStoredShowEvents', () => {
       manual: true
     });
     expect(firestore.getStored().reviewStatus).toBe('approved');
+  });
+
+  it('approves cross-source duplicates that share a canonical event URL despite time skew', async () => {
+    const now = Date.now();
+    const approvedDocId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const duplicateDocId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const eventUrl = 'https://www.rhizomedc.org/new-events/2026/7/11/heroic-measures-a-rhizome-larp';
+    const firestore = buildFirestoreMock([
+      {
+        id: approvedDocId,
+        sourceId: 'rhizomedc',
+        eventId: 'rhizome-heroic',
+        eventName: 'Heroic Measures - A Rhizome LARP',
+        reviewStatus: 'pending',
+        eventStartMs: now + 60 * 60 * 1000,
+        eventEndMs: now + 3 * 60 * 60 * 1000,
+        eventUrl,
+        event: {
+          id: 'rhizome-heroic',
+          source: 'rhizomedc',
+          name: { text: 'Heroic Measures - A Rhizome LARP' },
+          url: eventUrl,
+          start: { utc: new Date(now + 60 * 60 * 1000).toISOString() },
+          end: { utc: new Date(now + 3 * 60 * 60 * 1000).toISOString() },
+          genres: ['Games & Competitions'],
+          images: [{ url: '/api/images/heroic' }]
+        }
+      },
+      {
+        id: duplicateDocId,
+        sourceId: 'citycastdc',
+        eventId: 'citycast-heroic',
+        eventName: 'Heroic Measures - A Rhizome LARP',
+        reviewStatus: 'pending',
+        eventStartMs: now,
+        eventEndMs: now + 2 * 60 * 60 * 1000,
+        eventUrl,
+        event: {
+          id: 'citycast-heroic',
+          source: 'citycastdc',
+          name: { text: 'Heroic Measures - A Rhizome LARP' },
+          url: `${eventUrl}?utm_source=citycast`,
+          start: { utc: new Date(now).toISOString() },
+          end: { utc: new Date(now + 2 * 60 * 60 * 1000).toISOString() },
+          genres: ['Games & Competitions'],
+          images: [{ url: '/api/images/heroic' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    await module.updateShowEventReviewStatus(approvedDocId, {
+      status: 'approved',
+      db: firestore
+    });
+
+    expect(firestore.getDoc(approvedDocId).reviewStatus).toBe('approved');
+    expect(firestore.getDoc(duplicateDocId).reviewStatus).toBe('approved');
+  });
+
+  it('approves cross-source duplicates that share a title alias, date, and venue', async () => {
+    const approvedDocId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const duplicateDocId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const eventStartMs = new Date('2026-07-11T16:00:00.000Z').getTime();
+    const firestore = buildFirestoreMock([
+      {
+        id: approvedDocId,
+        sourceId: 'theatrewashington',
+        eventId: 'theatre-beetlejuice',
+        eventName: 'Beetlejuice',
+        reviewStatus: 'pending',
+        eventStartMs,
+        eventEndMs: eventStartMs,
+        event: {
+          id: 'theatre-beetlejuice',
+          source: 'theatrewashington',
+          name: { text: 'Beetlejuice' },
+          url: 'https://theatrewashington.org/shows/beetlejuice-1',
+          start: { local: '2026-07-11T12:00:00', noTime: true },
+          end: { local: '2026-07-11T12:00:00', noTime: true },
+          venue: { name: 'Broadway at The National' },
+          genres: ['Theater & Musical'],
+          images: [{ url: '/api/images/beetlejuice' }]
+        }
+      },
+      {
+        id: duplicateDocId,
+        sourceId: 'citycastdc',
+        eventId: 'citycast-beetlejuice',
+        eventName: 'Beetlejuice: The Musical',
+        reviewStatus: 'pending',
+        eventStartMs,
+        eventEndMs: eventStartMs,
+        event: {
+          id: 'citycast-beetlejuice',
+          source: 'citycastdc',
+          name: { text: 'Beetlejuice: The Musical' },
+          url: 'https://www.facebook.com/events/1540962483580282/',
+          start: { local: '2026-07-11T12:00:00', noTime: true },
+          end: { local: '2026-07-11T12:00:00', noTime: true },
+          venue: { name: 'Broadway at the National (Downtwon)' },
+          genres: ['Theater & Musical'],
+          images: [{ url: '/api/images/beetlejuice' }]
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    await module.updateShowEventReviewStatus(approvedDocId, {
+      status: 'approved',
+      db: firestore
+    });
+
+    expect(firestore.getDoc(approvedDocId).reviewStatus).toBe('approved');
+    expect(firestore.getDoc(duplicateDocId).reviewStatus).toBe('approved');
+  });
+
+  it('clears the materialized missing-image flag when saving a manual review image', async () => {
+    const docId = '0123456789abcdef0123456789abcdef01234567';
+    const firestore = buildSingleDocFirestoreMock({
+      sourceId: 'manual',
+      eventId: 'event-1',
+      eventName: 'Image Event',
+      reviewStatus: 'pending',
+      reviewQueueNeedsImage: true,
+      event: {
+        id: 'event-1',
+        source: 'manual',
+        name: { text: 'Image Event' },
+        images: []
+      }
+    });
+
+    const module = await import('../functions/backend/server.js');
+    const result = await module.updateShowEventReviewImage(docId, {
+      imageUrl: 'https://example.com/poster.jpg',
+      db: firestore
+    });
+
+    expect(result.manualImageUrl).toBe('https://example.com/poster.jpg');
+    expect(firestore.getStored().event.images[0]).toMatchObject({
+      url: 'https://example.com/poster.jpg',
+      manual: true
+    });
+    expect(firestore.getStored().reviewQueueNeedsImage).toBe(false);
+    expect(firestore.getStored().reviewQueueStatus).toBe('pending');
   });
 
   it('saves manual categories in the same approve mutation', async () => {
@@ -4006,6 +4901,94 @@ describe('fetchStoredShowEvents', () => {
       'Kids & Family',
       'Fitness & Wellness'
     ]);
+  });
+
+  it('keeps BUMPER CAR SQUARES visible despite a legacy source-less categoryless title rule', async () => {
+    const now = Date.now();
+    const firestore = buildFirestoreMock([
+      {
+        id: 'bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc',
+        sourceId: 'glenecho',
+        sourceName: 'Glen Echo Park',
+        eventId: 'bumper-car-squares',
+        eventName: 'BUMPER CAR SQUARES',
+        eventTitleKey: 'bumper car squares',
+        eventStartMs: now + 24 * 60 * 60 * 1000,
+        eventEndMs: now + 25 * 60 * 60 * 1000,
+        reviewStatus: 'pending',
+        event: {
+          id: 'bumper-car-squares',
+          name: { text: 'BUMPER CAR SQUARES' },
+          source: 'glenecho',
+          start: { utc: new Date(now + 24 * 60 * 60 * 1000).toISOString() },
+          end: { utc: new Date(now + 25 * 60 * 60 * 1000).toISOString() },
+          images: [{ url: '/api/images/bumper-car-squares' }],
+          genres: ['Dance', 'Classes & Workshops']
+        }
+      }
+    ], [], [
+      {
+        id: 'title::bumper car squares',
+        titleKey: 'bumper car squares'
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const pendingItems = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 60,
+      db: firestore
+    });
+
+    expect(pendingItems).toHaveLength(1);
+    expect(pendingItems[0]).toMatchObject({
+      sourceId: 'glenecho',
+      eventName: 'BUMPER CAR SQUARES',
+      reviewStatus: 'pending',
+      storedReviewStatus: 'pending'
+    });
+    expect(pendingItems[0].reviewStatus).not.toBe('approved');
+  });
+
+  it('keeps image-missing stored-pending items out of the pending queue', async () => {
+    const now = Date.now();
+    const firestore = buildFirestoreMock([
+      {
+        id: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+        sourceId: 'dc9',
+        sourceName: 'DC9',
+        eventId: 'dc9-no-image',
+        eventName: 'DC9 No Image',
+        eventTitleKey: 'dc9 no image',
+        eventStartMs: now + 24 * 60 * 60 * 1000,
+        eventEndMs: now + 25 * 60 * 60 * 1000,
+        reviewStatus: 'pending',
+        event: {
+          id: 'dc9-no-image',
+          name: { text: 'DC9 No Image' },
+          source: 'dc9',
+          start: { utc: new Date(now + 24 * 60 * 60 * 1000).toISOString() },
+          end: { utc: new Date(now + 25 * 60 * 60 * 1000).toISOString() },
+          images: [],
+          genres: ['Rock & Alternative']
+        }
+      }
+    ]);
+
+    const module = await import('../functions/backend/server.js');
+    const pendingItems = await module.listShowEventsForReview({
+      status: 'pending',
+      lookaheadDays: 14,
+      db: firestore
+    });
+    const imageMissingItems = await module.listShowEventsForReview({
+      status: 'image-missing',
+      lookaheadDays: 14,
+      db: firestore
+    });
+
+    expect(pendingItems).toEqual([]);
+    expect(imageMissingItems).toHaveLength(1);
   });
 
   it('keeps similar stored-pending title-auto-approved items visible until persistence approves them', async () => {
@@ -4526,6 +5509,41 @@ describe('fetchStoredShowEvents', () => {
     expect(events[0].start.local).toBe('2026-05-03T10:30:00');
     expect(events[0].end.local).toBe('2026-05-03T12:00:00');
     expect(events[0].venue.name).toBe('American History Museum');
+  });
+
+  it('filters online Smithsonian RSS events while keeping in-person events', async () => {
+    const module = await import('../functions/backend/server.js');
+    const itemXml = `
+      <rss><channel>
+        <item>
+          <title>Smithsonian Online Lecture</title>
+          <link>https://www.si.edu/events?trumbaEmbed=view%3devent%26eventid%3d198514618</link>
+          <description>Sunday, July 12, 2026, 7 pm&amp;nbsp;&amp;ndash;&amp;nbsp;8 pm &lt;br/&gt;&lt;br/&gt;&lt;b&gt;Venue&lt;/b&gt;:&amp;nbsp;Online</description>
+          <category>Online</category>
+          <guid isPermaLink="false">http://uid.trumba.com/event/198514618</guid>
+        </item>
+        <item>
+          <title>Smithsonian Gallery Talk</title>
+          <link>https://www.si.edu/events?trumbaEmbed=view%3devent%26eventid%3d198514619</link>
+          <description>Monday, July 13, 2026, 2 pm&amp;nbsp;&amp;ndash;&amp;nbsp;3 pm &lt;br/&gt;&lt;br/&gt;&lt;b&gt;Venue&lt;/b&gt;:&amp;nbsp;American Art Museum</description>
+          <category>Museum</category>
+          <guid isPermaLink="false">http://uid.trumba.com/event/198514619</guid>
+        </item>
+      </channel></rss>
+    `;
+
+    const events = await module.parseRssFeed(itemXml, { id: 'smithsonian', config: { fetchImageFromLink: false } }, {
+      latitude: 38.9055,
+      longitude: -77.0422,
+      lookaheadDays: 30
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      id: 'smithsonian::http-uid-trumba-com-event-198514619::2026-07-13',
+      name: { text: 'Smithsonian Gallery Talk' },
+      venue: { name: 'American Art Museum' }
+    });
   });
 
   it('fetches Smithsonian event images from the Trumba event API instead of the banner HTML', async () => {
@@ -5701,6 +6719,102 @@ describe('show genre normalization', () => {
     expect(labels).toEqual(['Games & Competitions']);
   });
 
+  it('tracks common learned features so boilerplate context is weighted lower', async () => {
+    const module = await import('../functions/backend/server.js');
+    const model = module.trainCategoryLearningModel(
+      [
+        {
+          sourceId: 'community-center',
+          title: 'Saturday chess tournament',
+          summary: 'Registration required.',
+          venueName: 'Takoma Community Center',
+          segment: 'activities',
+          sourceGenres: ['Board Games'],
+          categories: ['Games & Competitions'],
+          updatedAt: '2026-05-01T00:00:00.000Z'
+        },
+        {
+          sourceId: 'community-center',
+          title: 'Morning yoga',
+          summary: 'Registration required.',
+          venueName: 'Takoma Community Center',
+          segment: 'activities',
+          sourceGenres: ['Wellness'],
+          categories: ['Fitness & Wellness'],
+          updatedAt: '2026-05-01T00:00:00.000Z'
+        }
+      ],
+      ['Games & Competitions', 'Fitness & Wellness']
+    );
+
+    expect(model?.totalExamples).toBe(2);
+    expect(model?.featureDocumentCounts.get('source:community-center')).toBe(2);
+    expect(model?.featureDocumentCounts.get('venue:takoma community center')).toBe(2);
+    expect(model?.featureDocumentCounts.get('genre:board games')).toBe(1);
+    expect(module.predictCategoryLearningLabels(
+      {
+        source: 'community-center',
+        name: { text: 'Friday chess ladder' },
+        summary: 'Registration required.',
+        venue: { name: 'Takoma Community Center' },
+        segment: 'activities',
+        sourceGenres: ['Board Games']
+      },
+      {
+        model,
+        categoryOptions: ['Games & Competitions', 'Fitness & Wellness']
+      }
+    )).toEqual(['Games & Competitions']);
+  });
+
+  it('applies learned category labels when building stored review records', async () => {
+    const module = await import('../functions/backend/server.js');
+    const record = module.buildStoredShowEventRecord(
+      { id: 'community-center', name: 'Community Center', type: 'json' },
+      {
+        id: 'event-1',
+        segment: 'sports',
+        name: { text: 'Friday chess ladder' },
+        summary: 'Weekly rated chess tournament.',
+        venue: { name: 'Takoma Community Center' },
+        sourceGenres: ['Board Games'],
+        start: { utc: '2026-07-17T23:00:00.000Z' },
+        end: { utc: '2026-07-18T01:00:00.000Z' }
+      },
+      '2026-07-11T15:00:00.000Z',
+      {
+        settingsOverride: {
+          categoryOptions: ['Games & Competitions', 'Fitness & Wellness'],
+          categoryLearningExamples: [
+            {
+              sourceId: 'community-center',
+              title: 'Saturday chess tournament',
+              summary: 'Casual chess ladder for all skill levels.',
+              venueName: 'Takoma Community Center',
+              segment: 'sports',
+              sourceGenres: ['Board Games'],
+              categories: ['Games & Competitions'],
+              updatedAt: '2026-05-01T00:00:00.000Z'
+            },
+            {
+              sourceId: 'community-center',
+              title: 'Morning yoga',
+              summary: 'Stretching and mobility class.',
+              venueName: 'Takoma Community Center',
+              segment: 'fitness',
+              sourceGenres: ['Wellness'],
+              categories: ['Fitness & Wellness'],
+              updatedAt: '2026-05-01T00:00:00.000Z'
+            }
+          ]
+        }
+      }
+    );
+
+    expect(record?.data.event.genres).toEqual(['Games & Competitions']);
+    expect(record?.data.taxonomyGenres).toEqual(['Games & Competitions']);
+  });
+
   it('learns from specific title and summary phrases without trusting venue-only matches', async () => {
     const module = await import('../functions/backend/server.js');
     const examples = [
@@ -5750,6 +6864,46 @@ describe('show genre normalization', () => {
       },
       {
         categoryOptions: ['Outdoors', 'Fitness & Wellness', 'Games & Competitions'],
+        examples
+      }
+    )).toEqual([]);
+  });
+
+  it('does not assign learned categories from summary-only overlap', async () => {
+    const module = await import('../functions/backend/server.js');
+    const examples = [
+      {
+        sourceId: 'community-center',
+        title: 'Morning Yoga',
+        summary: 'Stretching and mobility class.',
+        venueName: '',
+        segment: '',
+        sourceGenres: [],
+        categories: ['Fitness & Wellness'],
+        updatedAt: '2026-07-01T00:00:00.000Z'
+      },
+      {
+        sourceId: 'community-center',
+        title: 'Chess Ladder',
+        summary: 'Weekly tournament.',
+        venueName: '',
+        segment: '',
+        sourceGenres: [],
+        categories: ['Games & Competitions'],
+        updatedAt: '2026-07-01T00:00:00.000Z'
+      }
+    ];
+
+    expect(module.predictCategoryLearningLabels(
+      {
+        source: 'community-center',
+        name: { text: 'Neighborhood Meetup' },
+        summary: 'A stretching and mobility class is available afterward.',
+        venue: { name: 'Takoma Community Center' },
+        sourceGenres: []
+      },
+      {
+        categoryOptions: ['Fitness & Wellness', 'Games & Competitions'],
         examples
       }
     )).toEqual([]);
@@ -5842,5 +6996,37 @@ describe('filterShowEventsForContext', () => {
     });
 
     expect(filtered.map(event => event.id)).toEqual(['within-window']);
+  });
+
+  it('keeps ongoing recurring runs after the representative occurrence date', async () => {
+    const module = await import('../functions/backend/server.js');
+    const now = Date.parse('2026-07-03T12:00:00Z');
+    const events = [
+      {
+        id: 'ongoing-theater-run',
+        name: { text: 'Feeling Afraid As If Something Terrible is Going to Happen' },
+        start: { local: '2026-07-02T12:00:00', noTime: true },
+        end: { local: '2026-07-02T12:00:00', noTime: true },
+        distance: 5,
+        images: [{ url: '/api/images/theater' }],
+        genres: ['Theater & Musical'],
+        recurring: {
+          isRecurring: true,
+          seriesId: 'theatrewashington::series::feeling-afraid',
+          occurrenceDate: '2026-07-02',
+          startDate: '2026-06-04',
+          endDate: '2026-07-12',
+          rangeLabel: 'June 4, 2026 - July 12, 2026'
+        }
+      }
+    ];
+
+    const filtered = module.filterShowEventsForContext(events, {
+      radiusMiles: 50,
+      lookaheadDays: 14,
+      nowMs: now
+    });
+
+    expect(filtered.map(event => event.id)).toEqual(['ongoing-theater-run']);
   });
 });

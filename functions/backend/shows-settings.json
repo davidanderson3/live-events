@@ -57,6 +57,7 @@
     "Games & Competitions",
     "Fairs & Festivals"
   ],
+  "deletedCategoryOptions": [],
   "categoryMappings": {
     "comedy": [
       "Comedy"
@@ -759,7 +760,7 @@
         "Classes & Workshops",
         "Fitness & Wellness"
       ],
-      "updatedAt": "2026-07-02T14:17:56.200Z"
+      "updatedAt": "2026-08-09T00:51:43.940Z"
     },
     {
       "signature": "waba::adult learn to ride::anacostia boat ramp lot",
@@ -772,7 +773,7 @@
         "Classes & Workshops",
         "Fitness & Wellness"
       ],
-      "updatedAt": "2026-07-02T14:17:56.180Z"
+      "updatedAt": "2026-08-09T00:51:43.911Z"
     },
     {
       "signature": "ticketmaster::image category event::kids & family",
@@ -787,7 +788,7 @@
         "Comedy",
         "Pop"
       ],
-      "updatedAt": "2026-07-02T14:17:56.165Z"
+      "updatedAt": "2026-08-09T00:51:43.891Z"
     },
     {
       "signature": "ticketmaster::category event::kids & family",
@@ -802,7 +803,7 @@
         "Comedy",
         "Pop"
       ],
-      "updatedAt": "2026-07-02T14:17:56.154Z"
+      "updatedAt": "2026-08-09T00:51:43.872Z"
     },
     {
       "signature": "ticketmaster::dup title::venue a",
@@ -814,7 +815,7 @@
       "categories": [
         "Comedy"
       ],
-      "updatedAt": "2026-07-02T14:17:55.781Z"
+      "updatedAt": "2026-08-09T00:51:43.175Z"
     },
     {
       "signature": "ticketmaster::image category event::arts & culture",
@@ -846,5 +847,5 @@
   "ignoredGenres": [
     "after five"
   ],
-  "updatedAt": "2026-07-02T14:17:56.201Z"
+  "updatedAt": "2026-08-09T00:51:43.942Z"
 }

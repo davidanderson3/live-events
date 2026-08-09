@@ -10,7 +10,7 @@ const DEFAULT_SHOWS_SETTINGS_ENDPOINT =
     process.env &&
     process.env.SHOWS_SETTINGS_ENDPOINT) ||
   `${DEFAULT_REMOTE_API_BASE}/settings`;
-const SHOWS_API_CLIENT_VERSION = '20260702-3';
+const SHOWS_API_CLIENT_VERSION = '20260702-16';
 const STATIC_SHOWS_BOOTSTRAP_URL = `data/shows-bootstrap-dmv.json?v=${SHOWS_API_CLIENT_VERSION}`;
 
 const DEFAULT_RADIUS_MILES = 50;
@@ -24,6 +24,7 @@ const DEFAULT_DATE_RANGE_START_DAY = 5; // Friday
 const DEFAULT_DATE_RANGE_END_OFFSET_DAYS = 9; // Friday through the following Sunday
 const SHOWS_CACHE_KEY = 'shows.cachedEvents';
 const SHOWS_CACHE_SCHEMA_VERSION = 12;
+const SHOWS_LAST_LIVE_FEED_REFRESH_KEY = 'shows.lastLiveFeedRefreshAt';
 const SHOWS_HIDDEN_GENRES_KEY = 'shows.hiddenGenres';
 const SHOWS_GENRE_FILTERS_KEY = 'shows.genreFilters';
 const SHOWS_REGION_FILTERS_KEY = 'shows.regionFilters';
@@ -49,6 +50,7 @@ const TARGET_IMAGE_WIDTH = 305;
 const TARGET_IMAGE_HEIGHT = 225;
 const MIN_EVENT_IMAGE_WIDTH = 240;
 const MIN_EVENT_IMAGE_HEIGHT = 180;
+const PRIORITY_FEED_IMAGE_COUNT = 4;
 const MAX_RADIUS_MILES = 150;
 const MIN_RADIUS_MILES = 5;
 const MIN_LOOKAHEAD_DAYS = 0;
@@ -57,11 +59,14 @@ const AVAILABLE_RADIUS_OPTIONS = [10, 25, 50, 75, 100, 125, 150];
 const BOOTSTRAP_INITIAL_LIMIT = 10;
 const BOOTSTRAP_FULL_LIMIT = 200;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const LIVE_FEED_REFRESH_INTERVAL_MS = MS_PER_DAY;
 const SHOWS_FETCH_TIMEOUT_MS = 65000;
 const SHOWS_BOOTSTRAP_TIMEOUT_MS = 15000;
 const STATIC_SHOWS_BOOTSTRAP_TIMEOUT_MS = 1200;
 const SHOWS_SETTINGS_TIMEOUT_MS = 15000;
-const BOOTSTRAP_PROGRESSIVE_LIMITS = [10, 30, 60, 120];
+// Keep bootstrap loads incremental. The first available batch is for fast first
+// paint; later limits fill in more context without blocking that render.
+const BOOTSTRAP_PROGRESSIVE_LIMITS = [10, 30, 60, 120, BOOTSTRAP_FULL_LIMIT];
 const INITIAL_REMOTE_REFRESH_DELAY_MS = 900;
 const IS_TEST = typeof process !== 'undefined' && (process.env?.VITEST || process.env?.NODE_ENV === 'test');
 const SHOWS_DB_MIN_WRITE_INTERVAL_MS = 500;
@@ -150,6 +155,21 @@ const MEDIA_LINK_CATEGORY_LABELS = new Set([
   'Classical & Opera',
   'Metal & Punk'
 ]);
+const MUSIC_ACT_SOURCE_IDS = new Set([
+  'blackcat',
+  'dc9',
+  'rhizomedc',
+  'songbyrd',
+  'soundgarden'
+]);
+function isMusicEventSegment(event) {
+  const segment = typeof event?.segment === 'string' ? event.segment.trim().toLowerCase() : '';
+  return segment.includes('music');
+}
+function isCityCastTunesEvent(event) {
+  const sourceId = typeof event?.source === 'string' ? event.source.trim().toLowerCase() : '';
+  return sourceId === 'citycastdc' && /\btunes\b/i.test(getEventTitle(event));
+}
 const MAX_RECURRING_OCCURRENCE_LABELS = 10;
 const GENRE_TAXONOMY_RULES = [
   { label: 'Comedy', patterns: [/\bcomedy\b/, /\bstand[\s-]?up\b/, /\bimprov\b/, /\bsketch\b/] },
@@ -207,6 +227,7 @@ let warnedShowsDbPayloadTooLarge = false;
 const showsDiagnosticDedupeKeys = new Set();
 let showsStateSyncPromise = null;
 let showsUserStorageScope = 'anon';
+let lastShowsAuthUser = null;
 let hasShowsUserStorageScopeListener = false;
 let searchPrefs = {
   radius: DEFAULT_RADIUS_MILES,
@@ -220,6 +241,7 @@ let hasPersistedSearchPrefs = false;
 let preferredLocation = null;
 let isEditingLocation = false;
 let lastEventsSource = 'remote';
+let lastLiveFeedRefreshAt = 0;
 let savedCalendarFilter = null;
 let activeDateRangeStart = '';
 let activeDateRangeEnd = '';
@@ -234,6 +256,7 @@ let pendingShowsRerenderHandle = null;
 let activeRenderSequence = 0;
 let activeBootstrapLoadToken = 0;
 let bootstrapLoadsInFlight = 0;
+let bootstrapProgressIndicator = null;
 let isInitializingShowsPanel = false;
 let showsStateSyncNeedsRefetch = false;
 let pendingDiscoverRequest = null;
@@ -931,6 +954,19 @@ function ensureSavedEventStateMap(eventsMap, stateMap) {
   return pruneTrackedStateMap(next);
 }
 
+function filterSavedEventsByExplicitStates(eventsMap, stateMap) {
+  if (!(eventsMap instanceof Map)) return new Map();
+  if (!(stateMap instanceof Map) || stateMap.size === 0) return eventsMap;
+  const filtered = new Map();
+  eventsMap.forEach((entry, id) => {
+    const state = stateMap.get(String(id));
+    if (state?.active === true) {
+      filtered.set(String(id), entry);
+    }
+  });
+  return filtered;
+}
+
 function ensureSetStateMap(valuesSet, stateMap) {
   const next = new Map(stateMap instanceof Map ? stateMap : []);
   if (valuesSet instanceof Set) {
@@ -1252,10 +1288,16 @@ function persistHiddenRecurringSeriesStates() {
 }
 
 function loadLocalShowsUserState() {
-  savedEvents = loadSavedEvents();
+  const loadedSavedEvents = loadSavedEvents();
+  const loadedSavedEventStates = loadTrackedState(
+    SHOWS_SAVED_EVENT_STATES_KEY,
+    'id',
+    value => (value ? String(value) : '')
+  );
+  savedEvents = filterSavedEventsByExplicitStates(loadedSavedEvents, loadedSavedEventStates);
   savedEventStates = ensureSavedEventStateMap(
     savedEvents,
-    loadTrackedState(SHOWS_SAVED_EVENT_STATES_KEY, 'id', value => (value ? String(value) : ''))
+    loadedSavedEventStates
   );
   hiddenEventIds = loadHiddenEventIds();
   hiddenEventIdStates = ensureSetStateMap(
@@ -1284,6 +1326,58 @@ function loadLocalShowsUserState() {
       entry => (typeof entry === 'string' ? entry.trim() : '')
     )
   );
+}
+
+function captureStoredShowsUserStateForScope(scope) {
+  const nextScope = typeof scope === 'string' && scope.trim() ? scope.trim() : '';
+  if (!nextScope) return null;
+  const previousScope = showsUserStorageScope;
+  showsUserStorageScope = nextScope;
+  try {
+    const scopedSavedEvents = loadSavedEvents();
+    const scopedHiddenEventIds = loadHiddenEventIds();
+    const scopedHiddenEventTitles = loadHiddenEventTitles();
+    const scopedHiddenRecurringSeriesIds = loadHiddenRecurringSeriesIds();
+    return {
+      savedEvents: scopedSavedEvents,
+      savedEventStates: ensureSavedEventStateMap(
+        scopedSavedEvents,
+        loadTrackedState(SHOWS_SAVED_EVENT_STATES_KEY, 'id', value => (value ? String(value) : ''))
+      ),
+      hiddenEventIds: scopedHiddenEventIds,
+      hiddenEventIdStates: ensureSetStateMap(
+        scopedHiddenEventIds,
+        loadTrackedState(SHOWS_HIDDEN_EVENT_ID_STATES_KEY, 'value', value => (value ? String(value) : ''))
+      ),
+      hiddenEventTitles: scopedHiddenEventTitles,
+      hiddenEventTitleStates: ensureSetStateMap(
+        scopedHiddenEventTitles,
+        loadTrackedState(SHOWS_HIDDEN_EVENT_TITLE_STATES_KEY, 'value', entry => normalizeEventTitle(entry))
+      ),
+      hiddenRecurringSeriesIds: scopedHiddenRecurringSeriesIds,
+      hiddenRecurringSeriesStates: ensureSetStateMap(
+        scopedHiddenRecurringSeriesIds,
+        loadTrackedState(
+          SHOWS_HIDDEN_RECURRING_SERIES_STATES_KEY,
+          'value',
+          entry => (typeof entry === 'string' ? entry.trim() : '')
+        )
+      )
+    };
+  } finally {
+    showsUserStorageScope = previousScope;
+  }
+}
+
+function mergeAlternateShowsUserStorageScopes(user) {
+  const alternateScopes = getAlternateShowsUserStorageScopes(user);
+  let changed = false;
+  alternateScopes.forEach(scope => {
+    if (mergeCapturedShowsUserState(captureStoredShowsUserStateForScope(scope))) {
+      changed = true;
+    }
+  });
+  return changed;
 }
 
 function persistLocalShowsUserStateMaps() {
@@ -1785,7 +1879,8 @@ function buildShowsStatePayload() {
     hiddenEventTitles: Array.from(hiddenEventTitles),
     hiddenEventTitleStates: serializeTrackedStateMap(hiddenEventTitleStates, 'value'),
     hiddenRecurringSeriesIds: Array.from(hiddenRecurringSeriesIds),
-    hiddenRecurringSeriesStates: serializeTrackedStateMap(hiddenRecurringSeriesStates, 'value')
+    hiddenRecurringSeriesStates: serializeTrackedStateMap(hiddenRecurringSeriesStates, 'value'),
+    lastLiveFeedRefreshAt: lastLiveFeedRefreshAt > 0 ? Math.floor(lastLiveFeedRefreshAt) : 0
   };
 }
 
@@ -1914,6 +2009,81 @@ function compactShowsStatePayloadForDb(payload) {
   compacted.savedEvents = capSavedEventEntries(compacted.savedEvents, 500);
   compacted.savedEventStates = capTrackedEntriesToSavedEvents(compacted.savedEventStates, compacted.savedEvents);
   return compacted;
+}
+
+function normalizeLiveFeedRefreshTimestamp(value) {
+  if (Number.isFinite(value)) {
+    return Math.max(0, Number(value));
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+  }
+  if (value && typeof value === 'object') {
+    if (Number.isFinite(value.seconds)) {
+      const millis = Number(value.seconds) * 1000 + Math.floor(Number(value.nanoseconds || 0) / 1000000);
+      return Math.max(0, millis);
+    }
+    if (typeof value.toMillis === 'function') {
+      const millis = Number(value.toMillis());
+      return Number.isFinite(millis) ? Math.max(0, millis) : 0;
+    }
+    if (typeof value.toDate === 'function') {
+      const millis = value.toDate()?.getTime?.();
+      return Number.isFinite(millis) ? Math.max(0, millis) : 0;
+    }
+  }
+  return 0;
+}
+
+function loadLastLiveFeedRefreshAt() {
+  const storage = getStorage();
+  if (!storage) return 0;
+  try {
+    return normalizeLiveFeedRefreshTimestamp(
+      storage.getItem(getScopedShowsStorageKey(SHOWS_LAST_LIVE_FEED_REFRESH_KEY))
+    );
+  } catch {
+    return 0;
+  }
+}
+
+function persistLastLiveFeedRefreshAt() {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    const key = getScopedShowsStorageKey(SHOWS_LAST_LIVE_FEED_REFRESH_KEY);
+    if (lastLiveFeedRefreshAt > 0) {
+      storage.setItem(key, String(Math.floor(lastLiveFeedRefreshAt)));
+    } else {
+      storage.removeItem(key);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function mergeLastLiveFeedRefreshAt(value, { persist = true } = {}) {
+  const normalized = normalizeLiveFeedRefreshTimestamp(value);
+  if (!normalized || normalized <= lastLiveFeedRefreshAt) return false;
+  lastLiveFeedRefreshAt = normalized;
+  if (persist) {
+    persistLastLiveFeedRefreshAt();
+  }
+  return true;
+}
+
+function seedLastLiveFeedRefreshAtFromCache(cache) {
+  if (lastLiveFeedRefreshAt > 0) return false;
+  return mergeLastLiveFeedRefreshAt(cache?.fetchedAt, { persist: true });
+}
+
+function shouldRefreshLiveFeedForAccount() {
+  return !lastLiveFeedRefreshAt || Date.now() - lastLiveFeedRefreshAt >= LIVE_FEED_REFRESH_INTERVAL_MS;
+}
+
+function markLiveFeedRefreshedAt(timestamp = Date.now()) {
+  mergeLastLiveFeedRefreshAt(timestamp, { persist: true });
 }
 
 function hasLocalShowsStateToPersist() {
@@ -2185,6 +2355,7 @@ async function syncShowsStateFromDb() {
         persistHiddenRecurringSeriesStates();
       }
     }
+    mergeLastLiveFeedRefreshAt(data.lastLiveFeedRefreshAt, { persist: true });
     if (hasPersistedSearchPrefs && clampDays(searchPrefs.days) !== getDefaultLookaheadDays()) {
       shouldPersistMergedState = true;
     }
@@ -3329,6 +3500,40 @@ function hideDateRangeLoadingIndicators() {
     .forEach(node => node.remove());
 }
 
+function hideBootstrapProgressIndicator() {
+  bootstrapProgressIndicator?.remove();
+  bootstrapProgressIndicator = null;
+}
+
+function showBootstrapProgressIndicator({ loaded = 0, target = 0 } = {}) {
+  if (currentView !== 'all' || !elements.list) return;
+  const listColumn = elements.list.querySelector('.shows-results__list');
+  const unsavedSection = listColumn?.querySelector('.shows-section-unsaved');
+  const container = listColumn || elements.list;
+  if (!container.querySelector('.show-card')) return;
+  if (!bootstrapProgressIndicator || !container.contains(bootstrapProgressIndicator)) {
+    bootstrapProgressIndicator = createLoadingIndicator('Loading more events...');
+    bootstrapProgressIndicator.classList.add(
+      'shows-loading-indicator--inline',
+      'shows-loading-indicator--bootstrap'
+    );
+  }
+  const label = bootstrapProgressIndicator.querySelector('.shows-loading-indicator__label');
+  if (label) {
+    const loadedCount = Number.isFinite(Number(loaded)) ? Math.max(0, Number(loaded)) : 0;
+    const targetCount = Number.isFinite(Number(target)) ? Math.max(0, Number(target)) : 0;
+    label.textContent =
+      targetCount > loadedCount
+        ? `Loading more events... ${loadedCount} loaded`
+        : 'Loading more events...';
+  }
+  if (unsavedSection?.parentNode === container) {
+    container.insertBefore(bootstrapProgressIndicator, unsavedSection.nextSibling);
+  } else {
+    container.appendChild(bootstrapProgressIndicator);
+  }
+}
+
 function showEmptyStreamMessage() {
   if (!elements.list) return;
   elements.list.setAttribute('data-empty-message', 'No new events meet your criteria.');
@@ -3418,6 +3623,15 @@ function normalizeShowsUserStorageScope(user) {
   return 'anon';
 }
 
+function getAlternateShowsUserStorageScopes(user, primaryScope = showsUserStorageScope) {
+  const scopes = [];
+  const email = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
+  if (email) scopes.push(`email:${email}`);
+  const uid = typeof user?.uid === 'string' ? user.uid.trim() : '';
+  if (uid) scopes.push(`user:${uid}`);
+  return scopes.filter(scope => scope && scope !== primaryScope);
+}
+
 function getScopedShowsStorageKey(baseKey) {
   const normalizedBaseKey = typeof baseKey === 'string' ? baseKey.trim() : '';
   if (!normalizedBaseKey) return '';
@@ -3485,7 +3699,7 @@ function genreFilterSelectionsEqual(left, right) {
   return Array.from(left).every(value => right.has(value));
 }
 
-async function syncShowsUserStorageScope({ rerender = false } = {}) {
+async function syncShowsUserStorageScope({ rerender = false, user: userOverride = undefined } = {}) {
   if (IS_TEST) {
     return false;
   }
@@ -3495,12 +3709,14 @@ async function syncShowsUserStorageScope({ rerender = false } = {}) {
       authModule.getCurrentUser?.() ||
       authModule.currentUser ||
       null;
-    const user = immediateUser || null;
+    const user = userOverride !== undefined ? userOverride : immediateUser || null;
+    lastShowsAuthUser = user || null;
     const nextScope = normalizeShowsUserStorageScope(user);
     if (nextScope === showsUserStorageScope) {
       return false;
     }
     const previousScope = showsUserStorageScope;
+    const previousLastLiveFeedRefreshAt = lastLiveFeedRefreshAt;
     const previousUserState = captureLocalShowsUserState();
     const previousHiddenGenres = new Set(hiddenGenres);
     const previousGenreFilters = {
@@ -3516,6 +3732,10 @@ async function syncShowsUserStorageScope({ rerender = false } = {}) {
     const previousRenderableUserState = snapshotRenderableUserState();
     const previousHiddenGenresSnapshot = JSON.stringify(Array.from(hiddenGenres).sort());
     showsUserStorageScope = nextScope;
+    lastLiveFeedRefreshAt = loadLastLiveFeedRefreshAt();
+    if (previousScope === 'anon' && nextScope !== 'anon') {
+      mergeLastLiveFeedRefreshAt(previousLastLiveFeedRefreshAt, { persist: true });
+    }
     hiddenGenres = loadHiddenGenres();
     if (previousScope === 'anon' && nextScope !== 'anon') {
       previousHiddenGenres.forEach(genre => {
@@ -3525,11 +3745,14 @@ async function syncShowsUserStorageScope({ rerender = false } = {}) {
       persistHiddenGenres();
     }
     loadLocalShowsUserState();
+    const migratedAlternateScopedState =
+      nextScope !== 'anon' &&
+      mergeAlternateShowsUserStorageScopes(user);
     const migratedUserState =
       previousScope === 'anon' &&
       nextScope !== 'anon' &&
       mergeCapturedShowsUserState(previousUserState);
-    if (migratedUserState) {
+    if (migratedUserState || migratedAlternateScopedState) {
       persistSavedEvents();
       persistHiddenEventIds();
       persistHiddenEventTitles();
@@ -3625,6 +3848,7 @@ async function resolveShowsUserStorageScopeBeforeInit(timeoutMs = null) {
       authModule.currentUser ||
       null;
     if (immediateUser) {
+      lastShowsAuthUser = immediateUser;
       showsUserStorageScope = normalizeShowsUserStorageScope(immediateUser);
       return true;
     }
@@ -3636,6 +3860,7 @@ async function resolveShowsUserStorageScopeBeforeInit(timeoutMs = null) {
     });
     const user = await Promise.race([authModule.awaitAuthUser(), timeoutPromise]);
     if (user) {
+      lastShowsAuthUser = user;
       showsUserStorageScope = normalizeShowsUserStorageScope(user);
       return true;
     }
@@ -3655,8 +3880,8 @@ function setupShowsUserStorageScopeSync() {
     .then(authModule => {
       void syncShowsUserStorageScope({ rerender: initialized });
       if (authModule?.auth?.onAuthStateChanged) {
-        authModule.auth.onAuthStateChanged(() => {
-          void syncShowsUserStorageScope({ rerender: true }).then(changed => {
+        authModule.auth.onAuthStateChanged(user => {
+          void syncShowsUserStorageScope({ rerender: true, user }).then(changed => {
             if (!changed) return;
             hiddenGenres = loadHiddenGenres();
             const loadedRegionFilters = loadRegionFilters();
@@ -3888,9 +4113,10 @@ async function renderWithPrefsAndMaybeRefresh(options = {}) {
         forceVisibleLoading: true
       });
     } else {
-      void progressivelyLoadBootstrapEvents({
+      void progressivelyLoadBootstrapEventsThenDiscover({
         radius: searchPrefs.radius,
         days: searchPrefs.days,
+        location: normalizeLocationCandidate(preferredLocation) || DEFAULT_LOCATION,
         initialCount: elements.list?.querySelectorAll('.show-card').length || 0,
         allowRemoteSource: false,
         allowStatic: true
@@ -3953,7 +4179,7 @@ async function loadBootstrapEvents({
   limit = 10,
   surfaceTimeoutError = true,
   returnPayload = false,
-  allowStatic = true
+  allowStatic = false
 } = {}) {
   if (typeof fetch !== 'function') return [];
   const endpoint = resolveShowsBootstrapEndpoint(API_BASE_URL);
@@ -4303,31 +4529,92 @@ async function progressivelyLoadBootstrapEvents({
   days,
   initialCount = 0,
   allowRemoteSource = false,
-  allowStatic = true
+  allowStatic = false
 } = {}) {
   const token = ++activeBootstrapLoadToken;
-  for (const limit of BOOTSTRAP_PROGRESSIVE_LIMITS) {
-    if (limit <= initialCount) continue;
-    const bootstrapEvents = await loadBootstrapEvents({
+  try {
+    for (const limit of BOOTSTRAP_PROGRESSIVE_LIMITS) {
+      if (limit <= initialCount) continue;
+      showBootstrapProgressIndicator({ loaded: initialCount, target: limit });
+      const bootstrapEvents = await loadBootstrapEvents({
+        radius,
+        days,
+        limit,
+        surfaceTimeoutError: false,
+        allowStatic
+      });
+      const hasRenderedCards = Boolean(elements.list?.querySelector('.show-card'));
+      const renderedCardCount = elements.list?.querySelectorAll('.show-card').length || 0;
+      if (
+        !allowRemoteSource &&
+        hasRenderedCards &&
+        !isDiscovering &&
+        renderedCardCount >= bootstrapEvents.length
+      ) {
+        return;
+      }
+      if (Array.isArray(bootstrapEvents) && bootstrapEvents.length > initialCount) {
+        initialCount = bootstrapEvents.length;
+        latestEvents = bootstrapEvents;
+        if (hasRenderedCards) {
+          appendAdditionalEventsToRenderedFeed(bootstrapEvents, {
+            radius: searchPrefs.radius,
+            days: searchPrefs.days,
+            view: currentView,
+            source: 'bootstrap',
+            suppressChunkProgress: true
+          });
+          showBootstrapProgressIndicator({ loaded: initialCount, target: limit });
+          continue;
+        }
+        renderEvents(bootstrapEvents, {
+          radius: searchPrefs.radius,
+          days: searchPrefs.days,
+          view: currentView,
+          source: 'bootstrap',
+          suppressCountRefresh: true
+        });
+      }
+    }
+  } finally {
+    if (token === activeBootstrapLoadToken) {
+      hideBootstrapProgressIndicator();
+    }
+  }
+}
+
+async function progressivelyLoadBootstrapEventsThenDiscover({
+  radius,
+  days,
+  initialCount = 0,
+  location = normalizeLocationCandidate(preferredLocation) || DEFAULT_LOCATION,
+  allowRemoteSource = false,
+  allowStatic = false
+} = {}) {
+  await progressivelyLoadBootstrapEvents({
+    radius,
+    days,
+    initialCount,
+    allowRemoteSource,
+    allowStatic
+  });
+  if (currentView !== 'all') return;
+  const renderedCardCount = elements.list?.querySelectorAll('.show-card').length || 0;
+  if (renderedCardCount > 0) {
+    showBootstrapProgressIndicator({ loaded: renderedCardCount, target: 0 });
+  }
+  try {
+    await discoverNewEvents({
       radius,
       days,
-      limit,
-      surfaceTimeoutError: false,
-      allowStatic
+      location,
+      forceRefresh: true,
+      suppressRender: Boolean(elements.list?.querySelector('.show-card')),
+      preserveRenderedList: true,
+      showRefreshLoading: false
     });
-    if (token !== activeBootstrapLoadToken) return;
-    const hasRenderedCards = Boolean(elements.list?.querySelector('.show-card'));
-    if (!allowRemoteSource && lastEventsSource === 'remote' && hasRenderedCards && !isDiscovering) return;
-    if (Array.isArray(bootstrapEvents) && bootstrapEvents.length > initialCount) {
-      initialCount = bootstrapEvents.length;
-      latestEvents = bootstrapEvents;
-      renderEvents(bootstrapEvents, {
-        radius: searchPrefs.radius,
-        days: searchPrefs.days,
-        view: currentView,
-        source: 'bootstrap'
-      });
-    }
+  } finally {
+    hideBootstrapProgressIndicator();
   }
 }
 
@@ -4587,6 +4874,26 @@ function ensureDefaultGenreFilters(availableGenres) {
       .map(value => normalizeGenreLabel(value))
       .filter(value => typeof value === 'string' && value.trim())
   );
+
+  if (
+    hasPersistedGenreFilters &&
+    activeGenreFilters instanceof Set &&
+    configuredFirstTimeGenreDefaults.selection instanceof Set &&
+    configuredFirstTimeGenreDefaults.selection.size > 0 &&
+    activeGenreFilters.size === configuredFirstTimeGenreDefaults.selection.size
+  ) {
+    const persistedMatchesConfiguredDefault = Array.from(activeGenreFilters).every(genre =>
+      configuredFirstTimeGenreDefaults.selection.has(normalizeGenreLabel(genre))
+    );
+    const liveCategoriesOutsideConfiguredDefault = Array.from(availableSet).some(genre =>
+      !configuredFirstTimeGenreDefaults.selection.has(normalizeGenreLabel(genre))
+    );
+    if (persistedMatchesConfiguredDefault && liveCategoriesOutsideConfiguredDefault) {
+      activeGenreFilters = null;
+      persistGenreFilters();
+      return;
+    }
+  }
 
   if (!hasPersistedGenreFilters) {
     activeGenreFilters = null;
@@ -4987,6 +5294,38 @@ function buildEventsSummaryText(source, count, timestamp, view, renderOptions = 
   if (view === 'saved') {
     return `Showing ${count} saved event${plural}.`;
   }
+  const availableCount = Number(renderOptions.availableCount);
+  const loadedCount = Number(renderOptions.loadedCount);
+  const savedCount = Number(renderOptions.savedCount);
+  const hiddenCount = Number(renderOptions.hiddenCount);
+  const visibleAvailableCount = Number.isFinite(availableCount) && availableCount > count
+    ? Math.floor(availableCount)
+    : null;
+  const visibleLoadedCount = Number.isFinite(loadedCount) && loadedCount > count
+    ? Math.floor(loadedCount)
+    : null;
+  const visibleSavedCount = Number.isFinite(savedCount) && savedCount > 0
+    ? Math.floor(savedCount)
+    : 0;
+  const visibleHiddenCount = Number.isFinite(hiddenCount) && hiddenCount > 0
+    ? Math.floor(hiddenCount)
+    : 0;
+  const shouldShowDiagnostic =
+    view === 'all' &&
+    visibleLoadedCount &&
+    visibleLoadedCount >= 50 &&
+    visibleLoadedCount > Math.max(count * 2, count + 20);
+  if (shouldShowDiagnostic) {
+    const parts = [];
+    parts.push(`${count} event${plural}.`);
+    if (visibleSavedCount) {
+      parts.push(`${visibleSavedCount} saved.`);
+    }
+    if (visibleHiddenCount) {
+      parts.push(`${visibleHiddenCount} hidden.`);
+    }
+    return parts.join(' ');
+  }
   return '';
 }
 
@@ -4999,6 +5338,12 @@ function createEventsSummaryElement(source, count, timestamp, view, renderOption
   summary.dataset.renderedCount = String(count);
   if (Number.isFinite(Number(renderOptions.availableCount))) {
     summary.dataset.availableCount = String(Number(renderOptions.availableCount));
+  }
+  if (Number.isFinite(Number(renderOptions.savedCount))) {
+    summary.dataset.savedCount = String(Number(renderOptions.savedCount));
+  }
+  if (Number.isFinite(Number(renderOptions.hiddenCount))) {
+    summary.dataset.hiddenCount = String(Number(renderOptions.hiddenCount));
   }
   summary.textContent = text;
   return summary;
@@ -5079,6 +5424,92 @@ function clearList() {
   if (!elements.list) return;
   resetOrderedImageHydration();
   elements.list.innerHTML = '';
+}
+
+function getRenderedEventIds() {
+  const ids = new Set();
+  if (!elements.list) return ids;
+  elements.list.querySelectorAll('.show-card[data-event-id]').forEach(card => {
+    const id = typeof card?.dataset?.eventId === 'string' ? card.dataset.eventId.trim() : '';
+    if (id) ids.add(id);
+  });
+  return ids;
+}
+
+function getRenderedEventIdList() {
+  if (!elements.list) return [];
+  return Array.from(elements.list.querySelectorAll('.show-card[data-event-id]'))
+    .map(card => (typeof card?.dataset?.eventId === 'string' ? card.dataset.eventId.trim() : ''))
+    .filter(Boolean);
+}
+
+function renderedEventIdsMatch(events) {
+  if (!Array.isArray(events)) return false;
+  const expectedIds = events.map(event => getEventId(event)).filter(Boolean);
+  const renderedIds = getRenderedEventIdList();
+  if (!expectedIds.length || expectedIds.length !== renderedIds.length) return false;
+  return expectedIds.every((id, index) => id === renderedIds[index]);
+}
+
+function appendAdditionalEventsToRenderedFeed(events, options = {}) {
+  if (currentView !== 'all' || !elements.list || !Array.isArray(events) || !events.length) {
+    return false;
+  }
+  const listColumn = elements.list.querySelector('.shows-results__list');
+  const unsavedSection = listColumn?.querySelector('.shows-section-unsaved');
+  if (!listColumn || !unsavedSection) return false;
+
+  hiddenGenres = loadHiddenGenres();
+  hiddenEventIds = new Set([
+    ...hiddenEventIds,
+    ...loadHiddenEventIds()
+  ]);
+  hiddenEventTitles = new Set([
+    ...hiddenEventTitles,
+    ...loadHiddenEventTitles()
+  ]);
+  hiddenRecurringSeriesIds = new Set([
+    ...hiddenRecurringSeriesIds,
+    ...loadHiddenRecurringSeriesIds()
+  ]);
+
+  const effectiveRadius = clampRadius(options.radius ?? searchPrefs.radius);
+  const effectiveDays = clampDays(options.days ?? searchPrefs.days);
+  const renderOptions = {
+    ...options,
+    view: 'all',
+    radius: effectiveRadius,
+    days: effectiveDays
+  };
+  const renderState = deriveShowsRenderState({
+    view: 'all',
+    workingEvents: events,
+    effectiveRadius,
+    effectiveDays,
+    renderOptions
+  });
+  const candidateEvents = Array.isArray(renderState.recurringFilteredEvents)
+    ? renderState.recurringFilteredEvents
+    : [];
+  const renderedIds = getRenderedEventIds();
+  const existingCardCount = elements.list.querySelectorAll('.show-card').length;
+  const additionalEvents = candidateEvents.filter(event => {
+    const eventId = getEventId(event);
+    return eventId && !renderedIds.has(eventId) && !savedEvents.has(eventId);
+  });
+  if (!additionalEvents.length) return false;
+
+  latestEvents = events;
+  isInitialShowsFeedPending = false;
+  appendChildrenInChunks(unsavedSection, additionalEvents, (event, index) =>
+    createEventCard(event, {
+      ...renderOptions,
+      renderIndex: existingCardCount + index,
+      saved: false,
+      hidden: showHiddenEvents && isEventHidden(event)
+    })
+  );
+  return true;
 }
 
 function removeRenderedRecurringSeriesCards(seriesId) {
@@ -5762,6 +6193,22 @@ function resolveApiAssetUrl(url) {
   return origin ? `${origin}${raw}` : raw;
 }
 
+function isLocalShowsOrigin() {
+  if (typeof window === 'undefined') return false;
+  const hostname = String(window.location?.hostname || '').toLowerCase();
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function shouldPreferOriginalImageUrl(image) {
+  const url = typeof image?.url === 'string' ? image.url.trim() : '';
+  const originalUrl = typeof image?.originalUrl === 'string' ? image.originalUrl.trim() : '';
+  return (
+    isLocalShowsOrigin() &&
+    /^\/api\/images\/[a-f0-9]{40}$/i.test(url) &&
+    /^https?:\/\//i.test(originalUrl)
+  );
+}
+
 function isWashingtonGlassSchoolUrl(url) {
   try {
     const parsed = new URL(url, resolveApiBaseOrigin() || undefined);
@@ -6036,16 +6483,17 @@ function renderEventImages(event, options = {}) {
   figure.className = 'show-card__gallery-item';
 
   const img = document.createElement('img');
-  const primaryImageUrl = image.url;
+  const primaryImageUrl = shouldPreferOriginalImageUrl(image) ? image.originalUrl : image.url;
   const resolvedImageUrl = resolveApiAssetUrl(primaryImageUrl);
   if (!resolvedImageUrl) {
     return null;
   }
-  const isLeadImage = Number.isFinite(options.renderIndex) && options.renderIndex === 0;
-  img.loading = isLeadImage ? 'eager' : 'lazy';
-  img.setAttribute('fetchpriority', isLeadImage ? 'high' : 'low');
+  const isPriorityFeedImage =
+    Number.isFinite(options.renderIndex) && options.renderIndex < PRIORITY_FEED_IMAGE_COUNT;
+  img.loading = isPriorityFeedImage ? 'eager' : 'lazy';
+  img.setAttribute('fetchpriority', isPriorityFeedImage ? 'high' : 'low');
   if ('fetchPriority' in img) {
-    img.fetchPriority = isLeadImage ? 'high' : 'low';
+    img.fetchPriority = isPriorityFeedImage ? 'high' : 'low';
   }
   img.decoding = 'async';
   img.referrerPolicy = 'no-referrer';
@@ -6526,6 +6974,10 @@ function createGenreBadges(genres) {
 }
 
 function shouldShowMediaLinks(event) {
+  const sourceId = typeof event?.source === 'string' ? event.source.trim().toLowerCase() : '';
+  if (MUSIC_ACT_SOURCE_IDS.has(sourceId)) return true;
+  if (isMusicEventSegment(event)) return true;
+  if (isCityCastTunesEvent(event)) return true;
   const genres = getEventGenres(event);
   return genres.some(genre => MEDIA_LINK_CATEGORY_LABELS.has(genre));
 }
@@ -6669,6 +7121,10 @@ function createEventCard(event, options = {}) {
   if (sourceId) {
     card.dataset.source = sourceId;
   }
+  const eventId = getEventId(event);
+  if (eventId) {
+    card.dataset.eventId = eventId;
+  }
   const cardRecurringSeriesId = getRecurringSeriesId(event);
   if (cardRecurringSeriesId) {
     card.dataset.recurringSeries = cardRecurringSeriesId;
@@ -6762,7 +7218,6 @@ function createEventCard(event, options = {}) {
   const actionsRow = document.createElement('div');
   actionsRow.className = 'show-card__actions';
 
-  const eventId = getEventId(event);
   const hiddenReason = getEventHiddenReason(event);
   const isHiddenCard = Boolean(options.hidden) || Boolean(hiddenReason);
   if (isHiddenCard) {
@@ -6896,7 +7351,11 @@ function createEventCard(event, options = {}) {
       if (isHiddenCard) {
         const restored = await restoreHiddenEvent(event);
         if (restored) {
-          renderEvents(null, { view: currentView, source: 'count-refresh' });
+          renderEvents(null, {
+            view: currentView,
+            source: 'count-refresh',
+            suppressChunkProgress: true
+          });
         }
         setActionPendingState(hideBtn, false, '', () => {
           hideBtn.textContent = getHideButtonLabel();
@@ -6905,7 +7364,11 @@ function createEventCard(event, options = {}) {
       }
       const changed = await hideEventOnce(event);
       if (changed) {
-        renderEvents(null, { view: currentView, source: 'count-refresh' });
+        renderEvents(null, {
+          view: currentView,
+          source: 'count-refresh',
+          suppressChunkProgress: true
+        });
         return;
       }
       setActionPendingState(hideBtn, false, '', () => {
@@ -7099,7 +7562,11 @@ function createEventCard(event, options = {}) {
           removeRenderedRecurringSeriesCards(getRecurringSeriesId(event));
           removeRenderedEventTitleCards(getEventTitle(event));
         }
-        renderEvents(null, { view: currentView, source: 'count-refresh' });
+        renderEvents(null, {
+          view: currentView,
+          source: 'count-refresh',
+          suppressChunkProgress: true
+        });
       }
     })();
   });
@@ -8198,6 +8665,13 @@ function deriveShowsRenderState({
   };
 }
 
+function getVisibleSavedEventCountForSummary() {
+  return getSavedEventsList().filter(event => {
+    if (!isEventInFuture(event)) return false;
+    return showHiddenEvents || !isEventHidden(event);
+  }).length;
+}
+
 function getDisplayableEventCount(events, options = {}) {
   if (!Array.isArray(events) || !events.length) return 0;
   const view = options.view || currentView || 'all';
@@ -8451,6 +8925,7 @@ function renderEvents(events, options = {}) {
     visibleRecurringEventsExist,
     recurringFilteredEvents,
     hiddenEventsAvailable,
+    hiddenEventBuffer,
     filterableAvailableEvents,
     filterControlEvents,
     filteredEvents: derivedFilteredEvents,
@@ -8511,6 +8986,20 @@ function renderEvents(events, options = {}) {
       renderOptions.userDateInteraction !== true &&
       renderOptions.userViewChange !== true
     );
+  const isAutomaticSameFeedRerender =
+    view === 'all' &&
+    existingRenderedCardCount > 0 &&
+    renderOptions.forceRender !== true &&
+    renderOptions.userFilterChange !== true &&
+    renderOptions.userDateInteraction !== true &&
+    renderOptions.userViewChange !== true &&
+    (isAutomaticBackgroundRerender || requestedSource === 'count-refresh') &&
+    renderedEventIdsMatch(filteredEvents.filter(event => !savedEvents.has(getEventId(event))));
+  if (isAutomaticSameFeedRerender) {
+    setLoading(false);
+    setStatus('');
+    return;
+  }
   const wouldReplacePopulatedFeedWithEmpty =
     view === 'all' &&
     isAutomaticBackgroundRerender &&
@@ -8608,7 +9097,13 @@ function renderEvents(events, options = {}) {
     filtersPanel.hidden = false;
     (sidebarColumn || layout).appendChild(filtersPanel);
   }
-  if (view === 'all' && requestedSource !== 'count-refresh' && !isPreviewRender && !isTransitionalPreview) {
+  if (
+    view === 'all' &&
+    requestedSource !== 'count-refresh' &&
+    !isPreviewRender &&
+    !isTransitionalPreview &&
+    renderOptions.suppressCountRefresh !== true
+  ) {
     const countRefreshEvents = Array.isArray(workingEvents) ? [...workingEvents] : [];
     genreCountRefreshTimer = setTimeout(() => {
       genreCountRefreshTimer = null;
@@ -8670,10 +9165,8 @@ function renderEvents(events, options = {}) {
   const unsavedSection = document.createElement('div');
   unsavedSection.className = 'shows-section-unsaved';
   listColumn.appendChild(unsavedSection);
-  if (isLoadingDateRangeEvents || isTransitionalPreview) {
-    const progress = isLoadingDateRangeEvents
-      ? createDateRangeLoadingIndicator()
-      : createLoadingIndicator('Loading full event list');
+  if (isLoadingDateRangeEvents) {
+    const progress = createDateRangeLoadingIndicator();
     progress.classList.add('shows-loading-indicator--inline');
     listColumn.insertBefore(progress, unsavedSection);
   }
@@ -8852,6 +9345,15 @@ function renderEvents(events, options = {}) {
     view === 'all' && showHiddenEvents
       ? renderedEventsForCurrentView.filter(isEventHidden).length
       : 0;
+  const hiddenCountForCurrentView =
+    view === 'all'
+      ? hiddenEventBuffer.filter(
+          event =>
+            shouldShowEventByRecurringPreference(event) &&
+            matchesActiveNonCategoryFilters(event) &&
+            matchesActiveCategoryFilters(event)
+        ).length
+      : 0;
   const availableCountForCurrentView =
     view === 'all'
       ? Math.max(
@@ -8860,6 +9362,8 @@ function renderEvents(events, options = {}) {
           indexedAvailableCount
         )
       : visibleEvents.length;
+  const savedCountForSummary =
+    view === 'all' ? getVisibleSavedEventCountForSummary() : 0;
 
   const summary = createEventsSummaryElement(
     source,
@@ -8870,7 +9374,9 @@ function renderEvents(events, options = {}) {
       ...renderOptions,
       suppressSummary: isTransitionalPreview,
       availableCount: availableCountForCurrentView,
-      hiddenCount: renderedHiddenCount
+      savedCount: savedCountForSummary,
+      hiddenCount: Math.max(renderedHiddenCount, hiddenCountForCurrentView),
+      loadedCount: Array.isArray(workingEvents) ? workingEvents.length : 0
     }
   );
   isLoadingDateRangeEvents = false;
@@ -8890,6 +9396,7 @@ function renderEvents(events, options = {}) {
     const target = opts.target || listColumn;
     let chunkProgress = null;
     const shouldShowChunkProgress =
+      renderOptions.suppressChunkProgress !== true &&
       view === 'all' &&
       opts.saved !== true &&
       Array.isArray(eventsToRender) &&
@@ -9138,9 +9645,10 @@ async function discoverNewEvents(options = {}) {
 	        headers,
 	        signal: controller?.signal
 	      });
-	    } finally {
-	      if (timeoutId) clearTimeout(timeoutId);
-	    }
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+    markLiveFeedRefreshedAt();
     const events = Array.isArray(data?.events) ? data.events : [];
     updateLatestFilterIndexFromPayload(data?.filterIndex, events);
     const noNewEvents = events.length === 0;
@@ -9214,8 +9722,13 @@ async function discoverNewEvents(options = {}) {
     });
     }
     if (!shouldPreserveExistingRender) {
+      const canKeepCoveredCacheRender =
+        suppressRender &&
+        existingRenderedSource === 'cache' &&
+        cacheCoversDesiredPrefs &&
+        existingLatestEventCount > 0;
       const shouldReplacePreviewResults =
-        options.preserveRenderedList !== true &&
+        !canKeepCoveredCacheRender &&
         suppressRender &&
         displayableRemoteEventCount > 0 &&
         (
@@ -9223,13 +9736,30 @@ async function discoverNewEvents(options = {}) {
           existingRenderedSource === 'cache-preview' ||
           existingRenderedSource === 'cache' ||
           displayableRemoteEventCount > existingRenderedCardCount ||
-          events.length > existingLatestEventCount
+          events.length > existingLatestEventCount ||
+          (
+            options.preserveRenderedList === true &&
+            !renderedEventIdsMatch(events.filter(event => !savedEvents.has(getEventId(event))))
+          )
         );
       const shouldBypassSuppression =
         !suppressRender ||
         !hasExistingRenderedEvents ||
         shouldRerenderSuppressedDiscoverResults() ||
         shouldReplacePreviewResults;
+      const appendedToPreservedRender =
+        !shouldBypassSuppression &&
+        suppressRender &&
+        options.preserveRenderedList === true &&
+        hasExistingRenderedEvents &&
+        displayableRemoteEventCount > existingRenderedCardCount &&
+        appendAdditionalEventsToRenderedFeed(events, {
+          view: currentView,
+          radius: desiredRadius,
+          days: desiredDays,
+          source: 'remote',
+          suppressChunkProgress: true
+        });
       if (shouldBypassSuppression) {
         const nextRenderOptions = {
           view: currentView,
@@ -9246,6 +9776,8 @@ async function discoverNewEvents(options = {}) {
         } else {
           renderEvents(events, nextRenderOptions);
         }
+      } else if (appendedToPreservedRender) {
+        latestEvents = events;
       } else {
         latestEvents = events;
       }
@@ -9358,7 +9890,7 @@ export async function initShowsPanel(options = {}) {
 
   preferredLocation = loadPreferredLocation();
   cacheElements();
-  showLiveFeedLoadingPlaceholder('Loading events for your account');
+  showLiveFeedLoadingPlaceholder('Loading events');
   setLoading(true);
   initDatePickerControl();
   loadLocalShowsUserState();
@@ -9367,14 +9899,20 @@ export async function initShowsPanel(options = {}) {
       ? lowerCapturedStateTimestamps(captureLocalShowsUserState())
       : null;
   await resolveShowsUserStorageScopeBeforeInit(50);
+  lastLiveFeedRefreshAt = loadLastLiveFeedRefreshAt();
   loadLocalShowsUserState();
+  const migratedAlternateScopedState =
+    showsUserStorageScope !== 'anon' &&
+    mergeAlternateShowsUserStorageScopes(lastShowsAuthUser);
   const migratedLegacyState =
     showsUserStorageScope !== 'anon' && mergeCapturedShowsUserState(legacyAnonShowsUserState);
-  if (migratedLegacyState) {
+  if (migratedLegacyState || migratedAlternateScopedState) {
     persistSavedEvents();
     persistHiddenEventIds();
     persistHiddenEventTitles();
     persistHiddenRecurringSeriesIds();
+    persistLocalShowsUserStateMaps();
+    void persistShowsStateToDb();
   }
   persistLocalShowsUserStateMaps();
   applyLoadedSearchPrefs(loadSearchPrefs());
@@ -9457,6 +9995,7 @@ export async function initShowsPanel(options = {}) {
   }
   const effectiveLocation = normalizeLocationCandidate(preferredLocation) || DEFAULT_LOCATION;
   const cached = loadCachedEvents();
+  seedLastLiveFeedRefreshAtFromCache(cached);
   const cacheFresh =
     cached &&
     isSameLocation(cached.location, effectiveLocation) &&
@@ -9466,17 +10005,20 @@ export async function initShowsPanel(options = {}) {
     days: searchPrefs.days,
     ...getActiveDateRangeParams()
   });
+  const hasInitialCacheEvents = Boolean(
+    cached &&
+    Array.isArray(cached.events) &&
+    cached.events.length > 0
+  );
   const hasUsableInitialCache =
     Boolean(cacheFresh) &&
     cacheCoversInitialPrefs &&
-    Array.isArray(cached?.events) &&
-    cached.events.length > 0;
+    hasInitialCacheEvents;
   let didInitialFetch = false;
   let bootstrapRequested = false;
   if (
-    hasUsableInitialCache &&
+    hasInitialCacheEvents &&
     cached &&
-    isSameLocation(cached.location, effectiveLocation) &&
     Array.isArray(cached.events) &&
     cached.events.length
   ) {
@@ -9507,7 +10049,7 @@ export async function initShowsPanel(options = {}) {
     );
     renderEvents(initialEvents, renderOptions);
   }
-  if (currentView === 'all' && !hasUsableInitialCache) {
+  if (currentView === 'all' && !hasInitialCacheEvents) {
     bootstrapRequested = true;
     if (IS_TEST) {
       void discoverNewEvents({
@@ -9519,9 +10061,10 @@ export async function initShowsPanel(options = {}) {
         forceVisibleLoading: true
       });
     } else {
-      void progressivelyLoadBootstrapEvents({
+      void progressivelyLoadBootstrapEventsThenDiscover({
         radius: searchPrefs.radius,
         days: searchPrefs.days,
+        location: effectiveLocation,
         initialCount: 0,
         allowRemoteSource: false,
         allowStatic: true
@@ -9546,6 +10089,20 @@ export async function initShowsPanel(options = {}) {
       location: effectiveLocation,
       ...options,
       forceRefresh: true
+    });
+  } else if (
+    !didInitialFetch &&
+    hasUsableInitialCache &&
+    currentView === 'all' &&
+    shouldRefreshLiveFeedForAccount()
+  ) {
+    void discoverNewEvents({
+      radius: searchPrefs.radius,
+      days: searchPrefs.days,
+      location: effectiveLocation,
+      suppressRender: true,
+      forceRefresh: true,
+      showRefreshLoading: false
     });
   }
 

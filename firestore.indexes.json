@@ -91,6 +91,68 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "showEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "reviewQueueVisible",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueStatus",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueSortMs",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "showEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "reviewQueueVisible",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueStatus",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sourceId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueSortMs",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "showEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "reviewQueueVisible",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueStatus",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueNeedsImage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reviewQueueSortMs",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

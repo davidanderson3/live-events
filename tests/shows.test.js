@@ -354,7 +354,9 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(status?.hidden).toBe(true);
     expect(status?.querySelector('.shows-status__live-bars')).toBeTruthy();
     expect(status?.textContent).toContain('Loading events');
+    expect(status?.textContent).not.toContain('Loading events for your account');
     expect(document.querySelectorAll('.shows-loading-indicator')).toHaveLength(1);
+    expect(document.querySelector('.shows-loading-indicator')?.textContent).not.toContain('Loading events for your account');
     expect(document.getElementById('showsList')?.getAttribute('aria-busy')).toBe('true');
 
     resolveShows(
@@ -501,6 +503,88 @@ describe('initShowsPanel (Ticketmaster)', () => {
       expect.stringContaining('open.spotify.com/search')
     );
     expect(popup.focus).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows YouTube and Spotify links for DC9 events even without genre labels', async () => {
+    await setup();
+
+    mockFetchForShows({
+      events: [
+        {
+          id: 'dc9-media-1',
+          source: 'dc9',
+          name: { text: 'DC9 Artist' },
+          start: { local: getFutureIso(5) },
+          venue: { name: 'DC9', address: { city: 'Washington', region: 'DC' } },
+          genres: []
+        }
+      ],
+      segments: [],
+      cached: false
+    });
+
+    await initShowsPanel();
+    await flush();
+    await flush();
+
+    const links = Array.from(document.querySelectorAll('.show-card__external-link'));
+    expect(links.find(link => link.textContent === 'Search on YouTube')).toBeTruthy();
+    expect(links.find(link => link.textContent === 'Search on Spotify')).toBeTruthy();
+  });
+
+  it('shows YouTube and Spotify links for Ticketmaster music-segment events without specific genre labels', async () => {
+    await setup();
+
+    mockFetchForShows({
+      events: [
+        {
+          id: 'ticketmaster-music-media-1',
+          source: 'ticketmaster',
+          segment: 'music',
+          name: { text: 'Better Off Dead' },
+          start: { local: getFutureIso(5) },
+          venue: { name: 'The Atlantis', address: { city: 'Washington', region: 'DC' } },
+          genres: ['Music', 'Undefined']
+        }
+      ],
+      segments: [],
+      cached: false
+    });
+
+    await initShowsPanel();
+    await flush();
+    await flush();
+
+    const links = Array.from(document.querySelectorAll('.show-card__external-link'));
+    expect(links.find(link => link.textContent === 'Search on YouTube')).toBeTruthy();
+    expect(links.find(link => link.textContent === 'Search on Spotify')).toBeTruthy();
+  });
+
+  it('shows YouTube and Spotify links for City Cast Tunes events without genre labels', async () => {
+    await setup();
+
+    mockFetchForShows({
+      events: [
+        {
+          id: 'citycastdc-tunes-media-1',
+          source: 'citycastdc',
+          name: { text: 'Weekend Tunes: Patio Sets Around DC' },
+          start: { local: getFutureIso(5) },
+          venue: { name: 'City Cast DC', address: { city: 'Washington', region: 'DC' } },
+          genres: []
+        }
+      ],
+      segments: [],
+      cached: false
+    });
+
+    await initShowsPanel();
+    await flush();
+    await flush();
+
+    const links = Array.from(document.querySelectorAll('.show-card__external-link'));
+    expect(links.find(link => link.textContent === 'Search on YouTube')).toBeTruthy();
+    expect(links.find(link => link.textContent === 'Search on Spotify')).toBeTruthy();
   });
 
   it('opens Ticketmaster ticket links without probing Ticketmaster first', async () => {
@@ -704,7 +788,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(String(bootstrapCalls[0]?.[0] || '')).toContain('limit=10');
     expect(document.body.textContent).toContain('Bootstrap Event');
     expect(document.body.textContent).not.toContain('Full Feed Event');
-    expect(document.body.textContent).toContain('Loading full event list');
+    expect(document.body.textContent).not.toContain('Loading full event list');
     expect(document.body.textContent).not.toContain('Showing 1 upcoming event');
     expect(document.querySelectorAll('.show-genre-checkbox[data-genre]')).toHaveLength(0);
 
@@ -3409,6 +3493,7 @@ describe('initShowsPanel (Ticketmaster)', () => {
   it('shows cached events without refreshing on load and only forces live reload on demand', async () => {
     await setup();
 
+    localStorage.setItem('shows.lastLiveFeedRefreshAt', String(Date.now()));
     localStorage.setItem(
       'shows.cachedEvents',
       JSON.stringify({
@@ -3418,14 +3503,15 @@ describe('initShowsPanel (Ticketmaster)', () => {
           {
             name: { text: 'Cached Show' },
             start: { local: getFutureIso(7) },
-            venue: { name: 'Cached Venue', address: { city: 'Austin', region: 'TX' } },
+            venue: { name: 'Cached Venue', address: { city: 'Washington', region: 'DC' } },
             summary: 'Previously fetched event.',
             genres: ['Comedy']
           }
         ],
         fetchedAt: Date.now(),
+        location: { latitude: 38.9055, longitude: -77.0422, label: 'Washington, DC' },
         radiusMiles: 50,
-        days: 14
+        days: 60
       })
     );
 
@@ -3475,6 +3561,76 @@ describe('initShowsPanel (Ticketmaster)', () => {
     const showCallsAfterRefresh = fetch.mock.calls.filter(([url]) => isShowsRequest(url));
     expect(sawRefreshCall).toBe(true);
     expect(showCallsAfterRefresh.some(([url]) => String(url).includes('refresh=1'))).toBe(true);
+  });
+
+  it('forces a background live feed refresh when the account has not refreshed today', async () => {
+    await setup();
+
+    localStorage.setItem('shows.lastLiveFeedRefreshAt', String(Date.now() - 25 * 60 * 60 * 1000));
+    localStorage.setItem(
+      'shows.cachedEvents',
+      JSON.stringify({
+        schemaVersion: 12,
+        reviewRequired: true,
+        events: [
+          {
+            name: { text: 'Cached Show' },
+            start: { local: getFutureIso(7) },
+            venue: { name: 'Cached Venue', address: { city: 'Washington', region: 'DC' } },
+            summary: 'Previously fetched event.',
+            genres: ['Comedy']
+          }
+        ],
+        fetchedAt: Date.now(),
+        location: { latitude: 38.9055, longitude: -77.0422, label: 'Washington, DC' },
+        radiusMiles: 50,
+        days: 60
+      })
+    );
+
+    fetch.mockImplementation(url => {
+      if (isShowsRequest(url)) {
+        return Promise.resolve(
+          createFetchResponse({
+            events: [],
+            segments: [],
+            cached: false,
+            review: { required: true }
+          })
+        );
+      }
+      if (isReverseGeocodeRequest(url)) {
+        return Promise.resolve(createReverseGeocodeResponse());
+      }
+      return Promise.resolve(createFetchResponse());
+    });
+
+    await initShowsPanel();
+
+    const sawDailyRefreshCall = await (async () => {
+      for (let i = 0; i < 8; i += 1) {
+        const matchedCalls = fetch.mock.calls.filter(([url]) =>
+          isShowsRequest(url) && String(url).includes('refresh=1')
+        );
+        if (matchedCalls.length) {
+          return true;
+        }
+        await flush();
+      }
+      return false;
+    })();
+    const markerUpdated = await (async () => {
+      for (let i = 0; i < 8; i += 1) {
+        if (Number(localStorage.getItem('shows.lastLiveFeedRefreshAt')) > Date.now() - 60 * 1000) {
+          return true;
+        }
+        await flush();
+      }
+      return false;
+    })();
+
+    expect(sawDailyRefreshCall).toBe(true);
+    expect(markerUpdated).toBe(true);
   });
 
   it('keeps cached events with same-origin image-cache urls', async () => {
@@ -3858,6 +4014,41 @@ describe('initShowsPanel (Ticketmaster)', () => {
     expect(savedSection).toBeNull();
     expect(unsavedSection?.querySelectorAll('.show-card')).toHaveLength(11);
     expect(unsavedSection?.textContent).not.toContain('Saved Order Event');
+  });
+
+  it('prioritizes the first few live-feed images before later images', async () => {
+    await setup();
+
+    const events = Array.from({ length: 6 }, (_, index) => ({
+      id: `image-priority-${index + 1}`,
+      name: { text: `Image Priority Event ${index + 1}` },
+      start: { local: getFutureIso(index + 1) },
+      venue: { name: 'Main Hall', address: { city: 'Washington', region: 'DC' } },
+      genres: ['Comedy'],
+      images: [{ url: `https://example.com/event-${index + 1}.jpg` }]
+    }));
+
+    mockFetchForShows({ events, segments: [], cached: false });
+
+    await initShowsPanel();
+    await flush();
+    await flush();
+
+    const cards = Array.from(document.querySelectorAll('.shows-section-unsaved .show-card'));
+    expect(cards.map(card => card.querySelector('.show-card__title')?.textContent)).toEqual(
+      events.map(event => event.name.text)
+    );
+
+    const images = cards.map(card => card.querySelector('.show-card__gallery img'));
+    expect(images.slice(0, 4).map(img => img?.loading)).toEqual(['eager', 'eager', 'eager', 'eager']);
+    expect(images.slice(0, 4).map(img => img?.getAttribute('fetchpriority'))).toEqual([
+      'high',
+      'high',
+      'high',
+      'high'
+    ]);
+    expect(images.slice(4).map(img => img?.loading)).toEqual(['lazy', 'lazy']);
+    expect(images.slice(4).map(img => img?.getAttribute('fetchpriority'))).toEqual(['low', 'low']);
   });
 
   it('does not show saved events in the all feed when no unsaved events remain', async () => {

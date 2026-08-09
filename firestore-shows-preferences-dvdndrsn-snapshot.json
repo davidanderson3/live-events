@@ -1,0 +1,175 @@
+{
+  "path": "users/7FX2hJPBBmQhbufBLpARtpbDkps2/shows/preferences",
+  "exists": true,
+  "readAt": "2026-07-06T01:23:28.784Z",
+  "data": {
+    "preferredDays": 60,
+    "hiddenRecurringSeriesIds": [
+      "freshfarmmarkets::series::freshfarm-dupont-circle"
+    ],
+    "savedEventStates": [
+      {
+        "id": "freshfarmmarkets::freshfarm-union-market-district::2026-07-05",
+        "active": true,
+        "updatedAt": 1783299891193
+      }
+    ],
+    "hiddenEventTitles": [
+      "freshfarm dupont circle market"
+    ],
+    "hiddenEventIds": [
+      "1AvfZ_eGkwtKknt",
+      "url::https://www.ticketmaster.com/madison-beer-the-locket-tour-washington-district-of-columbia-07-06-2026/event/1500642CA94C6AA9",
+      "title-date::madison beer the locket tour::2026-07-06",
+      "title-date-venue::madison beer the locket tour::2026-07-06::the anthem",
+      "dprevents::https-weownthenight-splashthat-com-2026-07-06::2026-07-06",
+      "url::https://weownthenight.splashthat.com/",
+      "title-date::we own the night summer basketball league::2026-07-06",
+      "title-date-venue::we own the night summer basketball league::2026-07-06::dc department of parks and recreation",
+      "rhizomedc::54f7644de4b0b5b2f2b652f0-54f770b7e4b0602596ca61d4-6a3150fb4d3ed07701fb992e::2026-07-06",
+      "url::https://www.rhizomedc.org/new-events/2026/7/6/tcb",
+      "title-date::film screening tcb the toni cade bombara school of organizing::2026-07-06",
+      "title-date-venue::film screening tcb the toni cade bombara school of organizing::2026-07-06::rhizome dc"
+    ],
+    "hiddenEventIdStates": [
+      {
+        "value": "1AvfZ_eGkwtKknt",
+        "active": true,
+        "updatedAt": 1783299915022
+      },
+      {
+        "value": "url::https://www.ticketmaster.com/madison-beer-the-locket-tour-washington-district-of-columbia-07-06-2026/event/1500642CA94C6AA9",
+        "active": true,
+        "updatedAt": 1783299915022
+      },
+      {
+        "value": "title-date::madison beer the locket tour::2026-07-06",
+        "active": true,
+        "updatedAt": 1783299915022
+      },
+      {
+        "value": "title-date-venue::madison beer the locket tour::2026-07-06::the anthem",
+        "active": true,
+        "updatedAt": 1783299915022
+      },
+      {
+        "value": "dprevents::https-weownthenight-splashthat-com-2026-07-06::2026-07-06",
+        "active": true,
+        "updatedAt": 1783299919388
+      },
+      {
+        "value": "url::https://weownthenight.splashthat.com/",
+        "active": true,
+        "updatedAt": 1783299919388
+      },
+      {
+        "value": "title-date::we own the night summer basketball league::2026-07-06",
+        "active": true,
+        "updatedAt": 1783299919388
+      },
+      {
+        "value": "title-date-venue::we own the night summer basketball league::2026-07-06::dc department of parks and recreation",
+        "active": true,
+        "updatedAt": 1783299919388
+      },
+      {
+        "value": "rhizomedc::54f7644de4b0b5b2f2b652f0-54f770b7e4b0602596ca61d4-6a3150fb4d3ed07701fb992e::2026-07-06",
+        "active": true,
+        "updatedAt": 1783299923308
+      },
+      {
+        "value": "url::https://www.rhizomedc.org/new-events/2026/7/6/tcb",
+        "active": true,
+        "updatedAt": 1783299923308
+      },
+      {
+        "value": "title-date::film screening tcb the toni cade bombara school of organizing::2026-07-06",
+        "active": true,
+        "updatedAt": 1783299923308
+      },
+      {
+        "value": "title-date-venue::film screening tcb the toni cade bombara school of organizing::2026-07-06::rhizome dc",
+        "active": true,
+        "updatedAt": 1783299923308
+      }
+    ],
+    "hiddenRecurringSeriesStates": [
+      {
+        "value": "freshfarmmarkets::series::freshfarm-dupont-circle",
+        "active": true,
+        "updatedAt": 1783299888689
+      }
+    ],
+    "savedEvents": [
+      {
+        "id": "freshfarmmarkets::freshfarm-union-market-district::2026-07-05",
+        "event": {
+          "id": "freshfarmmarkets::freshfarm-union-market-district::2026-07-05",
+          "source": "freshfarmmarkets",
+          "url": "https://www.freshfarm.org/markets/union-market-district",
+          "distance": 2.4379467088119227,
+          "summary": "Weekly FRESHFARM farmers market in Union Market District.",
+          "name": {
+            "text": "FRESHFARM Union Market District Market"
+          },
+          "start": {
+            "local": "2026-07-05T10:00:00",
+            "utc": "2026-07-05T14:00:00.000Z"
+          },
+          "end": {
+            "local": "2026-07-05T14:00:00",
+            "utc": "2026-07-05T18:00:00.000Z"
+          },
+          "venue": {
+            "name": "Union Market District",
+            "address": {
+              "line1": "1309 5th St NE",
+              "city": "Washington",
+              "region": "DC",
+              "postalCode": "20002"
+            }
+          },
+          "genres": [
+            "Fairs & Festivals"
+          ],
+          "recurring": {
+            "isRecurring": true,
+            "frequency": "weekly",
+            "seriesId": "freshfarmmarkets::series::freshfarm-union-market-district",
+            "occurrenceDate": "2026-07-05",
+            "occurrenceDates": [
+              "2026-07-05",
+              "2026-07-12",
+              "2026-07-19",
+              "2026-07-26",
+              "2026-08-02",
+              "2026-08-09",
+              "2026-08-16",
+              "2026-08-23",
+              "2026-08-30"
+            ],
+            "startDate": "2026-07-05",
+            "endDate": "2026-08-30",
+            "rangeLabel": "July 5, 2026 - August 30, 2026"
+          },
+          "images": [
+            {
+              "url": "/api/image-proxy?url=https%3A%2F%2Fwww.freshfarm.org%2Fapp%2Fuploads%2F2021%2F08%2FOG-Image.jpg",
+              "originalUrl": "https://www.freshfarm.org/app/uploads/2021/08/OG-Image.jpg"
+            }
+          ]
+        },
+        "savedAt": 1783299891193
+      }
+    ],
+    "hiddenEventTitleStates": [
+      {
+        "value": "freshfarm dupont circle market",
+        "active": true,
+        "updatedAt": 1783299888689
+      }
+    ],
+    "lastLiveFeedRefreshAt": 1783300895360,
+    "updatedAt": "2026-07-06T01:21:35.934Z"
+  }
+}

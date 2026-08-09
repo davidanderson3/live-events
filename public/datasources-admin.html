@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-    <title>Approval Queue</title>
+    <title>Event Review</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="/favicon.ico" />
   <link rel="stylesheet" href="style.css" />
@@ -47,9 +47,9 @@
     <header class="datasources-admin__header">
       <div>
         <p class="datasources-admin__eyebrow">Admin</p>
-        <h1>Approval queue</h1>
+        <h1>Event review</h1>
         <p class="datasources-admin__intro">
-          Review and approve events before they publish to the live feed.
+          Events publish automatically. Review the list and strike anything that should be removed from the live feed.
         </p>
       </div>
       <div class="datasources-admin__actions">
@@ -65,7 +65,7 @@
       <div class="datasources-admin__panel-header">
         <div>
           <h2>Sign in required</h2>
-          <p>Use the authorized Google account to open the approval queue.</p>
+          <p>Use the authorized Google account to open the event review list.</p>
         </div>
       </div>
     </section>
@@ -75,7 +75,7 @@
         <div class="datasources-admin__panel-header">
           <div>
             <h2>Category options</h2>
-            <p>All categories available in the approval queue. Highlighted categories are checked by default for first-time users.</p>
+            <p>All categories available in event review. Highlighted categories are checked by default for first-time users.</p>
           </div>
         </div>
         <div id="defaultCategoryStatus" class="datasources-admin__status" aria-live="polite"></div>
@@ -148,8 +148,8 @@
       <div class="datasources-admin__panel">
         <div class="datasources-admin__panel-header">
           <div>
-            <h2>Approval filters</h2>
-            <p>Filter by status, category, search, and lookahead window.</p>
+            <h2>Review filters</h2>
+            <p>Filter auto-approved events by status, category, search, and lookahead window.</p>
           </div>
         </div>
         <div class="preview-controls">
@@ -158,10 +158,10 @@
             <input id="previewDays" type="number" min="1" max="100" placeholder="100" />
           </div>
           <div class="preview-control">
-            <label for="reviewStatusFilter">Review queue</label>
+            <label for="reviewStatusFilter">Review list</label>
             <select id="reviewStatusFilter">
               <option value="pending">Pending</option>
-              <option value="approved">Approved</option>
+              <option value="approved" selected>Approved</option>
               <option value="rejected">Rejected</option>
               <option value="image-missing">Image Missing</option>
               <option value="excluded">Hidden Forever</option>
@@ -185,8 +185,8 @@
         <div class="datasources-admin__panel datasources-admin__panel--review">
           <div class="datasources-admin__panel-header datasources-admin__panel-header--inline">
             <div>
-              <h2>Approval queue</h2>
-              <p id="reviewLabel">Load pending events to approve publication.</p>
+              <h2>Review list <span id="reviewMissingImageCount" class="review-queue-count">Missing images: -</span></h2>
+              <p id="reviewLabel">Load approved events to strike anything that should not publish.</p>
             </div>
             <button type="button" id="reviewRefreshBtn" class="secondary">Refresh queue</button>
           </div>
@@ -210,6 +210,6 @@
       }
     })();
   </script>
-  <script type="module" src="js/datasourcesAdmin.js?v=20260701-8"></script>
+  <script type="module" src="js/datasourcesAdmin.js?v=20260711-6"></script>
 </body>
 </html>

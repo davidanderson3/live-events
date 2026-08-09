@@ -811,6 +811,18 @@
       }
     },
     {
+      "id": "citycastdc",
+      "name": "City Cast DC",
+      "type": "citycastdc",
+      "enabled": true,
+      "description": "City Cast DC curated events calendar",
+      "order": 5.5,
+      "config": {
+        "url": "https://dc.citycast.fm/events",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
       "id": "alexandriaparks",
       "name": "Alexandria Parks",
       "type": "rss",
@@ -914,6 +926,20 @@
       "order": 10,
       "config": {
         "url": "https://www.blackcatdc.com/schedule.html"
+      }
+    },
+    {
+      "id": "dc9",
+      "name": "DC9",
+      "type": "dc9",
+      "enabled": true,
+      "description": "DC9 official events page",
+      "order": 10.5,
+      "config": {
+        "url": "https://dc9.club/",
+        "defaultImage": "https://dc9.club/wp-content/uploads/2024/12/DC9_Misc_140504-087-copy-800x534-1-1.jpg",
+        "fetchImageFromLink": false,
+        "missingImageFetchLimit": 0
       }
     },
     {

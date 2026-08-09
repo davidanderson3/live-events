@@ -199,6 +199,23 @@ describe('genre taxonomy', () => {
     expect(module.normalizeShowEventGenres(event).genres).toEqual(['Outdoors']);
   });
 
+  it('does not assign outdoors from broad location or optional activity words alone', async () => {
+    const module = await import('../functions/backend/server.js');
+    const event = {
+      source: 'community-calendar',
+      name: { text: 'History Talk at the Park' },
+      summary: 'Optional hike after the lecture.',
+      genres: []
+    };
+
+    expect(module.extractCategoryMappingKeywords(event)).toEqual(['talk', 'lecture', 'park', 'hike']);
+    expect(module.getEventTextTaxonomyLabels(event, {
+      categoryMappings: {},
+      ignoredGenres: []
+    })).toEqual([]);
+    expect(module.normalizeShowEventGenres({ ...event }).genres).toEqual(['Talks & Readings']);
+  });
+
   it('does not treat place names or registration copy as categories', async () => {
     const module = await import('../functions/backend/server.js');
     const event = {
@@ -234,6 +251,21 @@ describe('genre taxonomy', () => {
     expect(module.extractCategoryMappingKeywords(event)).not.toContain('woods');
     expect(module.getEventTextTaxonomyLabels(event)).toEqual([]);
     expect(module.normalizeShowEventGenres({ ...event }).genres).toEqual(['Rock & Alternative']);
+  });
+
+  it('does not map Ticketmaster music events with theatre raw metadata to theater', async () => {
+    const module = await import('../functions/backend/server.js');
+    const event = {
+      source: 'ticketmaster',
+      segment: 'music',
+      name: { text: 'Anthony Hamilton' },
+      summary: '',
+      genres: ['Theatre'],
+      sourceGenres: ['Theatre']
+    };
+
+    expect(module.getGenreTaxonomyLabels(['Theatre'], event)).toEqual([]);
+    expect(module.normalizeShowEventGenres({ ...event }).genres).toEqual([]);
   });
 
   it('extracts useful Latin global and museum keywords from real event text', async () => {

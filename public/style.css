@@ -1903,6 +1903,11 @@ button:hover {
   background: #e6eee9;
 }
 
+.shows-loading-indicator--bootstrap {
+  margin: 0.8rem 0 0;
+  padding-bottom: 0.25rem;
+}
+
 @keyframes showsLoadingTrack {
   0% {
     transform: translateX(-110%);
@@ -4930,6 +4935,25 @@ h2 {
   gap: 1rem;
   align-items: flex-start;
 }
+.review-queue-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid #d7dce2;
+  background: #f5f7fa;
+  color: #5d6875;
+  font-size: 0.78rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.review-queue-count--alert {
+  border-color: #d79b47;
+  background: #fff4df;
+  color: #774d0f;
+}
 .datasources-admin__panel-header button.secondary {
   border: none;
   border-radius: 999px;
@@ -5408,6 +5432,36 @@ h2 {
   gap: 0.5rem;
   margin-top: 1rem;
 }
+.category-option-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+}
+.category-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+}
+.category-option-row__label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  color: #334155;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.12rem 0;
+  overflow-wrap: anywhere;
+}
+.category-option-row__label input {
+  flex: 0 0 auto;
+  width: 0.85rem;
+  height: 0.85rem;
+  margin: 0;
+}
 .review-source-count {
   border: 1px solid #cbd5e1;
   border-radius: 999px;
@@ -5432,12 +5486,34 @@ h2 {
   font-weight: 500;
   border-style: dashed;
 }
+.category-option-row__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  padding: 0;
+}
+.category-option-row__icon:hover {
+  background: #e2e8f0;
+}
 .refresh-log {
   flex: 1 0 100%;
   overflow-x: auto;
 }
 .refresh-log .preview-controls {
   margin: 0.35rem 0 0.75rem;
+}
+.refresh-log__heading {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.95rem;
 }
 .refresh-log__table {
   width: 100%;

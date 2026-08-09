@@ -60,10 +60,11 @@ async function assertFreshLoadIsHealthy(page: import('@playwright/test').Page) {
     if (/\/api\/image-proxy(?:\?|$)/.test(url) && response.status() >= 400) {
       requestFailures.push(`${response.status()} ${url}`);
     }
-    if (/\/api\/shows(?:\?|$)/.test(url) && response.status() >= 400) {
+    const isShowsFeedResponse = /\/api\/shows(?:\?|$)/.test(url) || /\/api\/shows-bootstrap(?:\?|$)/.test(url);
+    if (isShowsFeedResponse && response.status() >= 400) {
       requestFailures.push(`${response.status()} ${url}`);
     }
-    if (/\/api\/shows(?:\?|$)/.test(url) && response.status() === 200) {
+    if (isShowsFeedResponse && response.status() === 200) {
       try {
         const payload = await response.json();
         const dates = (Array.isArray(payload?.events) ? payload.events : [])

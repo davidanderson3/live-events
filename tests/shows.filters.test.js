@@ -275,7 +275,8 @@ describe('shows filters', () => {
       ? {
           text: node.textContent?.trim(),
           rendered: node.getAttribute('data-rendered-count'),
-          available: node.getAttribute('data-available-count')
+          available: node.getAttribute('data-available-count'),
+          saved: node.getAttribute('data-saved-count')
         }
       : null;
   }
@@ -1887,6 +1888,194 @@ describe('shows filters', () => {
     });
     expect(categoryRows().map(row => row.text)).not.toContain('Comedy');
     expect(categoryRows().map(row => row.text)).not.toContain('Fitness & Wellness');
+  });
+
+  it('uses the saved tab population for the live feed saved summary count', async () => {
+    const unsavedEvents = Array.from({ length: 3 }, (_, index) =>
+      eventFixture(index, {
+        id: `summary-unsaved-${index + 1}`,
+        name: `Summary Unsaved ${index + 1}`,
+        genre: 'Comedy'
+      })
+    );
+    const savedLiveEvents = Array.from({ length: 2 }, (_, index) =>
+      eventFixture(index + 10, {
+        id: `summary-saved-live-${index + 1}`,
+        name: `Summary Saved Live ${index + 1}`,
+        genre: 'Comedy'
+      })
+    );
+    const savedOnlyEvents = Array.from({ length: 4 }, (_, index) =>
+      eventFixture(index + 20, {
+        id: `summary-saved-only-${index + 1}`,
+        name: `Summary Saved Only ${index + 1}`,
+        genre: 'Comedy'
+      })
+    );
+    const fillerEvents = Array.from({ length: 55 }, (_, index) =>
+      eventFixture(index + 30, {
+        id: `summary-filler-${index + 1}`,
+        name: `Summary Filler ${index + 1}`,
+        start: getFutureIso(90 + index),
+        genre: 'Crafting'
+      })
+    );
+    const allSavedEvents = [...savedLiveEvents, ...savedOnlyEvents];
+
+    await setup({
+      initialStorage: {
+        'shows.savedEvents': allSavedEvents.map(event => ({
+          id: event.id,
+          event,
+          savedAt: Date.now()
+        })),
+        'shows.savedEventStates': allSavedEvents.map(event => ({
+          id: event.id,
+          active: true,
+          updatedAt: Date.now()
+        })),
+        'shows.genreFilters': {
+          version: 6,
+          mode: 'defaults'
+        }
+      },
+      events: [...unsavedEvents, ...savedLiveEvents, ...fillerEvents]
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 1300));
+    await flush();
+
+    const cardsText = eventCardTexts().join(' ');
+    expect(eventCardTexts()).toHaveLength(3);
+    expect(cardsText).toContain('Summary Unsaved 1');
+    expect(cardsText).not.toContain('Summary Saved Live 1');
+    expect(cardsText).not.toContain('Summary Saved Only 1');
+    expect(renderedSummary()).toMatchObject({
+      text: '3 events. 6 saved.',
+      rendered: '3',
+      saved: '6'
+    });
+  });
+
+  it('does not render polluted saved-event storage entries without active saved states', async () => {
+    const savedEvent = eventFixture(1, {
+      id: 'real-saved-event',
+      name: 'Real Saved Event',
+      genre: 'Comedy'
+    });
+    const pollutedEvents = Array.from({ length: 3 }, (_, index) =>
+      eventFixture(index + 2, {
+        id: `polluted-feed-event-${index + 1}`,
+        name: `Polluted Feed Event ${index + 1}`,
+        genre: 'Rock & Alternative'
+      })
+    );
+
+    await setup({
+      initialStorage: {
+        'shows.savedEvents': [savedEvent, ...pollutedEvents].map(event => ({
+          id: event.id,
+          event,
+          savedAt: Date.now()
+        })),
+        'shows.savedEventStates': [
+          {
+            id: savedEvent.id,
+            active: true,
+            updatedAt: Date.now()
+          }
+        ]
+      },
+      events: [savedEvent, ...pollutedEvents]
+    });
+
+    document.getElementById('showsTabSaved')?.dispatchEvent(
+      new dom.window.MouseEvent('click', { bubbles: true, cancelable: true })
+    );
+    await flush();
+
+    const savedTabText = eventCardTexts().join(' ');
+    expect(savedTabText).toContain('Real Saved Event');
+    expect(savedTabText).not.toContain('Polluted Feed Event 1');
+    expect(eventCardTexts()).toHaveLength(1);
+  });
+
+  it('does not make the saved tab identical to the events tab', async () => {
+    const savedEvent = eventFixture(1, {
+      id: 'saved-only-card',
+      name: 'Saved Only Card',
+      genre: 'Comedy'
+    });
+    const unsavedEvents = Array.from({ length: 4 }, (_, index) =>
+      eventFixture(index + 2, {
+        id: `events-only-card-${index + 1}`,
+        name: `Events Only Card ${index + 1}`,
+        genre: 'Rock & Alternative'
+      })
+    );
+
+    await setup({
+      initialStorage: {
+        'shows.savedEvents': [
+          {
+            id: savedEvent.id,
+            event: savedEvent,
+            savedAt: Date.now()
+          }
+        ],
+        'shows.savedEventStates': [
+          {
+            id: savedEvent.id,
+            active: true,
+            updatedAt: Date.now()
+          }
+        ]
+      },
+      events: [savedEvent, ...unsavedEvents]
+    });
+
+    const eventsTabTexts = eventCardTexts();
+    expect(eventsTabTexts.join(' ')).toContain('Events Only Card 1');
+    expect(eventsTabTexts.join(' ')).not.toContain('Saved Only Card');
+
+    document.getElementById('showsTabSaved')?.dispatchEvent(
+      new dom.window.MouseEvent('click', { bubbles: true, cancelable: true })
+    );
+    await flush();
+
+    const savedTabTexts = eventCardTexts();
+    expect(savedTabTexts.join(' ')).toContain('Saved Only Card');
+    expect(savedTabTexts.join(' ')).not.toContain('Events Only Card 1');
+    expect(savedTabTexts).not.toEqual(eventsTabTexts);
+  });
+
+  it('does not show loading-more copy when hiding an event from a long list', async () => {
+    const events = Array.from({ length: 25 }, (_, index) =>
+      eventFixture(index + 1, {
+        id: `hide-flicker-event-${index + 1}`,
+        name: `Hide Flicker Event ${index + 1}`,
+        genre: 'Comedy'
+      })
+    );
+
+    await setup({ events, filterIndex: filterIndexFor(events) });
+    await flush();
+    await flush();
+    expect(document.body.textContent).not.toContain('Loading more events');
+
+    const firstCard = Array.from(document.querySelectorAll('.show-card')).find(card =>
+      card.textContent?.includes('Hide Flicker Event 1')
+    );
+    const hideButton = Array.from(firstCard?.querySelectorAll('.show-card__button') || []).find(
+      button => button.textContent?.trim() === 'Hide'
+    );
+    expect(hideButton).toBeTruthy();
+
+    hideButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await flush();
+
+    expect(document.body.textContent).not.toContain('Loading more events');
+    expect(document.querySelector('.shows-loading-indicator--inline')).toBeNull();
   });
 
   it('ignores stale restrictive category filters so all current events render', async () => {

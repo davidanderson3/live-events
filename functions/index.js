@@ -23,18 +23,21 @@ const refreshRuntimeOptions = {
   memory: process.env.SHOWS_REFRESH_MEMORY || '1GB',
   maxInstances: readPositiveIntegerEnv('SHOWS_REFRESH_MAX_INSTANCES', 1)
 };
+const apiRuntimeOptions = {
+  minInstances: Number(process.env.API_MIN_INSTANCES || 1),
+  timeoutSeconds: readPositiveIntegerEnv('API_TIMEOUT_SECONDS', 120, { max: 540 })
+};
+const showsRefreshSchedule = process.env.SHOWS_REFRESH_SCHEDULE || '25 0,6,12,18 * * *';
 
 exports.api = functions
   .region(region)
-  .runWith({
-    minInstances: Number(process.env.API_MIN_INSTANCES || 1)
-  })
+  .runWith(apiRuntimeOptions)
   .https.onRequest(app);
 
 exports.refreshShowsCache = functions
   .region(region)
   .runWith(refreshRuntimeOptions)
-  .pubsub.schedule(process.env.SHOWS_REFRESH_SCHEDULE || 'every 6 hours')
+  .pubsub.schedule(showsRefreshSchedule)
   .retryConfig({
     retryCount: 0,
     maxRetryDuration: '0s'
@@ -44,7 +47,8 @@ exports.refreshShowsCache = functions
     const startedAt = Date.now();
     const result = await serverModule.refreshStoredShowsFeed({
       reason: 'scheduler',
-      forcePersist: true
+      forcePersist: true,
+      skipSchedulerDedupe: true
     });
     console.log('[shows-refresh] scheduler complete', JSON.stringify({
       durationMs: Date.now() - startedAt,
